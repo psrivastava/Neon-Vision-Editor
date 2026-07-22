@@ -4,7 +4,7 @@ set -u
 app_name="Neon Vision Editor"
 
 usage() {
-    echo "Usage: nve [--wait] [--new-window] [--line N] [file ...]" >&2
+    echo "Usage: nve [--wait] [--new-window] [--line N] [--column N] [file[:line[:col]] ...]" >&2
 }
 
 open_app() {
@@ -17,6 +17,7 @@ open_app() {
 wait_flag=""
 new_window_flag=""
 line_number=""
+column_number=""
 paths=""
 
 while [ "$#" -gt 0 ]; do
@@ -51,6 +52,21 @@ while [ "$#" -gt 0 ]; do
             shift
             continue
             ;;
+        -c|--column)
+            shift
+            if [ "$#" -eq 0 ]; then
+                echo "nve: --column requires a column number" >&2
+                exit 64
+            fi
+            column_number="$1"
+            shift
+            continue
+            ;;
+        --column=*)
+            column_number="${arg#--column=}"
+            shift
+            continue
+            ;;
         --)
             shift
             break
@@ -71,6 +87,35 @@ while [ "$#" -gt 0 ]; do
     if [ "$arg" = "--" ]; then
         shift
         continue
+    fi
+
+    # Support the file:line:col shorthand, but only when the literal path does not exist
+    # (so real filenames containing colons still open correctly).
+    if [ ! -e "$arg" ]; then
+        case "$arg" in
+            *:[0-9]*)
+                base="${arg%%:*}"
+                rest="${arg#*:}"
+                if [ -e "$base" ]; then
+                    # rest is line[:col]
+                    line_part="${rest%%:*}"
+                    case "$line_part" in
+                        ''|*[!0-9]*) : ;;
+                        *) line_number="$line_part" ;;
+                    esac
+                    case "$rest" in
+                        *:*)
+                            col_part="${rest#*:}"
+                            case "$col_part" in
+                                ''|*[!0-9]*) : ;;
+                                *) column_number="$col_part" ;;
+                            esac
+                            ;;
+                    esac
+                    arg="$base"
+                fi
+                ;;
+        esac
     fi
 
     if [ ! -e "$arg" ]; then
@@ -95,7 +140,15 @@ if [ -n "$line_number" ]; then
             exit 64
             ;;
     esac
-    echo "nve: --line is accepted for script compatibility; current app builds open the file without cursor placement." >&2
+fi
+
+if [ -n "$column_number" ]; then
+    case "$column_number" in
+        ''|*[!0-9]*)
+            echo "nve: --column must be a positive integer" >&2
+            exit 64
+            ;;
+    esac
 fi
 
 if [ -z "$paths" ]; then
@@ -104,6 +157,7 @@ if [ -z "$paths" ]; then
     exit 0
 fi
 
+first_path=""
 printf '%s\n' "$paths" | while IFS= read -r path; do
     if [ -z "$path" ]; then
         continue
@@ -111,3 +165,17 @@ printf '%s\n' "$paths" | while IFS= read -r path; do
     # shellcheck disable=SC2086
     open_app $wait_flag $new_window_flag "$path"
 done
+
+# After opening, if a line was requested, ask the app to place the cursor via its URL scheme.
+# The app handles neonvisioneditor://goto?file=<abs>&line=N&column=N (ForkOpenLocation);
+# older builds simply ignore the unknown URL, so the file still opens without cursor placement.
+if [ -n "$line_number" ]; then
+    first_path=$(printf '%s\n' "$paths" | while IFS= read -r p; do
+        [ -n "$p" ] && { printf '%s' "$p"; break; }
+    done)
+    if [ -n "$first_path" ]; then
+        enc_path=$(printf '%s' "$first_path" | /usr/bin/sed 's/ /%20/g')
+        goto_url="neonvisioneditor://goto?file=${enc_path}&line=${line_number}&column=${column_number:-1}"
+        /usr/bin/open "$goto_url" >/dev/null 2>&1 || true
+    fi
+fi

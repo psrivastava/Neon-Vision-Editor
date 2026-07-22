@@ -1792,3 +1792,44 @@ The format follows *Keep a Changelog*. Versions use semantic versioning with pre
 - Updated UI with sidebar/layout fixes.
 - Fixed language selector behavior for syntax highlighting.
 - Improved focus behavior for text view interactions.
+
+---
+
+## Fork Additions (psrivastava/Neon-Vision-Editor)
+
+This section tracks changes made in **this fork only** — features ported from NotepadMac and fork
+tooling. Kept separate from the upstream changelog above so it never conflicts on `git merge upstream/main`.
+All fork behavior lives under `Neon Vision Editor/Fork/` (auto-compiled via the Xcode 16
+file-system-synchronized group); upstream files carry only tiny `// MARK: - FORK` hooks. See
+`docs/Fork-Port-Tasks.md` for the full plan and `docs/NotepadMac-Feature-Comparison.md` for scope.
+
+### Added — Batch A (editor utilities)
+- **String transforms suite** — 20 transforms (upper/lower/title/toggle case, camel/snake/kebab,
+  URL/Base64/HTML encode-decode, sort/dedupe/reverse/trim lines, hex↔decimal) via the new
+  **Transform** menu; applies to selection or whole document. (`Fork/StringTransforms.swift`)
+- **XML/HTML document formatting** — hand-rolled pretty-print + minify (Foundation only, no new
+  dependency), complementing NVE's existing JSON formatting. (`Fork/DocumentFormatter.swift`)
+- **Copy as HTML / Rich Text** — copies the syntax-highlighted selection as RTF + HTML pasteboard
+  flavors (⌥⇧⌘C). (macOS) (`Fork/ContentView+Commands.swift`)
+- **CLI `nve` line:column** — the `nve` helper now accepts `--column N` and the `file:line:col`
+  shorthand, routed to the app via a `neonvisioneditor://goto` URL. (`scripts/nve`, `Fork/OpenLocation.swift`)
+
+### Added — Batch B (surfaces)
+- **Command palette (⌘⇧P)** — a distinct actions-only palette (Cmd+P Quick Open is unchanged);
+  fuzzy-filtered launcher over existing commands, arrow/enter/esc nav.
+  (`Fork/CommandPalette.swift`, `Fork/CommandRegistry.swift`)
+- **Breadcrumb bar** — path segments + language badge above the editor, with a context menu
+  (Copy Path, Copy Name, Reveal in Finder). Toggle: `SettingsForkShowBreadcrumbBar` (default on).
+  (`Fork/BreadcrumbBar.swift`)
+- **Line-ending conversion** — convert the document to LF / CRLF / CR (NVE already *displayed* the
+  detected ending; this adds conversion). (`Fork/LineEndings.swift`)
+
+### Fork tooling
+- **`scripts/fork/build-and-deploy.sh`** — Release-archive → `shasum -a 256` hash-verified copy to
+  `/Applications/nve.app` (outer bundle renamed at deploy time only; `CFBundleExecutable` and
+  `PRODUCT_NAME` untouched). Removes the old `Neon Vision Editor.app`. Fails loudly on hash mismatch.
+
+### Not yet in this fork
+- Tier-C (planned): rendered↔raw view mode switcher, NotepadMac curated theme-set import, multi-cursor.
+- Tier-3 (deferred): custom theme editor, VS Code theme import.
+- iOS/iPad guards in fork files are not yet compiler-verified (iOS SDK unavailable on the build machine).

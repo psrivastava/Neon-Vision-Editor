@@ -1832,7 +1832,9 @@ struct ContentView: View {
                 selectedModelRaw = model.rawValue
             }
 
-        return viewWithPanels
+        // MARK: - FORK
+        return withForkCommands(viewWithPanels)
+        // END FORK
     }
 
     private func withTypingEvents<Content: View>(_ view: Content) -> some View {
@@ -3791,6 +3793,9 @@ struct ContentView: View {
                 if !useIOSUnifiedTopHost && !brainDumpLayoutEnabled {
                     tabBarView
                 }
+                // MARK: - FORK
+                forkBreadcrumbBar
+                // END FORK
 #if os(macOS)
                 if showBracketHelperBarMac {
                     bracketHelperBar

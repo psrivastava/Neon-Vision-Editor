@@ -78,6 +78,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func application(_ application: NSApplication, open urls: [URL]) {
         Task { @MainActor in
             for url in urls {
+                // MARK: - FORK
+                if let gotoRequest = ForkOpenLocation.parse(url) {
+                    _ = ForkOpenLocation.handle(gotoRequest)
+                    continue
+                }
+                // END FORK
                 if ShareImportHandoff.isShareImportURL(url) {
                     NotificationCenter.default.post(name: .sharedImportURLRequested, object: url)
                     continue
@@ -420,6 +426,7 @@ struct NeonVisionEditorApp: App {
         // - keep style/space visualization toggles off unless user enables them in Settings
         defaults.register(defaults: [
             "SettingsShowLineNumbers": true,
+            "SettingsForkShowBreadcrumbBar": true, // FORK: breadcrumb bar (task 6)
             "SettingsHighlightCurrentLine": false,
             "SettingsHighlightMatchingBrackets": false,
             "SettingsShowScopeGuides": false,
@@ -521,6 +528,9 @@ struct NeonVisionEditorApp: App {
                 .onAppear { scheduleMacWindowChromePolicy() }
                 .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
                 .onAppear { applyRuntimeLanguageOverride() }
+                // MARK: - FORK
+                .onAppear { ForkCommandPaletteInstaller.installIfNeeded() }
+                // END FORK
                 .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
                 .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
                     if AppearanceThemeCloudSync.syncIfEnabled()?.didApplyRemoteSettings == true {
@@ -601,6 +611,9 @@ struct NeonVisionEditorApp: App {
                 .onAppear { scheduleMacWindowChromePolicy() }
                 .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
                 .onAppear { applyRuntimeLanguageOverride() }
+                // MARK: - FORK
+                .onAppear { ForkCommandPaletteInstaller.installIfNeeded() }
+                // END FORK
                 .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
                 .environment(\.locale, preferredLocale)
                 .tint(.blue)

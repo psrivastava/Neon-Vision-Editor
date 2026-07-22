@@ -62,7 +62,13 @@ struct NeonVisionMacAppCommands: Commands {
         editorCommands
         toolsCommands
         diagnosticsCommands
-        helpCommands
+        // MARK: - FORK
+        // Grouped with helpCommands so the @CommandsBuilder child count stays within limits.
+        Group {
+            helpCommands
+            ForkMenuCommands()
+        }
+        // END FORK
     }
 
     private var hasSelectedTab: Bool {
