@@ -427,6 +427,7 @@ struct NeonVisionEditorApp: App {
         defaults.register(defaults: [
             "SettingsShowLineNumbers": true,
             "SettingsForkShowBreadcrumbBar": true, // FORK: breadcrumb bar (task 6)
+            "SettingsForkPreviewOrientation": "side", // FORK: preview split orientation (task 8) — side | bottom
             "SettingsHighlightCurrentLine": false,
             "SettingsHighlightMatchingBrackets": false,
             "SettingsShowScopeGuides": false,

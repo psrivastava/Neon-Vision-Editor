@@ -1824,12 +1824,33 @@ file-system-synchronized group); upstream files carry only tiny `// MARK: - FORK
 - **Line-ending conversion** — convert the document to LF / CRLF / CR (NVE already *displayed* the
   detected ending; this adds conversion). (`Fork/LineEndings.swift`)
 
+### Added — Batch C (preview + theming)
+- **Markdown preview orientation** — the preview split can sit on the **right** (side panel, default)
+  or at the **bottom** (both editor and preview get full width), chosen via a flyout beside the
+  preview toolbar button. Persisted in `SettingsForkPreviewOrientation`. All orientation logic lives
+  in `Fork/PreviewOrientation.swift`; upstream `editorView` carries a single `forkEditorPreviewSplit`
+  hook.
+- **"Vivid" markdown preview template** — a new preview template that keeps NVE's clean document base
+  but tints headings, links, inline code, and the quote bar **live from the active editor theme**
+  (re-colors when you switch themes). Fenced-code syntax highlighting is unchanged.
+  (`Fork/MarkdownPreviewVivid.swift`)
+
+### Fixed — upstream bugs surfaced while working on the fork (tagged `// FORK BUGFIX`)
+- **Symbol outline froze after the first edit.** `SidebarView` observed `TabData.content`, a computed
+  property over a mutated-in-place `PieceTableDocument` (reference type) that `@Observable` can't
+  track. Now observes `contentRevision` (a real stored counter) via a new
+  `currentDocumentContentRevision` accessor. (`SidebarViews.swift`, `ContentView.swift`)
+- **Markdown docs silently re-detected as Swift on edit** → outline blanked to "No headers found".
+  `applyLanguageDetectionHeuristics` matched bare prose words (`extension`, `protocol`, `guard`) as
+  Swift tokens and re-locked the doc to Swift before checking the file extension. A known non-Swift
+  extension (`.md`, `.json`, …) is now authoritative over content sniffing. (`EditorViewModel.swift`)
+
 ### Fork tooling
 - **`scripts/fork/build-and-deploy.sh`** — Release-archive → `shasum -a 256` hash-verified copy to
   `/Applications/nve.app` (outer bundle renamed at deploy time only; `CFBundleExecutable` and
   `PRODUCT_NAME` untouched). Removes the old `Neon Vision Editor.app`. Fails loudly on hash mismatch.
 
 ### Not yet in this fork
-- Tier-C (planned): rendered↔raw view mode switcher, NotepadMac curated theme-set import, multi-cursor.
+- Batch C remaining: multi-cursor editing; NotepadMac curated theme-set import.
 - Tier-3 (deferred): custom theme editor, VS Code theme import.
 - iOS/iPad guards in fork files are not yet compiler-verified (iOS SDK unavailable on the build machine).

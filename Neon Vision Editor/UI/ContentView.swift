@@ -2660,6 +2660,7 @@ struct ContentView: View {
                             content: contentView.currentContent,
                             language: contentView.currentLanguage,
                             contentUTF16Length: contentView.currentDocumentUTF16Length,
+                            contentRevision: contentView.currentDocumentContentRevision, // FORK BUGFIX
                             translucentBackgroundEnabled: true
                         )
                             .navigationTitle(Text(NSLocalizedString("Sidebar", comment: "")))
@@ -3147,6 +3148,7 @@ struct ContentView: View {
                 content: sidebarTOCContent,
                 language: currentLanguage,
                 contentUTF16Length: currentDocumentUTF16Length,
+                contentRevision: currentDocumentContentRevision, // FORK BUGFIX: drives live TOC rebuild
                 translucentBackgroundEnabled: enableTranslucentWindow
             )
                 .frame(minWidth: 200, idealWidth: 250, maxWidth: 600)
@@ -3246,6 +3248,14 @@ struct ContentView: View {
             return tab.contentUTF16Length
         }
         return (singleContent as NSString).length
+    }
+
+    // FORK BUGFIX: observed stored counter that bumps on every edit. Consumers that read the
+    // computed `currentContent` (piece-table backed) can't rely on @Observable to invalidate them,
+    // so they observe this instead. Falls back to the editor's external-mutation revision for the
+    // single-document (untabbed) path.
+    var currentDocumentContentRevision: Int {
+        viewModel.selectedTab?.contentRevision ?? editorExternalMutationRevision
     }
 
     var effectiveLargeFileModeEnabled: Bool {
@@ -3789,6 +3799,10 @@ struct ContentView: View {
                 projectSidebarResizeHandle
             }
 
+            // MARK: - FORK — preview orientation (side | bottom). The editor column is wrapped so the
+            // preview split can sit on the RIGHT (upstream default) or at the BOTTOM (both panes get
+            // full width). Panes/transitions live in Fork/PreviewOrientation.swift; this is the only hook.
+            forkEditorPreviewSplit {
             VStack(spacing: 0) {
                 if !useIOSUnifiedTopHost && !brainDumpLayoutEnabled {
                     tabBarView
@@ -3930,22 +3944,7 @@ struct ContentView: View {
                     markdownFormattingControlBar
                 }
             }
-
-            if isMarkdownPreviewSplitVisible {
-#if os(iOS) || os(visionOS)
-                iOSPaneDivider
-#else
-                markdownPreviewSplitTransition
-#endif
-                markdownPreviewSplitPane
-            } else if isWebPreviewSplitVisible {
-#if os(iOS) || os(visionOS)
-                iOSPaneDivider
-#else
-                markdownPreviewSplitTransition
-#endif
-                webPreviewSplitPane
-            }
+            } // END FORK — forkEditorPreviewSplit (preview split renders inside, side or bottom)
 
             if showProjectStructureSidebar && projectNavigatorPlacement == .trailing && !brainDumpLayoutEnabled {
                 projectSidebarResizeHandle

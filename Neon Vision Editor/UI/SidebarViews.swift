@@ -54,6 +54,11 @@ struct SidebarView: View {
     let content: String
     let language: String
     let contentUTF16Length: Int?
+    // FORK BUGFIX: `content` is derived from TabData's computed `content` (a mutated-in-place
+    // piece-table reference), which @Observable does NOT track — so edits never invalidated this
+    // view and the symbol list froze after the first keystroke. `contentRevision` is a real stored
+    // observed property that bumps on every edit; observing it drives the rebuild. See below.
+    let contentRevision: Int
     let translucentBackgroundEnabled: Bool
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
@@ -102,6 +107,11 @@ struct SidebarView: View {
             scheduleTOCRefresh()
         }
         .onChange(of: content) { _, _ in
+            scheduleTOCRefresh()
+        }
+        // FORK BUGFIX: `content` alone never changes identity under @Observable (piece-table is
+        // mutated in place), so this revision counter is what actually fires on every edit.
+        .onChange(of: contentRevision) { _, _ in
             scheduleTOCRefresh()
         }
         .onChange(of: language) { _, _ in

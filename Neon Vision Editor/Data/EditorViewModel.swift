@@ -2254,6 +2254,16 @@ class EditorViewModel {
     private func applyLanguageDetectionHeuristics(at index: Int, content: String) {
         let tabID = tabs[index].id
 
+        // FORK BUGFIX: a concrete file extension is authoritative for language. Prose documents
+        // (e.g. .md) routinely contain words like "extension", "protocol", "guard", "if let" that
+        // trip the Swift-token heuristic below and silently re-lock the doc to Swift on the first
+        // edit — which switches the symbol-outline parser to the Swift branch and blanks the
+        // markdown headings ("No headers found"). Never let content sniffing override a known
+        // non-Swift extension.
+        let nameExt = URL(fileURLWithPath: tabs[index].name).pathExtension.lowercased()
+        let extLanguageHint = languageMap[nameExt]
+        let extensionForcesNonSwift = (extLanguageHint != nil && extLanguageHint != "swift")
+
         // Early lock to Swift if clearly Swift-specific tokens are present.
         let lower = content.lowercased()
         let swiftStrongTokens: Bool = (
@@ -2274,14 +2284,16 @@ class EditorViewModel {
             lower.contains("guard ") ||
             lower.contains("if let ")
         )
-        if swiftStrongTokens {
+        // FORK BUGFIX: only allow the Swift early-lock when the extension doesn't force another
+        // language (e.g. .md, .json, .txt). Without this guard, prose containing "extension"/
+        // "protocol"/"guard" flips a markdown doc to Swift on edit.
+        if swiftStrongTokens && !extensionForcesNonSwift {
             _ = applyTabCommand(.setLanguage(tabID: tabID, language: "swift", lock: true))
             return
         }
 
         guard !tabs[index].languageLocked else { return }
-        let nameExt = URL(fileURLWithPath: tabs[index].name).pathExtension.lowercased()
-        if let extLang = languageMap[nameExt], !extLang.isEmpty {
+        if let extLang = extLanguageHint, !extLang.isEmpty {
             // If extension says C# but content looks Swift-ish, prefer Swift.
             if extLang == "csharp" {
                 let looksSwift = lower.contains("import swiftui") ||

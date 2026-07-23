@@ -845,6 +845,14 @@ extension ContentView {
         .disabled(!isPreviewSupportedDocument)
         .help(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
         .accessibilityLabel(previewTitle)
+
+        // MARK: - FORK — preview orientation flyout (side | bottom). Shown only while a preview is
+        // visible; picks whether the split sits on the right or beneath the editor. See
+        // Fork/PreviewOrientation.swift.
+        if isPreviewVisible {
+            forkPreviewOrientationControl
+        }
+        // END FORK
     }
 
     @ViewBuilder
@@ -1837,6 +1845,13 @@ extension ContentView {
                         .foregroundStyle(isPreviewVisible ? Color.accentColor : macToolbarSymbolColor)
                 }
                 .help(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
+
+                // MARK: - FORK — preview orientation flyout (side | bottom). Shown only while a preview
+                // is visible. See Fork/PreviewOrientation.swift.
+                if isPreviewVisible {
+                    forkPreviewOrientationControl
+                }
+                // END FORK
 
                 if showMarkdownPreviewPane && isMarkdownPreviewDocument {
                     Menu {

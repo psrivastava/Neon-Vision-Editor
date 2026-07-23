@@ -216,7 +216,8 @@ extension ContentView {
         MarkdownPreviewTemplateOption(id: "focus-writing", title: "Focus Writing"),
         MarkdownPreviewTemplateOption(id: "lab-notes", title: "Lab Notes"),
         MarkdownPreviewTemplateOption(id: "editorial-review", title: "Editorial Review"),
-        MarkdownPreviewTemplateOption(id: "neon-paper", title: "Neon Paper")
+        MarkdownPreviewTemplateOption(id: "neon-paper", title: "Neon Paper"),
+        MarkdownPreviewTemplateOption(id: "vivid", title: "Vivid") // FORK: theme-tracking colorful preview (task 9)
     ]
 
     var markdownPDFExportMode: MarkdownPDFExportMode {
@@ -2614,6 +2615,10 @@ extension ContentView {
             a { border-bottom-width: 2px; font-weight: 700; text-decoration: underline; }
             th, td { border-bottom-color: currentColor; }
             """
+        case "vivid":
+            // FORK (task 9): "Vivid" keeps the default doc base palette but tints headings/links/
+            // inline-code/quote-bar with the active editor theme's colors. See Fork/MarkdownPreviewVivid.swift.
+            templateAccentCSS = forkVividAccentCSS(preferDarkMode: preferDarkMode)
         default:
             templateAccentCSS = ""
         }
