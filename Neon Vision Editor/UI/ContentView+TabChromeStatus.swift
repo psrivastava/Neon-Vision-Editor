@@ -146,6 +146,12 @@ extension ContentView {
     }
 
     private var floatingStatusPillText: String {
+        if let externalStatus = viewModel.externalFileRefreshStatus {
+            return externalStatus.message
+        }
+        if !projectRefreshStatusMessage.isEmpty {
+            return projectRefreshStatusMessage
+        }
         if shouldUseEditingMobileStatusPreset {
             let items = editingMobileStatusItems
             let maxItemCount = isPhoneStatusBarExpanded ? items.count : 1
@@ -278,7 +284,7 @@ extension ContentView {
             items.append("Words: \(statusWordCount)")
         }
         if statusBarShowEncoding {
-            items.append("UTF-8")
+            items.append(viewModel.selectedTab?.fileEncoding.displayName ?? "UTF-8")
         }
         if statusBarShowLineEndings {
             items.append(lineEndingStatusText)
@@ -348,9 +354,44 @@ extension ContentView {
         return branchText
     }
 
+    private var externalFileRefreshStatusSystemImage: String {
+        switch viewModel.externalFileRefreshStatus?.kind {
+        case .refreshing: return "arrow.clockwise"
+        case .refreshed: return "checkmark.circle"
+        case .needsReview: return "exclamationmark.triangle"
+        case nil: return "arrow.clockwise"
+        }
+    }
+
     @ViewBuilder
     var wordCountView: some View {
         HStack(spacing: 10) {
+            if let externalStatus = viewModel.externalFileRefreshStatus {
+                Label(
+                    externalStatus.message,
+                    systemImage: externalFileRefreshStatusSystemImage
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(externalStatus.kind == .needsReview ? Color.orange : Color.secondary)
+                .lineLimit(1)
+                .accessibilityLabel("External file refresh status")
+                .accessibilityValue(externalStatus.message)
+                .padding(.leading, 12)
+            }
+
+            if !projectRefreshStatusMessage.isEmpty {
+                Label(
+                    projectRefreshStatusMessage,
+                    systemImage: isProjectFileIndexing ? "arrow.clockwise" : "checkmark.circle"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityLabel("Project refresh status")
+                .accessibilityValue(projectRefreshStatusMessage)
+                .padding(.leading, 12)
+            }
+
             if droppedFileLoadInProgress {
                 HStack(spacing: 8) {
                     if droppedFileProgressDeterminate {
@@ -571,22 +612,28 @@ extension ContentView {
     }
 
     private var scrollableFileTabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            fileTabBarContent
-                .padding(5)
-                .background(
-                    fileTabBarContainerShape
-                        .fill(Color.secondary.opacity(0.065))
-                )
-                .overlay(
-                    fileTabBarContainerShape
-                        .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
-                )
-                .clipShape(fileTabBarContainerShape)
-                .padding(.leading, tabBarLeadingPadding)
-                .padding(.trailing, 10)
-                .padding(.vertical, 6)
-                .background(fileTabBarOffsetReader)
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                fileTabBarContent
+                    .padding(5)
+                    .background(
+                        fileTabBarContainerShape
+                            .fill(Color.secondary.opacity(0.065))
+                    )
+                    .overlay(
+                        fileTabBarContainerShape
+                            .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+                    )
+                    .clipShape(fileTabBarContainerShape)
+                    .padding(.leading, tabBarLeadingPadding)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 6)
+                    .background(fileTabBarOffsetReader)
+            }
+            .onChange(of: viewModel.selectedTabID) { _, selectedTabID in
+                guard let selectedTabID else { return }
+                proxy.scrollTo(selectedTabID)
+            }
         }
         .coordinateSpace(name: fileTabBarCoordinateSpaceName)
         .onPreferenceChange(FileTabBarContentMinXPreferenceKey.self) { minX in
@@ -630,6 +677,7 @@ extension ContentView {
             } else {
                 ForEach(viewModel.tabs) { tab in
                     fileTabItem(for: tab)
+                        .id(tab.id)
                 }
             }
         }

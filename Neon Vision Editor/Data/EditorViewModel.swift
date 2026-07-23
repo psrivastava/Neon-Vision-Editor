@@ -56,9 +56,11 @@ enum EditorTextSanitizer {
     }
 }
 
-fileprivate struct DecodedFileText {
-    let text: String
-    let encodingRawValue: UInt
+struct DecodedFileText: Sendable {
+    nonisolated let text: String
+    nonisolated let encoding: TextEncodingDescriptor
+
+    nonisolated var encodingRawValue: UInt { encoding.encodingRawValue }
 }
 
 private enum EditorLoadHelper {
@@ -94,8 +96,13 @@ private enum EditorLoadHelper {
         fileURL: URL,
         preferredLanguageHint: String?,
         isLargeCandidate: Bool,
+        preferredEncoding: TextEncodingDescriptor? = nil,
         allowsFullFileFallback: Bool = true
     ) -> DecodedFileText {
+        if let preferredEncoding,
+           let decoded = preferredEncoding.decode(data) {
+            return DecodedFileText(text: decoded, encoding: preferredEncoding)
+        }
         let lowerHint = preferredLanguageHint?.lowercased() ?? ""
         let prefersJSONFastDecode = isLargeCandidate &&
             (lowerHint == "json" || lowerHint == "jsonc" || lowerHint == "json5" || lowerHint == "ipynb")
@@ -106,39 +113,51 @@ private enum EditorLoadHelper {
             // avoid extra validation/fallback passes before first render.
             return DecodedFileText(
                 text: String(decoding: data, as: UTF8.self),
-                encodingRawValue: String.Encoding.utf8.rawValue
+                encoding: .utf8
             )
         }
 
-        if let utf8 = String(data: data, encoding: .utf8) {
-            return DecodedFileText(text: utf8, encodingRawValue: String.Encoding.utf8.rawValue)
+        let utf8Encoding = data.starts(with: [0xEF, 0xBB, 0xBF])
+            ? TextEncodingDescriptor(identifier: .utf8WithBOM)
+            : .utf8
+        if let utf8 = utf8Encoding.decode(data) {
+            return DecodedFileText(text: utf8, encoding: utf8Encoding)
         }
 
         if likelyUTF16 {
-            let utf16Candidates: [String.Encoding] = [.utf16, .utf16LittleEndian, .utf16BigEndian]
+            let utf16Candidates: [TextEncodingDescriptor] = [
+                TextEncodingDescriptor(identifier: .utf16LittleEndianWithBOM),
+                TextEncodingDescriptor(identifier: .utf16BigEndianWithBOM),
+                TextEncodingDescriptor(identifier: .utf16LittleEndian),
+                TextEncodingDescriptor(identifier: .utf16BigEndian)
+            ]
             for encoding in utf16Candidates {
-                if let decoded = String(data: data, encoding: encoding) {
-                    return DecodedFileText(text: decoded, encodingRawValue: encoding.rawValue)
+                if let decoded = encoding.decode(data) {
+                    return DecodedFileText(text: decoded, encoding: encoding)
                 }
             }
         }
 
-        if let cp1251 = String(data: data, encoding: .windowsCP1251) {
-            return DecodedFileText(text: cp1251, encodingRawValue: String.Encoding.windowsCP1251.rawValue)
-        }
-        if let cp1252 = String(data: data, encoding: .windowsCP1252) {
-            return DecodedFileText(text: cp1252, encodingRawValue: String.Encoding.windowsCP1252.rawValue)
-        }
-        if let latin1 = String(data: data, encoding: .isoLatin1) {
-            return DecodedFileText(text: latin1, encodingRawValue: String.Encoding.isoLatin1.rawValue)
+        let legacyCandidates: [TextEncodingDescriptor] = [
+            TextEncodingDescriptor(identifier: .windowsCP1251),
+            TextEncodingDescriptor(identifier: .windowsCP1252),
+            TextEncodingDescriptor(identifier: .isoLatin1),
+            TextEncodingDescriptor(identifier: .isoLatin5),
+            TextEncodingDescriptor(identifier: .macOSRoman),
+            TextEncodingDescriptor(identifier: .ascii)
+        ]
+        for encoding in legacyCandidates {
+            if let decoded = encoding.decode(data) {
+                return DecodedFileText(text: decoded, encoding: encoding)
+            }
         }
         if allowsFullFileFallback,
            let fallback = try? String(contentsOf: fileURL, encoding: .utf8) {
-            return DecodedFileText(text: fallback, encodingRawValue: String.Encoding.utf8.rawValue)
+            return DecodedFileText(text: fallback, encoding: .utf8)
         }
         return DecodedFileText(
             text: String(decoding: data, as: UTF8.self),
-            encodingRawValue: String.Encoding.utf8.rawValue
+            encoding: .utf8
         )
     }
 
@@ -246,6 +265,7 @@ private enum EditorLoadHelper {
 private struct EditorFileLoadResult: Sendable {
     let content: String
     let fileEncodingRawValue: UInt
+    let fileEncoding: TextEncodingDescriptor
     let detectedLanguage: String
     let languageLocked: Bool
     let fingerprint: UInt64?
@@ -438,6 +458,7 @@ final class TabData: Identifiable {
     fileprivate(set) var name: String
     private var contentStorage: PieceTableDocument
     private(set) var contentRevision: Int = 0
+    private(set) var externalContentRevision: Int = 0
     fileprivate(set) var language: String
     fileprivate(set) var fileURL: URL?
     fileprivate(set) var languageLocked: Bool
@@ -447,6 +468,8 @@ final class TabData: Identifiable {
     fileprivate(set) var isLoadingContent: Bool
     fileprivate(set) var isLargeFileCandidate: Bool
     fileprivate(set) var fileEncodingRawValue: UInt
+    fileprivate(set) var fileEncoding: TextEncodingDescriptor
+    fileprivate(set) var usesAutomaticFileEncoding: Bool
     fileprivate(set) var remotePreviewPath: String?
     fileprivate(set) var remoteRevisionToken: String?
     fileprivate(set) var isReadOnlyPreview: Bool
@@ -466,6 +489,8 @@ final class TabData: Identifiable {
         isLoadingContent: Bool = false,
         isLargeFileCandidate: Bool = false,
         fileEncodingRawValue: UInt = String.Encoding.utf8.rawValue,
+        fileEncoding: TextEncodingDescriptor? = nil,
+        usesAutomaticFileEncoding: Bool = true,
         remotePreviewPath: String? = nil,
         remoteRevisionToken: String? = nil,
         isReadOnlyPreview: Bool = false,
@@ -483,7 +508,10 @@ final class TabData: Identifiable {
         self.lastKnownFileModificationDate = lastKnownFileModificationDate
         self.isLoadingContent = isLoadingContent
         self.isLargeFileCandidate = isLargeFileCandidate
-        self.fileEncodingRawValue = fileEncodingRawValue
+        let resolvedEncoding = fileEncoding ?? TextEncodingDescriptor.descriptor(forRawValue: fileEncodingRawValue)
+        self.fileEncodingRawValue = resolvedEncoding.encodingRawValue
+        self.fileEncoding = resolvedEncoding
+        self.usesAutomaticFileEncoding = usesAutomaticFileEncoding
         self.remotePreviewPath = remotePreviewPath
         self.remoteRevisionToken = remoteRevisionToken
         self.isReadOnlyPreview = isReadOnlyPreview
@@ -544,7 +572,13 @@ final class TabData: Identifiable {
     }
 
     func updateFileEncodingRawValue(_ rawValue: UInt) {
-        fileEncodingRawValue = rawValue
+        updateFileEncoding(TextEncodingDescriptor.descriptor(forRawValue: rawValue), usesAutomatic: true)
+    }
+
+    func updateFileEncoding(_ encoding: TextEncodingDescriptor, usesAutomatic: Bool) {
+        fileEncoding = encoding
+        fileEncodingRawValue = encoding.encodingRawValue
+        usesAutomaticFileEncoding = usesAutomatic
     }
 
     func updateRemoteRevisionToken(_ token: String?) {
@@ -553,6 +587,88 @@ final class TabData: Identifiable {
 
     func resetContentRevision() {
         contentRevision = 0
+    }
+
+    func noteExternalContentRefresh() {
+        externalContentRevision &+= 1
+    }
+
+    func updateFileByteCount(_ byteCount: Int) {
+        fileByteCount = max(0, byteCount)
+    }
+}
+
+nonisolated private final class OpenDocumentFilePresenter: NSObject, NSFilePresenter, @unchecked Sendable {
+    private let observedURL: URL
+    private let operationQueue: OperationQueue
+    private let changeHandler: @Sendable (URL) -> Void
+    private var didStartScopedAccess = false
+
+    var presentedItemURL: URL? { observedURL }
+    var presentedItemOperationQueue: OperationQueue { operationQueue }
+
+    init(url: URL, changeHandler: @escaping @Sendable (URL) -> Void) {
+        observedURL = url.standardizedFileURL
+        self.changeHandler = changeHandler
+        operationQueue = OperationQueue()
+        operationQueue.name = "h3p.Neon-Vision-Editor.open-file-presenter.\(UUID().uuidString)"
+        operationQueue.maxConcurrentOperationCount = 1
+        operationQueue.qualityOfService = .utility
+        super.init()
+        didStartScopedAccess = observedURL.startAccessingSecurityScopedResource()
+        NSFileCoordinator.addFilePresenter(self)
+    }
+
+    func invalidate() {
+        NSFileCoordinator.removeFilePresenter(self)
+        if didStartScopedAccess {
+            observedURL.stopAccessingSecurityScopedResource()
+            didStartScopedAccess = false
+        }
+    }
+
+    func presentedItemDidChange() {
+        changeHandler(observedURL)
+    }
+
+    func presentedItemDidMove(to newURL: URL) {
+        // Atomic-save implementations commonly move the old inode aside before
+        // replacing the original path. Recheck the represented document path.
+        changeHandler(observedURL)
+        changeHandler(newURL)
+    }
+
+    func accommodatePresentedItemDeletion(completionHandler: @escaping (Error?) -> Void) {
+        changeHandler(observedURL)
+        completionHandler(nil)
+    }
+}
+
+nonisolated private final class OpenDocumentObservationCenter: @unchecked Sendable {
+    private var presentersByPath: [String: OpenDocumentFilePresenter] = [:]
+    private let changeHandler: @Sendable (URL) -> Void
+
+    init(changeHandler: @escaping @Sendable (URL) -> Void) {
+        self.changeHandler = changeHandler
+    }
+
+    func updateObservedURLs(_ urls: [URL]) {
+        let urlsByPath = Dictionary(
+            urls.map { ($0.standardizedFileURL.path, $0.standardizedFileURL) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        for path in Array(presentersByPath.keys) where urlsByPath[path] == nil {
+            presentersByPath.removeValue(forKey: path)?.invalidate()
+        }
+        for (path, url) in urlsByPath where presentersByPath[path] == nil {
+            presentersByPath[path] = OpenDocumentFilePresenter(url: url, changeHandler: changeHandler)
+        }
+    }
+
+    deinit {
+        for presenter in presentersByPath.values {
+            presenter.invalidate()
+        }
     }
 }
 
@@ -567,6 +683,22 @@ class EditorViewModel {
         let tabID: UUID
         let fileURL: URL
         let diskModifiedAt: Date?
+    }
+
+    enum ExternalFileRefreshStatusKind: Equatable, Sendable {
+        case refreshing
+        case refreshed
+        case needsReview
+    }
+
+    struct ExternalFileRefreshStatus: Equatable, Sendable {
+        let kind: ExternalFileRefreshStatusKind
+        let message: String
+    }
+
+    private struct LocalFileMetadata: Equatable, Sendable {
+        let modificationDate: Date?
+        let byteCount: Int
     }
 
     struct RemoteSaveIssueState: Sendable {
@@ -641,7 +773,9 @@ class EditorViewModel {
     private(set) var tabs: [TabData] = []
     private(set) var selectedTabID: UUID?
     var pendingExternalFileConflict: ExternalFileConflictState?
+    private(set) var externalFileRefreshStatus: ExternalFileRefreshStatus?
     var pendingRemoteSaveIssue: RemoteSaveIssueState?
+    var fileEncodingErrorMessage: String?
     var showSidebar: Bool = true
     var isBrainDumpMode: Bool = false
     var showingRename: Bool = false
@@ -649,6 +783,16 @@ class EditorViewModel {
     var isLineWrapEnabled: Bool = true
     @ObservationIgnored private let tabCommandQueue = TabCommandQueue()
     @ObservationIgnored private var pendingLanguageDetectionTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var pendingExternalFileRefreshTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored private var pendingExternalRefreshTabIDs: Set<UUID> = []
+    @ObservationIgnored private var refreshedExternalTabIDs: Set<UUID> = []
+    @ObservationIgnored private var reviewExternalTabIDs: Set<UUID> = []
+    @ObservationIgnored private var externalRefreshStatusClearTask: Task<Void, Never>?
+    @ObservationIgnored private lazy var openDocumentObservationCenter = OpenDocumentObservationCenter { [weak self] url in
+        Task { @MainActor [weak self] in
+            self?.handleObservedLocalFileChange(at: url)
+        }
+    }
     @ObservationIgnored private var tabIndexByID: [UUID: Int] = [:]
     @ObservationIgnored private var tabIDByStandardizedFilePath: [String: UUID] = [:]
     @ObservationIgnored private var tabStateVersion: Int = 0
@@ -704,6 +848,14 @@ class EditorViewModel {
     private func recordTabStateMutation(rebuildIndexes: Bool = false) {
         if rebuildIndexes {
             rebuildTabIndexes()
+            openDocumentObservationCenter.updateObservedURLs(
+                tabs.compactMap { tab in
+                    guard !tab.isRemoteDocument,
+                          let fileURL = tab.fileURL,
+                          fileURL.isFileURL else { return nil }
+                    return fileURL
+                }
+            )
         }
         tabStateVersion &+= 1
     }
@@ -733,7 +885,8 @@ class EditorViewModel {
             fileURL: URL?,
             fingerprint: UInt64?,
             fileModificationDate: Date?,
-            fileEncodingRawValue: UInt?
+            fileEncodingRawValue: UInt?,
+            fileByteCount: Int?
         )
         case remapFileURL(tabID: UUID, fileURL: URL)
         case setLanguage(tabID: UUID, language: String, lock: Bool)
@@ -776,13 +929,15 @@ class EditorViewModel {
             tabID: UUID,
             content: String,
             fileEncodingRawValue: UInt,
+            fileEncoding: TextEncodingDescriptor,
             language: String,
             languageLocked: Bool,
             fingerprint: UInt64?,
             fileModificationDate: Date?,
             isLargeCandidate: Bool,
             isPartialPreview: Bool,
-            byteCount: Int
+            byteCount: Int,
+            isExternalRefresh: Bool
         )
     }
 
@@ -812,7 +967,7 @@ class EditorViewModel {
             }
             return outcome
 
-        case let .markSaved(tabID, fileURL, fingerprint, fileModificationDate, fileEncodingRawValue):
+        case let .markSaved(tabID, fileURL, fingerprint, fileModificationDate, _, fileByteCount):
             guard let index = tabIndex(for: tabID) else { return TabCommandOutcome() }
             let outcome = TabCommandOutcome(index: index)
             if let fileURL {
@@ -826,8 +981,10 @@ class EditorViewModel {
             }
             tabs[index].markClean(withFingerprint: fingerprint)
             tabs[index].updateLastKnownFileModificationDate(fileModificationDate)
-            if let fileEncodingRawValue {
-                tabs[index].updateFileEncodingRawValue(fileEncodingRawValue)
+            // Save operations already use the tab's selected descriptor. Do not collapse a
+            // deliberate BOM or explicit encoding choice back to an unqualified raw value.
+            if let fileByteCount {
+                tabs[index].updateFileByteCount(fileByteCount)
             }
             recordTabStateMutation(rebuildIndexes: true)
             return outcome
@@ -864,6 +1021,8 @@ class EditorViewModel {
         case let .closeTab(tabID):
             guard let index = tabIndex(for: tabID) else { return TabCommandOutcome() }
             cancelPendingLanguageDetection(for: tabID)
+            pendingExternalFileRefreshTasks.removeValue(forKey: tabID)?.cancel()
+            clearExternalRefreshActivity(tabID: tabID)
             tabs.remove(at: index)
             if tabs.isEmpty {
                 let newTab = TabData(
@@ -961,7 +1120,6 @@ class EditorViewModel {
                 return TabCommandOutcome()
             }
             selectedTabID = tabID
-            recordTabStateMutation()
             return TabCommandOutcome()
 
         case let .moveTabBefore(tabID, beforeTabID):
@@ -1001,6 +1159,8 @@ class EditorViewModel {
         case .resetTabs:
             for tab in tabs {
                 cancelPendingLanguageDetection(for: tab.id)
+                pendingExternalFileRefreshTasks.removeValue(forKey: tab.id)?.cancel()
+                clearExternalRefreshActivity(tabID: tab.id)
             }
             tabs.removeAll(keepingCapacity: true)
             selectedTabID = nil
@@ -1010,6 +1170,8 @@ class EditorViewModel {
         case let .restoreTabs(snapshots, selectedIndex):
             for tab in tabs {
                 cancelPendingLanguageDetection(for: tab.id)
+                pendingExternalFileRefreshTasks.removeValue(forKey: tab.id)?.cancel()
+                clearExternalRefreshActivity(tabID: tab.id)
             }
             tabs.removeAll(keepingCapacity: true)
             tabs.reserveCapacity(snapshots.count)
@@ -1072,13 +1234,13 @@ class EditorViewModel {
             recordTabStateMutation()
             return TabCommandOutcome(index: index)
 
-        case let .applyLoadedTabState(tabID, content, fileEncodingRawValue, language, languageLocked, fingerprint, fileModificationDate, isLargeCandidate, isPartialPreview, byteCount):
+        case let .applyLoadedTabState(tabID, content, _, fileEncoding, language, languageLocked, fingerprint, fileModificationDate, isLargeCandidate, isPartialPreview, byteCount, isExternalRefresh):
             guard let index = tabIndex(for: tabID) else { return TabCommandOutcome() }
             tabs[index].language = language
             tabs[index].languageLocked = languageLocked
             tabs[index].markClean(withFingerprint: fingerprint)
             tabs[index].updateLastKnownFileModificationDate(fileModificationDate)
-            tabs[index].updateFileEncodingRawValue(fileEncodingRawValue)
+            tabs[index].updateFileEncoding(fileEncoding, usesAutomatic: true)
             tabs[index].isLargeFileCandidate = isLargeCandidate
             tabs[index].isPartialFilePreview = isPartialPreview
             tabs[index].fileByteCount = byteCount
@@ -1090,6 +1252,9 @@ class EditorViewModel {
             )
             tabs[index].resetContentRevision()
             tabs[index].isLoadingContent = false
+            if isExternalRefresh {
+                tabs[index].noteExternalContentRefresh()
+            }
             recordTabStateMutation()
             return TabCommandOutcome(index: index, didChangeContent: didChange)
         }
@@ -1383,19 +1548,49 @@ class EditorViewModel {
         saveFile(tabID: tab.id)
     }
 
-    func resolveExternalConflictByKeepingLocal(tabID: UUID) {
-        pendingExternalFileConflict = nil
-        saveFile(tabID: tabID, allowExternalOverwrite: true)
+    func setFileEncoding(tabID: UUID, encoding: TextEncodingDescriptor, usesAutomatic: Bool = false) {
+        guard let index = tabIndex(for: tabID), !tabs[index].isReadOnlyPreview else { return }
+        tabs[index].updateFileEncoding(encoding, usesAutomatic: usesAutomatic)
+        recordTabStateMutation()
     }
 
-    func resolveExternalConflictByReloadingDisk(tabID: UUID) {
-        pendingExternalFileConflict = nil
+    /// Reopens a clean local document using its explicit encoding selection. Dirty edits are
+    /// deliberately protected instead of being overwritten by a reinterpretation of disk bytes.
+    func reopenFileWithSelectedEncoding(tabID: UUID) {
         guard let index = tabIndex(for: tabID),
+              !tabs[index].isDirty,
+              !tabs[index].isReadOnlyPreview,
               let url = tabs[index].fileURL else { return }
-        let isLargeCandidate = tabs[index].isLargeFileCandidate
+        let encoding = tabs[index].fileEncoding
         let extLangHint = LanguageDetector.shared.preferredLanguage(for: url) ?? languageMap[url.pathExtension.lowercased()]
+        let isLargeCandidate = tabs[index].isLargeFileCandidate
         _ = applyTabCommand(.setLoading(tabID: tabID, isLoading: true))
-        EditorPerformanceMonitor.shared.beginFileOpen(tabID: tabID)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let loadResult = try await Self.loadFileResult(
+                    from: url,
+                    extLangHint: extLangHint,
+                    isLargeCandidate: isLargeCandidate,
+                    preferredEncoding: encoding
+                )
+                await self.applyLoadedContent(tabID: tabID, result: loadResult)
+                self.setFileEncoding(tabID: tabID, encoding: encoding)
+            } catch {
+                await self.markTabLoadFailed(tabID: tabID)
+                self.debugLog("Could not reopen file with \(encoding.displayName).")
+            }
+        }
+    }
+
+    func reopenFileWithAutomaticEncoding(tabID: UUID) {
+        guard let index = tabIndex(for: tabID),
+              !tabs[index].isDirty,
+              !tabs[index].isReadOnlyPreview,
+              let url = tabs[index].fileURL else { return }
+        let extLangHint = LanguageDetector.shared.preferredLanguage(for: url) ?? languageMap[url.pathExtension.lowercased()]
+        let isLargeCandidate = tabs[index].isLargeFileCandidate
+        _ = applyTabCommand(.setLoading(tabID: tabID, isLoading: true))
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1405,6 +1600,42 @@ class EditorViewModel {
                     isLargeCandidate: isLargeCandidate
                 )
                 await self.applyLoadedContent(tabID: tabID, result: loadResult)
+            } catch {
+                await self.markTabLoadFailed(tabID: tabID)
+                self.debugLog("Could not automatically detect the file encoding.")
+            }
+        }
+    }
+
+    func resolveExternalConflictByKeepingLocal(tabID: UUID) {
+        pendingExternalFileConflict = nil
+        clearExternalRefreshActivity(tabID: tabID)
+        saveFile(tabID: tabID, allowExternalOverwrite: true)
+    }
+
+    func resolveExternalConflictByReloadingDisk(tabID: UUID) {
+        pendingExternalFileConflict = nil
+        clearExternalRefreshActivity(tabID: tabID)
+        guard let index = tabIndex(for: tabID),
+              let url = tabs[index].fileURL else { return }
+        let isLargeCandidate = tabs[index].isLargeFileCandidate
+        let preferredEncoding = tabs[index].usesAutomaticFileEncoding ? nil : tabs[index].fileEncoding
+        let extLangHint = LanguageDetector.shared.preferredLanguage(for: url) ?? languageMap[url.pathExtension.lowercased()]
+        _ = applyTabCommand(.setLoading(tabID: tabID, isLoading: true))
+        EditorPerformanceMonitor.shared.beginFileOpen(tabID: tabID)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                let loadResult = try await Self.loadFileResult(
+                    from: url,
+                    extLangHint: extLangHint,
+                    isLargeCandidate: isLargeCandidate,
+                    preferredEncoding: preferredEncoding
+                )
+                await self.applyLoadedContent(tabID: tabID, result: loadResult)
+                if let preferredEncoding {
+                    self.setFileEncoding(tabID: tabID, encoding: preferredEncoding)
+                }
             } catch {
                 await self.markTabLoadFailed(tabID: tabID)
             }
@@ -1522,11 +1753,6 @@ class EditorViewModel {
         )
     }
 
-    func refreshExternalConflictForTab(tabID: UUID) {
-        guard let index = tabIndex(for: tabID) else { return }
-        pendingExternalFileConflict = detectExternalConflict(for: tabs[index])
-    }
-
     func remoteConflictComparisonSnapshot(tabID: UUID) async -> RemoteConflictComparisonSnapshot? {
         guard let index = tabIndex(for: tabID),
               let remotePath = tabs[index].remotePreviewPath else { return nil }
@@ -1639,7 +1865,7 @@ class EditorViewModel {
         let snapshotContent = tabs[index].content
         let snapshotRevision = tabs[index].contentRevision
         let snapshotLastSavedFingerprint = tabs[index].lastSavedFingerprint
-        let snapshotEncodingRawValue = tabs[index].fileEncodingRawValue
+        let snapshotEncoding = tabs[index].fileEncoding
 
         Task { [weak self] in
             guard let self else { return }
@@ -1669,14 +1895,17 @@ class EditorViewModel {
                FileManager.default.fileExists(atPath: destinationURL.path) {
                 if let finalIndex = self.tabIndex(for: tabID),
                    self.tabs[finalIndex].contentRevision == expectedRevision {
-                    let fileModificationDate = try? destinationURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                    let fileMetadata = try? destinationURL.resourceValues(
+                        forKeys: [.contentModificationDateKey, .fileSizeKey]
+                    )
                     _ = self.applyTabCommand(
                         .markSaved(
                             tabID: tabID,
                             fileURL: updateFileURLOnSuccess,
                             fingerprint: payload.fingerprint,
-                            fileModificationDate: fileModificationDate,
-                            fileEncodingRawValue: snapshotEncodingRawValue
+                            fileModificationDate: fileMetadata?.contentModificationDate,
+                            fileEncodingRawValue: snapshotEncoding.encodingRawValue,
+                            fileByteCount: fileMetadata?.fileSize
                         )
                     )
                     self.pendingExternalFileConflict = nil
@@ -1685,29 +1914,34 @@ class EditorViewModel {
             }
 
             do {
-                let actualEncodingRawValue = try await Self.writeFileContent(
+                let actualEncoding = try await Self.writeFileContent(
                     payload.content,
                     to: destinationURL,
-                    preferredEncodingRawValue: snapshotEncodingRawValue
+                    encoding: snapshotEncoding
                 )
                 guard let finalIndex = self.tabIndex(for: tabID),
                       self.tabs[finalIndex].contentRevision == expectedRevision else {
                     return
                 }
 
-                let fileModificationDate = try? destinationURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+                let fileMetadata = try? destinationURL.resourceValues(
+                    forKeys: [.contentModificationDateKey, .fileSizeKey]
+                )
                 _ = self.applyTabCommand(
                     .markSaved(
                         tabID: tabID,
                         fileURL: updateFileURLOnSuccess,
                         fingerprint: payload.fingerprint,
-                        fileModificationDate: fileModificationDate,
-                        fileEncodingRawValue: actualEncodingRawValue
+                        fileModificationDate: fileMetadata?.contentModificationDate,
+                        fileEncodingRawValue: actualEncoding.encodingRawValue,
+                        fileByteCount: fileMetadata?.fileSize
                     )
                 )
                 self.pendingExternalFileConflict = nil
             } catch {
-                self.debugLog("Failed to save file.")
+                let message = "Couldn’t save using \(snapshotEncoding.displayName). The document was left unchanged; choose another text encoding if it contains unsupported characters."
+                self.fileEncodingErrorMessage = message
+                self.debugLog(message)
                 return
             }
         }
@@ -1772,7 +2006,8 @@ class EditorViewModel {
                     fileURL: nil,
                     fingerprint: self.contentFingerprint(self.tabs[postflightIndex].content),
                     fileModificationDate: nil,
-                    fileEncodingRawValue: nil
+                    fileEncodingRawValue: nil,
+                    fileByteCount: nil
                 )
             )
             self.tabs[postflightIndex].updateRemoteRevisionToken(saveResult.revisionToken)
@@ -1790,16 +2025,262 @@ class EditorViewModel {
             || normalized.contains("attach to an active mac broker session")
     }
 
+    func refreshExternalConflictForTab(tabID: UUID) {
+        guard let index = tabIndex(for: tabID) else { return }
+        let conflict = detectExternalConflict(for: tabs[index])
+        pendingExternalFileConflict = conflict
+        if conflict != nil {
+            markExternalRefreshNeedsReview(tabID: tabID)
+        }
+    }
+
     private func detectExternalConflict(for tab: TabData) -> ExternalFileConflictState? {
         guard tab.isDirty, let fileURL = tab.fileURL else { return nil }
-        guard let diskModifiedAt = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate else {
+        guard let values = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey]) else {
             return nil
         }
-        guard let known = tab.lastKnownFileModificationDate else { return nil }
-        if diskModifiedAt.timeIntervalSince(known) > 0.5 {
-            return ExternalFileConflictState(tabID: tab.id, fileURL: fileURL, diskModifiedAt: diskModifiedAt)
+        let metadata = LocalFileMetadata(
+            modificationDate: values.contentModificationDate,
+            byteCount: values.fileSize ?? 0
+        )
+        guard Self.hasLocalFileMetadataChanged(
+            knownModificationDate: tab.lastKnownFileModificationDate,
+            knownByteCount: tab.fileByteCount,
+            current: metadata
+        ) else { return nil }
+        return ExternalFileConflictState(
+            tabID: tab.id,
+            fileURL: fileURL,
+            diskModifiedAt: metadata.modificationDate
+        )
+    }
+
+    private func markExternalRefreshPending(tabID: UUID) {
+        if reviewExternalTabIDs.contains(tabID) {
+            publishExternalRefreshStatus()
+            return
         }
-        return nil
+        externalRefreshStatusClearTask?.cancel()
+        externalRefreshStatusClearTask = nil
+        pendingExternalRefreshTabIDs.insert(tabID)
+        publishExternalRefreshStatus()
+    }
+
+    private func markExternalRefreshUnchanged(tabID: UUID) {
+        pendingExternalRefreshTabIDs.remove(tabID)
+        publishExternalRefreshStatus()
+    }
+
+    private func markExternalRefreshCompleted(tabID: UUID) {
+        pendingExternalRefreshTabIDs.remove(tabID)
+        reviewExternalTabIDs.remove(tabID)
+        refreshedExternalTabIDs.insert(tabID)
+        publishExternalRefreshStatus()
+        externalRefreshStatusClearTask?.cancel()
+        externalRefreshStatusClearTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            guard !Task.isCancelled, let self else { return }
+            self.refreshedExternalTabIDs.removeAll(keepingCapacity: true)
+            self.publishExternalRefreshStatus()
+            self.externalRefreshStatusClearTask = nil
+        }
+    }
+
+    private func markExternalRefreshNeedsReview(tabID: UUID) {
+        pendingExternalRefreshTabIDs.remove(tabID)
+        refreshedExternalTabIDs.remove(tabID)
+        reviewExternalTabIDs.insert(tabID)
+        publishExternalRefreshStatus()
+    }
+
+    private func clearExternalRefreshActivity(tabID: UUID) {
+        pendingExternalRefreshTabIDs.remove(tabID)
+        refreshedExternalTabIDs.remove(tabID)
+        reviewExternalTabIDs.remove(tabID)
+        publishExternalRefreshStatus()
+    }
+
+    private func publishExternalRefreshStatus() {
+        if !reviewExternalTabIDs.isEmpty {
+            externalFileRefreshStatus = ExternalFileRefreshStatus(
+                kind: .needsReview,
+                message: externalRefreshStatusMessage(for: reviewExternalTabIDs, kind: .needsReview)
+            )
+        } else if !pendingExternalRefreshTabIDs.isEmpty {
+            externalFileRefreshStatus = ExternalFileRefreshStatus(
+                kind: .refreshing,
+                message: externalRefreshStatusMessage(for: pendingExternalRefreshTabIDs, kind: .refreshing)
+            )
+        } else if !refreshedExternalTabIDs.isEmpty {
+            externalFileRefreshStatus = ExternalFileRefreshStatus(
+                kind: .refreshed,
+                message: externalRefreshStatusMessage(for: refreshedExternalTabIDs, kind: .refreshed)
+            )
+        } else {
+            externalFileRefreshStatus = nil
+        }
+    }
+
+    private func externalRefreshStatusMessage(
+        for tabIDs: Set<UUID>,
+        kind: ExternalFileRefreshStatusKind
+    ) -> String {
+        if tabIDs.count == 1,
+           let tabID = tabIDs.first,
+           let index = tabIndex(for: tabID) {
+            switch kind {
+            case .refreshing: return "Refreshing \(tabs[index].name)…"
+            case .refreshed: return "Refreshed \(tabs[index].name)"
+            case .needsReview: return "External change: \(tabs[index].name) needs review"
+            }
+        }
+        switch kind {
+        case .refreshing: return "Refreshing \(tabIDs.count) tabs…"
+        case .refreshed: return "Refreshed \(tabIDs.count) tabs"
+        case .needsReview: return "External changes: \(tabIDs.count) tabs need review"
+        }
+    }
+
+    // NSFilePresenter callbacks arrive only for filesystem/provider events. The
+    // debounce keeps atomic-save rename/write sequences to one metadata check.
+    func handleObservedLocalFileChange(at url: URL) {
+        guard let index = indexOfOpenTab(for: url) else { return }
+        let tabID = tabs[index].id
+        markExternalRefreshPending(tabID: tabID)
+        pendingExternalFileRefreshTasks.removeValue(forKey: tabID)?.cancel()
+        pendingExternalFileRefreshTasks[tabID] = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 350_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled, let self else { return }
+            await self.refreshObservedLocalFile(tabID: tabID, expectedURL: url.standardizedFileURL)
+            if !Task.isCancelled {
+                self.pendingExternalFileRefreshTasks[tabID] = nil
+            }
+        }
+    }
+
+    private func refreshObservedLocalFile(tabID: UUID, expectedURL: URL) async {
+        guard !Task.isCancelled else { return }
+        guard let initialIndex = tabIndex(for: tabID),
+              let currentURL = tabs[initialIndex].fileURL?.standardizedFileURL,
+              currentURL.path == expectedURL.path,
+              !tabs[initialIndex].isLoadingContent else {
+            clearExternalRefreshActivity(tabID: tabID)
+            return
+        }
+
+        let metadata = await Task.detached(priority: .utility) {
+            Self.readLocalFileMetadata(at: expectedURL)
+        }.value
+        guard !Task.isCancelled else { return }
+        guard let metadata,
+              let metadataIndex = tabIndex(for: tabID),
+              tabs[metadataIndex].fileURL?.standardizedFileURL.path == expectedURL.path else {
+            clearExternalRefreshActivity(tabID: tabID)
+            return
+        }
+        guard Self.hasLocalFileMetadataChanged(
+            knownModificationDate: tabs[metadataIndex].lastKnownFileModificationDate,
+            knownByteCount: tabs[metadataIndex].fileByteCount,
+            current: metadata
+        ) else {
+            markExternalRefreshUnchanged(tabID: tabID)
+            return
+        }
+
+        if tabs[metadataIndex].isDirty {
+            markExternalRefreshNeedsReview(tabID: tabID)
+            pendingExternalFileConflict = ExternalFileConflictState(
+                tabID: tabID,
+                fileURL: expectedURL,
+                diskModifiedAt: metadata.modificationDate
+            )
+            return
+        }
+
+        let expectedContentRevision = tabs[metadataIndex].contentRevision
+        let isLargeCandidate = metadata.byteCount >= EditorLoadHelper.largeFileCandidateByteThreshold
+        let preferredEncoding = tabs[metadataIndex].usesAutomaticFileEncoding ? nil : tabs[metadataIndex].fileEncoding
+        let languageHint = LanguageDetector.shared.preferredLanguage(for: expectedURL)
+            ?? languageMap[expectedURL.pathExtension.lowercased()]
+
+        do {
+            let loadResult = try await Self.loadFileResult(
+                from: expectedURL,
+                extLangHint: languageHint,
+                isLargeCandidate: isLargeCandidate,
+                preferredEncoding: preferredEncoding,
+                priority: .utility
+            )
+            guard !Task.isCancelled,
+                  let finalIndex = tabIndex(for: tabID),
+                  tabs[finalIndex].fileURL?.standardizedFileURL.path == expectedURL.path else { return }
+            guard !tabs[finalIndex].isDirty,
+                  tabs[finalIndex].contentRevision == expectedContentRevision else {
+                if tabs[finalIndex].isDirty {
+                    markExternalRefreshNeedsReview(tabID: tabID)
+                    pendingExternalFileConflict = ExternalFileConflictState(
+                        tabID: tabID,
+                        fileURL: expectedURL,
+                        diskModifiedAt: loadResult.fileModificationDate
+                    )
+                } else {
+                    clearExternalRefreshActivity(tabID: tabID)
+                }
+                return
+            }
+
+            let postflightMetadata = await Task.detached(priority: .utility) {
+                Self.readLocalFileMetadata(at: expectedURL)
+            }.value
+            guard postflightMetadata == LocalFileMetadata(
+                modificationDate: loadResult.fileModificationDate,
+                byteCount: loadResult.byteCount
+            ) else {
+                handleObservedLocalFileChange(at: expectedURL)
+                return
+            }
+            await applyLoadedContent(tabID: tabID, result: loadResult, isExternalRefresh: true)
+            if let preferredEncoding {
+                setFileEncoding(tabID: tabID, encoding: preferredEncoding)
+            }
+            markExternalRefreshCompleted(tabID: tabID)
+        } catch {
+            // Providers may transiently remove the original during an atomic replace.
+            // A subsequent presenter event retries; the current editor buffer stays intact.
+            if !Task.isCancelled {
+                clearExternalRefreshActivity(tabID: tabID)
+            }
+        }
+    }
+
+    private nonisolated static func readLocalFileMetadata(at url: URL) -> LocalFileMetadata? {
+        let didStartScopedAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartScopedAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        guard let values = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey, .isRegularFileKey]),
+              values.isRegularFile != false else { return nil }
+        return LocalFileMetadata(
+            modificationDate: values.contentModificationDate,
+            byteCount: values.fileSize ?? 0
+        )
+    }
+
+    private nonisolated static func hasLocalFileMetadataChanged(
+        knownModificationDate: Date?,
+        knownByteCount: Int,
+        current: LocalFileMetadata
+    ) -> Bool {
+        if knownByteCount != current.byteCount { return true }
+        guard let knownModificationDate else { return true }
+        guard let currentModificationDate = current.modificationDate else { return true }
+        return abs(currentModificationDate.timeIntervalSince(knownModificationDate)) > 0.001
     }
 
     // MARK: - File Opening
@@ -2041,9 +2522,11 @@ class EditorViewModel {
     private nonisolated static func loadFileResult(
         from url: URL,
         extLangHint: String?,
-        isLargeCandidate: Bool
+        isLargeCandidate: Bool,
+        preferredEncoding: TextEncodingDescriptor? = nil,
+        priority: TaskPriority = .userInitiated
     ) async throws -> EditorFileLoadResult {
-        try await Task.detached(priority: .userInitiated) {
+        try await Task.detached(priority: priority) {
             let didStartScopedAccess = url.startAccessingSecurityScopedResource()
             defer {
                 if didStartScopedAccess {
@@ -2072,11 +2555,16 @@ class EditorViewModel {
                 data = try Data(contentsOf: url, options: [.mappedIfSafe])
             }
 
+            if let preferredEncoding, preferredEncoding.decode(data) == nil {
+                throw CocoaError(.fileReadInapplicableStringEncoding)
+            }
+
             let raw = EditorLoadHelper.decodeFileText(
                 data,
                 fileURL: url,
                 preferredLanguageHint: extLangHint,
                 isLargeCandidate: isLargeCandidate,
+                preferredEncoding: preferredEncoding,
                 allowsFullFileFallback: !isPartialPreview
             )
             let sanitizedContent = EditorLoadHelper.sanitizeTextForFileLoad(
@@ -2094,6 +2582,7 @@ class EditorViewModel {
             return EditorFileLoadResult(
                 content: content,
                 fileEncodingRawValue: raw.encodingRawValue,
+                fileEncoding: raw.encoding,
                 detectedLanguage: detectedLanguage,
                 languageLocked: !isPartialPreview && extLangHint != nil,
                 fingerprint: fingerprint,
@@ -2122,19 +2611,14 @@ class EditorViewModel {
     private nonisolated static func writeFileContent(
         _ content: String,
         to url: URL,
-        preferredEncodingRawValue: UInt
-    ) async throws -> UInt {
+        encoding: TextEncodingDescriptor
+    ) async throws -> TextEncodingDescriptor {
         try await Task.detached(priority: .utility) {
-            let preferredEncoding = String.Encoding(rawValue: preferredEncodingRawValue)
-            if let preferredData = content.data(using: preferredEncoding, allowLossyConversion: false) {
-                try preferredData.write(to: url, options: .atomic)
-                return preferredEncoding.rawValue
+            guard let data = encoding.encodedData(for: content) else {
+                throw CocoaError(.fileWriteInapplicableStringEncoding)
             }
-            if let utf8Data = content.data(using: .utf8, allowLossyConversion: false) {
-                try utf8Data.write(to: url, options: .atomic)
-                return String.Encoding.utf8.rawValue
-            }
-            throw CocoaError(.fileWriteInapplicableStringEncoding)
+            try data.write(to: url, options: .atomic)
+            return encoding
         }.value
     }
 
@@ -2142,7 +2626,8 @@ class EditorViewModel {
 
     private func applyLoadedContent(
         tabID: UUID,
-        result: EditorFileLoadResult
+        result: EditorFileLoadResult,
+        isExternalRefresh: Bool = false
     ) async {
         cancelPendingLanguageDetection(for: tabID)
 
@@ -2151,23 +2636,27 @@ class EditorViewModel {
                 tabID: tabID,
                 content: result.content,
                 fileEncodingRawValue: result.fileEncodingRawValue,
+                fileEncoding: result.fileEncoding,
                 language: result.detectedLanguage,
                 languageLocked: result.languageLocked,
                 fingerprint: result.fingerprint,
                 fileModificationDate: result.fileModificationDate,
                 isLargeCandidate: result.isLargeCandidate,
                 isPartialPreview: result.isPartialPreview,
-                byteCount: result.byteCount
+                byteCount: result.byteCount,
+                isExternalRefresh: isExternalRefresh
             )
         )
-        if let fileURL = tabs.first(where: { $0.id == tabID })?.fileURL {
-            RecentFilesStore.remember(fileURL)
+        if !isExternalRefresh {
+            if let fileURL = tabs.first(where: { $0.id == tabID })?.fileURL {
+                RecentFilesStore.remember(fileURL)
+            }
+            EditorPerformanceMonitor.shared.endFileOpen(
+                tabID: tabID,
+                success: true,
+                byteCount: result.byteCount
+            )
         }
-        EditorPerformanceMonitor.shared.endFileOpen(
-            tabID: tabID,
-            success: true,
-            byteCount: result.byteCount
-        )
     }
 
     private func markTabLoadFailed(tabID: UUID) async {
@@ -2418,13 +2907,18 @@ class EditorViewModel {
     // Marks a tab clean after successful save/export and updates URL-derived metadata.
     func markTabSaved(tabID: UUID, fileURL: URL? = nil) {
         guard let index = tabIndex(for: tabID) else { return }
+        let metadataURL = fileURL ?? tabs[index].fileURL
+        let metadata = metadataURL.flatMap {
+            try? $0.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+        }
         _ = applyTabCommand(
             .markSaved(
                 tabID: tabID,
                 fileURL: fileURL,
                 fingerprint: contentFingerprint(tabs[index].content),
-                fileModificationDate: fileURL.flatMap { try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate },
-                fileEncodingRawValue: tabs[index].fileEncodingRawValue
+                fileModificationDate: metadata?.contentModificationDate,
+                fileEncodingRawValue: tabs[index].fileEncodingRawValue,
+                fileByteCount: metadata?.fileSize
             )
         )
     }

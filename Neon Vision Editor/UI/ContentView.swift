@@ -26,16 +26,10 @@ private final class WindowCloseConfirmationDelegate: NSObject, NSWindowDelegate 
     var saveAllDirtyTabs: (() -> Bool)?
     var dialogTitle: (() -> String)?
     var dialogMessage: (() -> String)?
+    var onWindowWillClose: (() -> Void)?
 
     private var isPromptInFlight = false
-    private var allowNextClose = false
-
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if allowNextClose {
-            allowNextClose = false
-            return forwardedDelegate?.windowShouldClose?(sender) ?? true
-        }
-
         let needsPrompt = shouldConfirm?() == true && hasDirtyTabs?() == true
         if !needsPrompt {
             return forwardedDelegate?.windowShouldClose?(sender) ?? true
@@ -59,17 +53,20 @@ private final class WindowCloseConfirmationDelegate: NSObject, NSWindowDelegate 
             switch response {
             case .alertFirstButtonReturn:
                 if self.saveAllDirtyTabs?() == true {
-                    self.allowNextClose = true
-                    sender.performClose(nil)
+                    self.closeConfirmedWindow(sender)
                 }
             case .alertSecondButtonReturn:
-                self.allowNextClose = true
-                sender.performClose(nil)
+                self.closeConfirmedWindow(sender)
             default:
                 break
             }
         }
         return false
+    }
+
+    private func closeConfirmedWindow(_ window: NSWindow) {
+        guard forwardedDelegate?.windowShouldClose?(window) ?? true else { return }
+        window.close()
     }
 
     func window(_ window: NSWindow, willEncodeRestorableState state: NSCoder) {
@@ -79,6 +76,12 @@ private final class WindowCloseConfirmationDelegate: NSObject, NSWindowDelegate 
     func window(_ window: NSWindow, didDecodeRestorableState state: NSCoder) {
         forwardedDelegate?.window?(window, didDecodeRestorableState: state)
     }
+
+    func windowWillClose(_ notification: Notification) {
+        onWindowWillClose?()
+        forwardedDelegate?.windowWillClose?(notification)
+    }
+
 }
 #endif
 
@@ -246,10 +249,19 @@ struct ContentView: View {
 
     let startupBehavior: StartupBehavior
     let safeModeMessage: String?
+    let windowFrameAutosaveName: String?
+    let onWindowClosed: (() -> Void)?
 
-    init(startupBehavior: StartupBehavior = .standard, safeModeMessage: String? = nil) {
+    init(
+        startupBehavior: StartupBehavior = .standard,
+        safeModeMessage: String? = nil,
+        windowFrameAutosaveName: String? = nil,
+        onWindowClosed: (() -> Void)? = nil
+    ) {
         self.startupBehavior = startupBehavior
         self.safeModeMessage = safeModeMessage
+        self.windowFrameAutosaveName = windowFrameAutosaveName
+        self.onWindowClosed = onWindowClosed
     }
 
     var isSafeModeActive: Bool {
@@ -384,7 +396,6 @@ struct ContentView: View {
     @State var pendingDraftSnapshotPersistenceWorkItem: DispatchWorkItem?
     @State var lastPersistedSessionSignature: String = ""
     @State var lastPersistedDraftSignature: String = ""
-    @State private var pendingExternalConflictRefresh: DispatchWorkItem?
     @State private var largeFileEstimateCache: LargeFileEstimateCacheEntry?
 #if os(iOS) || os(visionOS)
     @AppStorage("EnableTranslucentWindow") var enableTranslucentWindow: Bool = true
@@ -445,6 +456,13 @@ struct ContentView: View {
     @State var sidebarCompareDiffPresentation: DocumentDiffPresentation?
     @State var showFolderCompare: Bool = false
     @State var folderDiffPresentation: DocumentDiffPresentation? = nil
+    @State var markdownConversionProposal: PlainTextMarkdownProposal? = nil
+    @State var isConvertingTextToMarkdown: Bool = false
+    @State var markdownConversionErrorMessage: String? = nil
+    @State var markdownConversionTask: Task<Void, Never>? = nil
+    @State var markdownConversionTimeoutTask: Task<Void, Never>? = nil
+    @State var markdownConversionRequestID: UUID? = nil
+    @State var markdownConversionProviderName: String? = nil
     @State var showClearEditorConfirmDialog: Bool = false
     @State var showIOSFileImporter: Bool = false
     @State var showIOSFileExporter: Bool = false
@@ -483,9 +501,12 @@ struct ContentView: View {
     @State var isProjectFileIndexing: Bool = false
     @State var projectFileIndexRefreshGeneration: Int = 0
     @State var projectFileIndexTask: Task<Void, Never>? = nil
+    @State var projectRefreshStatusMessage: String = ""
+    @State var projectRefreshStatusTask: Task<Void, Never>? = nil
+    @State var projectRefreshStatusGeneration: Int = 0
+    @State var projectRefreshStatusIsPending: Bool = false
     @State var projectFolderMonitorSource: DispatchSourceFileSystemObject? = nil
     @State var pendingProjectFolderRefreshWorkItem: DispatchWorkItem? = nil
-    @State var codeMinimapViewports: [UUID: CodeMinimapViewport] = [:]
     @State var fileTabBarIsScrolledUnderTOCEdge: Bool = false
     @State var tabDropInsertionTabID: UUID? = nil
     @State var tabDropInsertionBefore: Bool = true
@@ -597,6 +618,8 @@ struct ContentView: View {
     @State private var sharedImportNotificationObserver: SharedImportNotificationObserver? = nil
 #if os(macOS)
     @State var hostWindowNumber: Int? = nil
+    @State private var didConfigureWindowFrameAutosave = false
+    @State private var didNotifyWindowClosed = false
     @AppStorage("ShowBracketHelperBarMac") var showBracketHelperBarMac: Bool = false
     @AppStorage("SettingsToolbarSymbolsColorMac") var toolbarSymbolsColorMacRaw: String = "blue"
     @State private var windowCloseConfirmationDelegate: WindowCloseConfirmationDelegate? = nil
@@ -636,7 +659,12 @@ struct ContentView: View {
     let quickSwitcherRecentsDefaultsKey = "QuickSwitcherRecentItemsV1"
 
 #if USE_FOUNDATION_MODELS && canImport(FoundationModels)
-    var appleModelAvailable: Bool { true }
+    var appleModelAvailable: Bool {
+        if #available(iOS 26.0, macOS 26.0, visionOS 26.0, *) {
+            return true
+        }
+        return false
+    }
 #else
     var appleModelAvailable: Bool { false }
 #endif
@@ -956,6 +984,7 @@ struct ContentView: View {
             WindowViewModelRegistry.shared.unregister(windowNumber: old)
         }
         hostWindowNumber = number
+        configureWindowFrameAutosave(window)
         installWindowCloseConfirmationDelegate(window)
         updateWindowChrome(window)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
@@ -964,6 +993,54 @@ struct ContentView: View {
         if let number {
             WindowViewModelRegistry.shared.register(viewModel, for: number)
         }
+    }
+
+    private func configureWindowFrameAutosave(_ window: NSWindow?) {
+        guard !didConfigureWindowFrameAutosave,
+              let window,
+              let windowFrameAutosaveName else { return }
+        window.setFrameAutosaveName(windowFrameAutosaveName)
+        didConfigureWindowFrameAutosave = true
+        guard let savedFrame = savedWindowFrame(named: windowFrameAutosaveName) else {
+            _ = window.setFrameUsingName(windowFrameAutosaveName)
+            return
+        }
+
+        let originalAlphaValue = window.alphaValue
+        window.alphaValue = 0
+        DispatchQueue.main.async {
+            window.setFrame(savedFrame, display: false, animate: false)
+            window.alphaValue = originalAlphaValue
+        }
+    }
+
+    private func savedWindowFrame(named name: String) -> NSRect? {
+        guard let value = UserDefaults.standard.string(forKey: windowFrameDefaultsKey(name)) else { return nil }
+        let frame = NSRectFromString(value)
+        guard frame.width > 0,
+              frame.height > 0,
+              NSScreen.screens.contains(where: { $0.visibleFrame.intersects(frame) }) else {
+            return nil
+        }
+        return frame
+    }
+
+    private func persistWindowFrame(_ window: NSWindow) {
+        guard let windowFrameAutosaveName else { return }
+        UserDefaults.standard.set(
+            NSStringFromRect(window.frame),
+            forKey: windowFrameDefaultsKey(windowFrameAutosaveName)
+        )
+    }
+
+    private func persistWindowFrame(for notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              window.windowNumber == hostWindowNumber else { return }
+        persistWindowFrame(window)
+    }
+
+    private func windowFrameDefaultsKey(_ name: String) -> String {
+        "SavedWindowFrame.\(name)"
     }
 
     private func updateWindowChrome(_ window: NSWindow? = nil) {
@@ -1025,6 +1102,13 @@ struct ContentView: View {
         delegate.saveAllDirtyTabs = { saveAllDirtyTabsForWindowClose() }
         delegate.dialogTitle = { "Save changes before closing?" }
         delegate.dialogMessage = { windowCloseDialogMessage() }
+        delegate.onWindowWillClose = { notifyWindowClosedIfNeeded() }
+    }
+
+    private func notifyWindowClosedIfNeeded() {
+        guard !didNotifyWindowClosed else { return }
+        didNotifyWindowClosed = true
+        onWindowClosed?()
     }
 
     private func requestBracketHelperInsert(_ token: String) {
@@ -1115,17 +1199,6 @@ struct ContentView: View {
                       let action = MarkdownFormattingAction(commandIdentifier: command) else { return }
                 applyMarkdownFormatting(action)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .editorViewportDidChange)) { notif in
-                guard let idString = notif.userInfo?[EditorCommandUserInfo.documentID] as? String,
-                      let documentID = UUID(uuidString: idString),
-                      let top = notif.userInfo?[EditorCommandUserInfo.viewportTopFraction] as? Double,
-                      let height = notif.userInfo?[EditorCommandUserInfo.viewportHeightFraction] as? Double else { return }
-                codeMinimapViewports[documentID] = CodeMinimapViewport(
-                    topFraction: top,
-                    heightFraction: height
-                )
-                EditorPerformanceMonitor.shared.endMinimapViewportUpdate(tabID: documentID)
-            }
             .onReceive(NotificationCenter.default.publisher(for: .editorRequestCodeSnapshotFromSelection)) { _ in
                 presentCodeSnapshotComposer()
             }
@@ -1201,9 +1274,6 @@ struct ContentView: View {
                 updateLargeFileModeForCurrentContext()
                 scheduleLargeFileModeReevaluation(after: 0.9)
                 scheduleHighlightRefresh()
-                if let selectedID = viewModel.selectedTab?.id {
-                    scheduleExternalConflictRefresh(for: selectedID)
-                }
                 scheduleSessionPersistence()
             }
             .onChange(of: viewModel.selectedTab?.isLoadingContent ?? false) { _, isLoading in
@@ -1782,6 +1852,10 @@ struct ContentView: View {
                 guard matchesCurrentWindow(notif) else { return }
                 combineJSONLines()
             }
+            .onReceive(NotificationCenter.default.publisher(for: .convertTextToMarkdownRequested)) { notif in
+                guard matchesCurrentWindow(notif) else { return }
+                convertTextToMarkdown()
+            }
 
         let viewWithPanels = viewWithJSONTools
             .onReceive(NotificationCenter.default.publisher(for: .toggleProjectStructureSidebarRequested)) { notif in
@@ -1950,6 +2024,12 @@ struct ContentView: View {
         .onDisappear {
             handleWindowDisappear()
         }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didMoveNotification)) { notification in
+            persistWindowFrame(for: notification)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { notification in
+            persistWindowFrame(for: notification)
+        }
         .onChange(of: viewModel.tabsObservationToken) { _, _ in
             if activeSplitSecondaryTabID == nil {
                 splitSecondaryTabID = nil
@@ -1970,10 +2050,51 @@ struct ContentView: View {
 
     private var basePlatformRootView: some View {
         AnyView(platformLayout)
+            .overlay(alignment: .top) {
+                if isConvertingTextToMarkdown {
+                    HStack(spacing: 10) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text("Converting text to Markdown with \(markdownConversionProviderName ?? "Apple Intelligence")… up to 30 seconds")
+                            .font(.callout)
+                        Button("Cancel") { cancelTextToMarkdownConversion() }
+                    }
+                    .padding(10)
+                    .background(.regularMaterial, in: Capsule())
+                    .padding(.top, 12)
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Converting text to Markdown with \(markdownConversionProviderName ?? "Apple Intelligence")")
+                }
+            }
             .alert("AI Error", isPresented: showGrokError) {
                 Button("OK") { }
             } message: {
                 Text(grokErrorMessage.wrappedValue)
+            }
+            .alert(
+                "Can’t Save with Selected Encoding",
+                isPresented: Binding(
+                    get: { viewModel.fileEncodingErrorMessage != nil },
+                    set: { if !$0 { viewModel.fileEncodingErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { viewModel.fileEncodingErrorMessage = nil }
+            } message: {
+                Text(viewModel.fileEncodingErrorMessage ?? "")
+            }
+            .alert(
+                "Markdown Conversion Unavailable",
+                isPresented: Binding(
+                    get: { markdownConversionErrorMessage != nil },
+                    set: { if !$0 { markdownConversionErrorMessage = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { markdownConversionErrorMessage = nil }
+            } message: {
+                Text(markdownConversionErrorMessage ?? "")
+            }
+            .sheet(item: $markdownConversionProposal) { _ in
+                markdownConversionReviewSheet
             }
             .alert(
                 "Whitespace Scalars",
@@ -2103,6 +2224,9 @@ struct ContentView: View {
             .onChange(of: viewModel.selectedTabID) { previousTabID, selectedTabID in
                 guard previousTabID != selectedTabID else { return }
                 previousSelectedTabID = previousTabID
+#if os(macOS)
+                updateWindowChrome()
+#endif
             }
             .onChange(of: viewModel.showSidebar) { _, _ in
                 persistSessionIfReady()
@@ -2278,6 +2402,7 @@ struct ContentView: View {
 
 #if os(macOS)
     private func handleWindowDisappear() {
+        notifyWindowClosedIfNeeded()
         completionDebounceTask?.cancel()
         completionTask?.cancel()
         lastCompletionTriggerSignature = ""
@@ -2303,17 +2428,6 @@ struct ContentView: View {
             highlightRefreshToken &+= 1
         }
         pendingHighlightRefresh = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
-    }
-
-    private func scheduleExternalConflictRefresh(for tabID: UUID, delay: TimeInterval = 0.15) {
-        pendingExternalConflictRefresh?.cancel()
-        let work = DispatchWorkItem {
-            pendingExternalConflictRefresh = nil
-            guard viewModel.selectedTabID == tabID else { return }
-            viewModel.refreshExternalConflictForTab(tabID: tabID)
-        }
-        pendingExternalConflictRefresh = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
@@ -2701,7 +2815,7 @@ struct ContentView: View {
                                     contentView.openProjectFile(url: url)
                                 }
                             },
-                            onRefreshTree: { contentView.refreshProjectBrowserState() },
+                            onRefreshTree: { contentView.refreshProjectBrowserState(showsStatusFeedback: true) },
                             onCreateProjectFile: { contentView.startProjectItemCreationFromCompactProjectSidebar(kind: .file, in: $0) },
                             onCreateProjectFolder: { contentView.startProjectItemCreationFromCompactProjectSidebar(kind: .folder, in: $0) },
                             onRenameProjectItem: { contentView.startProjectItemRename($0) },
@@ -3551,12 +3665,12 @@ struct ContentView: View {
 
             if effectiveShowCodeMinimap && supportsCodeMinimap(language: language) {
                 CodeMinimapView(
+                    documentID: tabID,
                     snapshotCacheKey: minimapSnapshotCacheKey(tabID: tabID, language: language),
                     text: text.wrappedValue,
                     language: language,
                     colorScheme: colorScheme,
                     isLargeFileMode: effectiveLargeFileModeEnabled || isLoading,
-                    viewport: tabID.flatMap { codeMinimapViewports[$0] },
                     onSelectLine: { line in
                         moveEditorFromMinimap(to: line, tabID: tabID)
                     },
@@ -3581,10 +3695,12 @@ struct ContentView: View {
     }
 
     private func minimapSnapshotCacheKey(tabID: UUID?, language: String) -> String {
-        let revision = tabID.flatMap { id in
-            viewModel.tabs.first(where: { $0.id == id })?.contentRevision
-        } ?? 0
-        return "\(tabID?.uuidString ?? "single")|\(revision)|\(language)|\(effectiveLargeFileModeEnabled)"
+        let tab = tabID.flatMap { id in
+            viewModel.tabs.first(where: { $0.id == id })
+        }
+        let contentRevision = tab?.contentRevision ?? 0
+        let externalContentRevision = tab?.externalContentRevision ?? 0
+        return "\(tabID?.uuidString ?? "single")|\(contentRevision)|\(externalContentRevision)|\(language)|\(effectiveLargeFileModeEnabled)"
     }
 
     private func storedCaretLocation(for tabID: UUID?) -> Int? {
@@ -3620,7 +3736,7 @@ struct ContentView: View {
             documentID: tabID,
             documentResourceID: documentResourceID(for: tabID),
             storedCaretLocation: storedCaretLocation(for: tabID),
-            externalEditRevision: editorExternalMutationRevision,
+            externalEditRevision: editorExternalMutationRevision &+ (viewModel.selectedTab?.externalContentRevision ?? 0),
             language: language,
             colorScheme: colorScheme,
             fontSize: editorFontSize,
@@ -3921,7 +4037,7 @@ struct ContentView: View {
                         .zIndex(5)
                     }
                 }
-                .overlay(alignment: .topLeading) {
+                .overlay(alignment: markdownFormattingOverlayAlignment) {
                     if shouldPlaceMarkdownFormattingBelowTabs {
                         markdownFormattingControlBar
                     }
@@ -3939,7 +4055,7 @@ struct ContentView: View {
                 maxHeight: .infinity,
                 alignment: brainDumpLayoutEnabled ? .top : .topLeading
             )
-            .overlay(alignment: .topLeading) {
+            .overlay(alignment: markdownFormattingOverlayAlignment) {
                 if shouldOverlayMarkdownFormattingControls && !shouldPlaceMarkdownFormattingBelowTabs {
                     markdownFormattingControlBar
                 }

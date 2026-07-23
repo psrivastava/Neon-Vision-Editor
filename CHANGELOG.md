@@ -4,6 +4,75 @@ All notable changes to **Neon Vision Editor** are documented in this file.
 
 The format follows *Keep a Changelog*. Versions use semantic versioning with prerelease tags.
 
+## [v0.9.6] - 2026-07-23
+
+### Why Upgrade
+- Restores each macOS editor window at its own last-used size and position without briefly showing the smaller fallback window first.
+- Makes the larger first-launch window size a fallback only; once you resize a window, that exact visible frame is retained for the next launch.
+
+### Highlights
+- When several editor windows were open, macOS now restores their individual frames after you choose whether to reopen all windows or only the first.
+
+### Fixes
+- Saves editor-window frames directly from AppKit move and resize notifications instead of relying on a replaceable SwiftUI window delegate.
+- Ignores frames that no longer intersect an attached display, so a disconnected monitor cannot reopen the editor off-screen.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.5] - 2026-07-23
+
+### Why Upgrade
+- Converts plain text to a reviewable, source-preserving Markdown proposal using Apple Intelligence or an explicitly configured AI provider, with cancellation and a 30-second safety limit.
+- Makes text encoding a deliberate document setting: detect, reopen, and save UTF-8/BOM, UTF-16, common Windows, ISO, and Mac encodings without silently changing the file format.
+- Polishes the editor across windows and devices with independent window state, natural-language completion for Markdown and text, and clearer Markdown and snapshot workflows.
+
+### Highlights
+- Adds the focused Welcome Tour and professional What’s New page, including shared-file sync guidance, essential editor setup, and expandable advanced settings.
+- Adds a compact Code Snapshot workspace with adaptive, full-image previews on iPhone and iPad, translucent surfaces, and explicit `.png` export names.
+- Makes Markdown formatting controls stay below document tabs and within the editor pane, while preserving preview and sidebar boundaries.
+
+### Fixes
+- Keeps separate editor windows independent so cursor, selection, tabs, and document state do not follow activity in another window.
+- Completes a window close after choosing Don’t Save, preserves restored macOS window sizes, and keeps text selection usable after switching tabs.
+- Improves HTML highlighting on supported macOS versions and hardens Markdown conversion feedback when Apple Intelligence or a configured provider is unavailable, slow, or returns an invalid response.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.4] - 2026-07-22
+
+### Why Upgrade
+- Adds a lightweight shared-file sync experience: when iCloud Drive, a network folder, or another app updates an open file, clean tabs refresh automatically while unsaved edits remain protected by the existing review flow.
+- Keeps tab switching and minimap scrolling responsive, and automatically reveals a newly opened or selected tab when the tab strip is crowded.
+- Separates Sparkle from App Store builds and strengthens the GitHub release path for reliable package resolution and Homebrew Cask delivery.
+
+### Highlights
+- Open documents now use event-driven file presentation with coalesced metadata checks instead of selection-time polling, so changes delivered from another device through iCloud Drive or network storage can appear without reopening the tab.
+- External sync progress, completion, and review-needed states appear in the editor status area for one or multiple tabs; the shared storage remains the transport and Neon Vision Editor supplies open-tab refresh and conflict protection.
+- GitHub-hosted releases can prepare the Homebrew Cask update branch with a GitHub App token and provide a direct pull-request link in the workflow summary.
+
+### Fixes
+- Preserves cursor, selection, source viewport, and minimap state when a clean document refreshes in place, including inactive tabs and Markdown preview sources.
+- Never replaces a dirty buffer after an external change; the existing Keep Local, Reload from Disk, and Compare actions remain authoritative.
+- Removes broad tab-state publication and filesystem checks from ordinary tab selection, and reduces minimap work during editor scrolling.
+- Gives file tabs stable scroll targets so hidden selected tabs are revealed with only the minimum required horizontal movement.
+- Adds visible project-sidebar refresh feedback on macOS, iOS, and iPadOS.
+- Gives the direct and App Store app targets independent build phases so only direct GitHub macOS builds link Sparkle, while App Store Connect builds remain updater-free on macOS, iOS/iPadOS, and visionOS.
+- Commits the shared Swift package resolution required when Xcode Cloud automatic dependency resolution is disabled.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
 ## [v0.9.3] - 2026-07-21
 
 ### Why Upgrade
