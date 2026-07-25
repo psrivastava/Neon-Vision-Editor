@@ -763,6 +763,9 @@ struct FindReplacePanel: View {
         }
         .onChange(of: useRegex) { _, _ in onPreviewChanged() }
         .onChange(of: caseSensitive) { _, _ in onPreviewChanged() }
+        // MARK: - FORK — Esc closes the Find/Replace panel (the hosting NSPanel hides its close
+        // button and installs no cancel responder, so AppKit's default Esc-to-dismiss never fires).
+        .onExitCommand { onClose() }
     }
 
     private func focusFindField() {

@@ -10,9 +10,66 @@ extension ContentView {
             plistModeControl
         } else if isAppleCrashReportDocument {
             crashReportModeControl
+        } else if isPreviewSupportedDocument {
+            // FORK: preview-capable docs (Markdown / HTML / SVG) use the SAME inline view-mode bar as
+            // CSV/plist/crash — one consistent control in one place, instead of a scattered toolbar
+            // button. Segments = Source | Preview; the preview-position flyout rides alongside.
+            forkPreviewModeControl
         } else {
             EmptyView()
         }
+    }
+
+    // MARK: - FORK — unified view-mode bar predicate + preview branch
+
+    /// True when the shared inline view-mode bar should render for the current document.
+    var forkShouldShowViewModeBar: Bool {
+        isDelimitedFileLanguage || isPlistDocument || isAppleCrashReportDocument || isPreviewSupportedDocument
+    }
+
+    private var forkPreviewModeControl: some View {
+        HStack(spacing: 10) {
+            forkPreviewModePicker
+            if isPreviewVisible {
+                // Same preview-position control that used to sit in the toolbar, now inline.
+                forkPreviewOrientationControl
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .background {
+            structuredHeaderBackgroundShape
+                .fill(delimitedHeaderBackgroundColor)
+        }
+    }
+
+    private var forkPreviewModePicker: some View {
+        // Binding maps the two segments onto previewMode: Source = .none, Preview = the doc's mode.
+        let selection = Binding<Bool>(
+            get: { isPreviewVisible },
+            set: { wantsPreview in
+                guard let requested = previewModeForCurrentDocument else { return }
+                previewMode = wantsPreview ? requested : .none
+            }
+        )
+        return Picker(previewTitle, selection: selection) {
+            Text("Source").tag(false)
+            Text(previewSegmentLabel).tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(maxWidth: 210)
+        .disabled(!isPreviewSupportedDocument)
+        .accessibilityLabel(previewTitle)
+        .accessibilityHint("Switch between the source text and the rendered preview")
+    }
+
+    /// Segment label for the rendered side, tailored to the document kind.
+    private var previewSegmentLabel: String {
+        if isSVGDocument { return "SVG" }
+        if isHTMLPreviewDocument { return "Rendered" }
+        return "Rendered"
     }
 
     private var delimitedModeControl: some View {
@@ -101,6 +158,7 @@ extension ContentView {
             Text("Text").tag(DelimitedViewMode.text)
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
         .frame(maxWidth: 210)
         .accessibilityLabel("CSV or TSV view mode")
         .accessibilityHint("Switch between table mode and raw text mode")
@@ -134,6 +192,7 @@ extension ContentView {
             Text("Text").tag(PlistViewMode.text)
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
         .frame(maxWidth: 240)
         .accessibilityLabel("plist view mode")
         .accessibilityHint("Switch between structured plist mode and raw text mode")
@@ -145,6 +204,7 @@ extension ContentView {
             Text("Text").tag(CrashReportViewMode.text)
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
         .frame(maxWidth: 240)
         .accessibilityLabel("Apple crash report view mode")
         .accessibilityHint("Switch between a categorized crash summary and raw text")

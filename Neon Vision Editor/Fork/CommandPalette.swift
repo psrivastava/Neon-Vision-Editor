@@ -81,6 +81,9 @@ private struct ForkCommandPaletteView: View {
 
     @State private var query = ""
     @State private var selectedIndex = 0
+    // FORK: focus the search field the moment the palette opens so the user can type immediately
+    // (previously the panel opened with no first responder — you had to click the field first).
+    @FocusState private var queryFieldFocused: Bool
     private let allCommands = ForkCommandRegistry.allCommands()
 
     private var filtered: [ForkCommand] {
@@ -93,6 +96,7 @@ private struct ForkCommandPaletteView: View {
                 .textFieldStyle(.plain)
                 .font(.system(size: 15))
                 .padding(12)
+                .focused($queryFieldFocused)
                 .onChange(of: query) { _, _ in selectedIndex = 0 }
                 .onSubmit { runSelected() }
 
@@ -119,6 +123,11 @@ private struct ForkCommandPaletteView: View {
             }
         }
         .frame(minWidth: 560, minHeight: 420)
+        .onAppear {
+            // Delay one tick so the NSPanel has finished becoming key before we grab focus,
+            // otherwise SwiftUI drops the focus assignment and the field opens unfocused.
+            DispatchQueue.main.async { queryFieldFocused = true }
+        }
         .background(KeyHandler(
             onMoveDown: { moveSelection(1) },
             onMoveUp: { moveSelection(-1) },

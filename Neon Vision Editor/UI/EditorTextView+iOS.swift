@@ -1813,7 +1813,8 @@ struct CustomTextEditor: UIViewRepresentable {
 
         private func currentViewportAnchor(textLength: Int, language: String) -> Int {
             guard let textView,
-                  supportsResponsiveLargeFileHighlight(language: language, textLength: textLength),
+                  // FORK: broadened from JSON-only so non-JSON large files stay viewport-limited too.
+                  forkEffectiveLargeFileHighlight(language: language, textLength: textLength),
                   textLength >= 100_000 else { return -1 }
             let visibleRect = CGRect(origin: textView.contentOffset, size: textView.bounds.size).insetBy(dx: 0, dy: -80)
             let glyphRange = textView.layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
@@ -2077,7 +2078,8 @@ struct CustomTextEditor: UIViewRepresentable {
             let textLength = (text as NSString).length
             let nsText = text as NSString
             if textLength >= EditorRuntimeLimits.syntaxMinimalUTF16Length &&
-                !supportsResponsiveLargeFileHighlight(language: lang, textLength: textLength) {
+                // FORK: broadened from JSON-only so the open-mode picker affects non-JSON large files.
+                !forkEffectiveLargeFileHighlight(language: lang, textLength: textLength) {
                 updateMatchingBracketOverlay(textView: textView, text: nsText, selectionLocation: selectionLocation)
                 lastHighlightedText = ""
                 lastLanguage = lang
@@ -2151,7 +2153,8 @@ struct CustomTextEditor: UIViewRepresentable {
                       scheme == lastColorScheme,
                       !immediate,
                       let edit = pendingEditedRange else { return nil }
-                let supportsLargeFileJSON = parent.isLargeFileMode && supportsResponsiveLargeFileHighlight(language: lang, textLength: textLength)
+                // FORK: broadened from JSON-only so large non-JSON edits use bounded incremental padding.
+                let supportsLargeFileJSON = parent.isLargeFileMode && forkEffectiveLargeFileHighlight(language: lang, textLength: textLength)
                 if !supportsLargeFileJSON && text.utf16.count >= 120_000 {
                     return nil
                 }
@@ -2216,10 +2219,13 @@ struct CustomTextEditor: UIViewRepresentable {
             immediate: Bool
         ) -> NSRange {
             let fullRange = NSRange(location: 0, length: text.length)
+            // FORK: Standard mode does a full-document pass (explicit "may be slow" choice); only
+            // Responsive / JSON stay viewport-limited. Plain Text never reaches here (highlight off).
+            guard currentLargeFileOpenMode() != .standard else { return fullRange }
             // Restrict to visible range only for responsive large-file profiles.
             let supportsResponsiveRange =
                 parent.isLargeFileMode &&
-                supportsResponsiveLargeFileHighlight(language: parent.language, textLength: text.length)
+                forkEffectiveLargeFileHighlight(language: parent.language, textLength: text.length)
             guard supportsResponsiveRange, text.length >= 100_000 else { return fullRange }
             let visibleRect = CGRect(origin: textView.contentOffset, size: textView.bounds.size).insetBy(dx: 0, dy: -80)
             let glyphRange = textView.layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
@@ -2711,7 +2717,9 @@ struct CustomTextEditor: UIViewRepresentable {
                 textView.setNeedsDisplay()
             }
             let textLength = (textView.text as NSString?)?.length ?? 0
-            if textLength >= 100_000 && supportsResponsiveLargeFileHighlight(language: parent.language, textLength: textLength) {
+            // FORK (#2): only JSON-family re-highlights per scroll (fast tokenizer + token budget).
+            // Non-JSON large files keep their one-shot viewport pass and are left alone while scrolling.
+            if textLength >= 100_000 && forkLargeFileSupportsPerScrollRehighlight(language: parent.language, textLength: textLength) {
                 guard !isPhoneActivelyEditing else { return }
                 scheduleHighlightIfNeeded(currentText: textView.text)
             }

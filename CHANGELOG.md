@@ -1914,6 +1914,31 @@ file-system-synchronized group); upstream files carry only tiny `// MARK: - FORK
   Swift tokens and re-locked the doc to Swift before checking the file extension. A known non-Swift
   extension (`.md`, `.json`, …) is now authoritative over content sniffing. (`EditorViewModel.swift`)
 
+### Added — Batch D (UX polish & large-file behavior)
+- **Chrome design tokens** — status bar, tab bar, and both sidebars share a theme-aware surface,
+  visible separators, and legible text so chrome stops blending into the editor.
+  (`Fork/ChromeStyle.swift`)
+- **Tiered status bar** — one evenly-spaced, uniformly-styled metadata strip (baseline-aligned);
+  the large-file control is a single status-bar dropdown (the duplicate top-right badge was removed).
+  (`ContentView+TabChromeStatus.swift`)
+- **Large-file mode is auto-selected per open** — Responsive under the configurable highlight
+  threshold, Plain Text over; Standard is only reachable as an explicit override. The pick is shown
+  in the status bar (`· Auto`), overridable for the current document only, never persisted — every
+  open re-determines it. Standard highlights the whole document; Responsive stays viewport-limited.
+  (`EditorTextView+RuntimePolicy.swift`, `ContentView.swift`)
+- **Configurable large-file thresholds** — Settings › Performance exposes the syntax-highlight and
+  document-outline size ceilings (presets incl. "Whole document"). (`NeonSettingsView.swift`)
+- **XML/SVG document outline** — the symbol sidebar now extracts element tags for XML/SVG (was
+  empty). (`SidebarViews.swift`)
+- **Unified view-mode bar** — CSV/TSV, plist, crash reports, and preview (Markdown/HTML/SVG) all use
+  one inline segmented control in the same place; the preview Source/Rendered toggle + position
+  flyout moved out of the toolbar. (`ContentView+StructuredData.swift`, `ContentView+Toolbar.swift`)
+- **Find/Replace closes on Esc**; TOC-sidebar drag no longer flickers the view.
+  (`PanelsAndHelpers.swift`, `ContentView.swift`)
+- **Command palette focus** — Cmd+Shift+P opens with the search field focused; **Cmd+P** is now
+  files/tabs only (commands live in the palette). (`Fork/CommandPalette.swift`,
+  `ContentView+QuickSwitcherFind.swift`)
+
 ### Fork tooling
 - **`scripts/fork/build-and-deploy.sh`** — Release-archive → `shasum -a 256` hash-verified copy to
   `/Applications/nve.app` (outer bundle renamed at deploy time only; `CFBundleExecutable` and

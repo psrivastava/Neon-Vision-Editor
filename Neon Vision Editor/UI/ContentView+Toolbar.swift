@@ -835,24 +835,13 @@ extension ContentView {
     }
 
     @ViewBuilder
+    // MARK: - FORK — the Source/Preview toggle (and preview-position flyout) moved OUT of the toolbar
+    // into the unified inline view-mode bar (see ContentView+StructuredData.forkPreviewModeControl),
+    // so preview matches CSV/plist/crash: one consistent control in one place. This toolbar slot now
+    // renders nothing; the Preview Style + Export menu items remain separate toolbar items.
+    @ViewBuilder
     private var markdownPreviewControl: some View {
-        Button(action: {
-            togglePreviewFromToolbar()
-        }) {
-            Image(systemName: previewToolbarIconName)
-        }
-        .foregroundStyle(isPreviewVisible ? Color.accentColor : Color.primary)
-        .disabled(!isPreviewSupportedDocument)
-        .help(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
-        .accessibilityLabel(previewTitle)
-
-        // MARK: - FORK — preview orientation flyout (side | bottom). Shown only while a preview is
-        // visible; picks whether the split sits on the right or beneath the editor. See
-        // Fork/PreviewOrientation.swift.
-        if isPreviewVisible {
-            forkPreviewOrientationControl
-        }
-        // END FORK
+        EmptyView()
     }
 
     @ViewBuilder
@@ -1838,21 +1827,9 @@ extension ContentView {
 
             #if os(macOS) || os(iOS)
             if isPreviewSupportedDocument {
-                Button(action: {
-                    togglePreviewFromToolbar()
-                }) {
-                    Label(previewTitle, systemImage: previewToolbarIconName)
-                        .foregroundStyle(isPreviewVisible ? Color.accentColor : macToolbarSymbolColor)
-                }
-                .help(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
-
-                // MARK: - FORK — preview orientation flyout (side | bottom). Shown only while a preview
-                // is visible. See Fork/PreviewOrientation.swift.
-                if isPreviewVisible {
-                    forkPreviewOrientationControl
-                }
-                // END FORK
-
+                // MARK: - FORK — the Source/Preview toggle + position flyout moved to the unified inline
+                // view-mode bar (forkPreviewModeControl). Only the preview-active Export/Style menus
+                // remain in the toolbar, since they act on an already-open preview.
                 if showMarkdownPreviewPane && isMarkdownPreviewDocument {
                     Menu {
                         markdownPreviewExportToolbarMenuContent

@@ -877,7 +877,10 @@ struct CustomTextEditor: NSViewRepresentable {
             if isInInteractionSuppressionWindow() {
                 return false
             }
-            if parent.isLargeFileMode && !supportsResponsiveLargeFileHighlight(language: language, textLength: textLength) {
+            // FORK: was `supportsResponsiveLargeFileHighlight`. Broadened so the open-mode picker
+            // affects non-JSON large files too (XML highlights under Standard/Responsive, stays off
+            // under Plain Text). Still viewport-bounded + capped via forkEffectiveLargeFileHighlight.
+            if parent.isLargeFileMode && !forkEffectiveLargeFileHighlight(language: language, textLength: textLength) {
                 return false
             }
             return !(currentText == lastHighlightedText &&
@@ -901,9 +904,13 @@ struct CustomTextEditor: NSViewRepresentable {
         }
 
         private func usesResponsiveViewportHighlighting(textLength: Int, language: String) -> Bool {
-            parent.isLargeFileMode &&
+            // FORK: Standard mode is the explicit "full-document coloring, may be slow" choice, so it
+            // must NOT be viewport-limited — otherwise it's indistinguishable from Responsive. Only
+            // Responsive (and the JSON fast path) uses the viewport-limited pass. Plain Text is off.
+            guard currentLargeFileOpenMode() != .standard else { return false }
+            return parent.isLargeFileMode &&
                 textLength >= 100_000 &&
-                supportsResponsiveLargeFileHighlight(language: language, textLength: textLength)
+                forkEffectiveLargeFileHighlight(language: language, textLength: textLength)
         }
 
         func installWrapResizeObserver(for textView: NSTextView, scrollView: NSScrollView) {
@@ -925,7 +932,12 @@ struct CustomTextEditor: NSViewRepresentable {
                     guard let self, let tv = textView, let sv = scrollView else { return }
                     self.scheduleScrollMinimapViewportPost(for: tv, scrollView: sv)
                     let textLength = (tv.string as NSString).length
-                    if self.usesResponsiveViewportHighlighting(textLength: textLength, language: self.parent.language) {
+                    // FORK (#2): only JSON-family (fast tokenizer + token budget) re-highlights per
+                    // scroll. Non-JSON large files got their one-shot viewport pass on open/mode-switch;
+                    // re-running the full regex on every scroll frame is what made the app sluggish.
+                    if self.parent.isLargeFileMode,
+                       textLength >= 100_000,
+                       forkLargeFileSupportsPerScrollRehighlight(language: self.parent.language, textLength: textLength) {
                         self.scheduleHighlightIfNeeded(currentText: tv.string)
                     }
                 }
@@ -1156,7 +1168,9 @@ struct CustomTextEditor: NSViewRepresentable {
                 return
             }
 
-            if parent.isLargeFileMode && !supportsResponsiveLargeFileHighlight(language: lang, textLength: textLength) {
+            // FORK: was `supportsResponsiveLargeFileHighlight`. See forkEffectiveLargeFileHighlight —
+            // extends viewport-limited highlighting to non-JSON large files per the open-mode picker.
+            if parent.isLargeFileMode && !forkEffectiveLargeFileHighlight(language: lang, textLength: textLength) {
                 self.lastHighlightedText = text
                 self.lastLanguage = lang
                 self.lastColorScheme = scheme
@@ -1168,7 +1182,7 @@ struct CustomTextEditor: NSViewRepresentable {
                 return
             }
             if textLength >= EditorRuntimeLimits.syntaxMinimalUTF16Length &&
-                !supportsResponsiveLargeFileHighlight(language: lang, textLength: textLength) {
+                !forkEffectiveLargeFileHighlight(language: lang, textLength: textLength) {
                 self.lastHighlightedText = text
                 self.lastLanguage = lang
                 self.lastColorScheme = scheme
@@ -1212,7 +1226,9 @@ struct CustomTextEditor: NSViewRepresentable {
                       scheme == lastColorScheme,
                       !immediate,
                       let edit = pendingEditedRange else { return nil }
-                let supportsLargeFileJSON = parent.isLargeFileMode && supportsResponsiveLargeFileHighlight(language: lang, textLength: textLength)
+                // FORK: broadened from JSON-only so large XML edits also use the bounded incremental
+                // padding instead of falling through to a full-range pass.
+                let supportsLargeFileJSON = parent.isLargeFileMode && forkEffectiveLargeFileHighlight(language: lang, textLength: textLength)
                 if !supportsLargeFileJSON && text.utf16.count >= 120_000 {
                     return nil
                 }

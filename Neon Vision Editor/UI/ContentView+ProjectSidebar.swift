@@ -9,25 +9,30 @@ extension ContentView {
     var projectStructureSidebarPanel: some View {
 #if os(macOS)
         projectStructureSidebarBody
-            .frame(
-                minWidth: clampedProjectSidebarWidth,
-                idealWidth: clampedProjectSidebarWidth,
-                maxWidth: clampedProjectSidebarWidth
-            )
+            // FORK BUGFIX: use a firm fixed width (matching the working TOC sidebar's
+            // `.frame(width:)`), not min/ideal/max. Inside editorView's crowded HStack next to a
+            // maxWidth:.infinity editor column, the three-arg form let the flexible sibling win and
+            // the panel never took the dragged width — so the (right) project sidebar wouldn't resize.
+            .frame(width: clampedProjectSidebarWidth)
             .background(editorSurfaceBackgroundStyle)
 #else
         projectStructureSidebarBody
-            .frame(
-                minWidth: clampedProjectSidebarWidth,
-                idealWidth: clampedProjectSidebarWidth,
-                maxWidth: clampedProjectSidebarWidth
-            )
+            // FORK BUGFIX: use a firm fixed width (matching the working TOC sidebar's
+            // `.frame(width:)`), not min/ideal/max. Inside editorView's crowded HStack next to a
+            // maxWidth:.infinity editor column, the three-arg form let the flexible sibling win and
+            // the panel never took the dragged width — so the (right) project sidebar wouldn't resize.
+            .frame(width: clampedProjectSidebarWidth)
             .background(editorSurfaceBackgroundStyle)
 #endif
     }
 
     var projectSidebarResizeHandle: some View {
-        let drag = DragGesture(minimumDistance: 0)
+        // FORK BUGFIX: measure the drag in the GLOBAL coordinate space, not the handle's local space.
+        // The handle moves as the sidebar resizes, so a local-space translation folds the handle's
+        // own motion back into value.translation — which inverts the feedback on a trailing (right)
+        // sidebar (won't resize) and jitters the leading one. Global space is stable, so translation
+        // is pure pointer movement and the .leading(+delta)/.trailing(-delta) signs are correct.
+        let drag = DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 let startWidth = projectSidebarResizeStartWidth ?? clampedProjectSidebarWidth
                 if projectSidebarResizeStartWidth == nil {

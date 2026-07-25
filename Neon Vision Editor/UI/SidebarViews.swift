@@ -60,6 +60,8 @@ struct SidebarView: View {
     // observed property that bumps on every edit; observing it drives the rebuild. See below.
     let contentRevision: Int
     let translucentBackgroundEnabled: Bool
+    // FORK: user-configurable outline size ceiling; observed so the TOC rebuilds when it changes.
+    @AppStorage("SettingsForkOutlineMaxUTF16") private var forkOutlineMaxSetting: Int = 400_000
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 #if os(macOS)
@@ -117,6 +119,10 @@ struct SidebarView: View {
         .onChange(of: language) { _, _ in
             scheduleTOCRefresh()
         }
+        // FORK: rebuild the outline immediately when the user changes the outline size ceiling.
+        .onChange(of: forkOutlineMaxSetting) { _, _ in
+            scheduleTOCRefresh()
+        }
         .onDisappear {
             tocRefreshTask?.cancel()
         }
@@ -131,14 +137,14 @@ struct SidebarView: View {
             return AnyShapeStyle(.ultraThinMaterial)
             #endif
         }
-#if os(macOS)
-        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
-#else
-        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
-#endif
+        // MARK: - FORK (UX-F2): tint the sidebar surface off the editor background so the panel reads
+        // as distinct chrome instead of blending into the editor (matches ContentView.forkChromeSurfaceColor).
+        let theme = currentEditorTheme(colorScheme: colorScheme)
+        return AnyShapeStyle(theme.background.forkBlended(with: theme.text, amount: colorScheme == .dark ? 0.08 : 0.06))
     }
 
     private var sidebarSurfaceStroke: Color {
+        // MARK: - FORK (UX-F2): stronger, both-theme-visible edge (was 0.14–0.20, faded on the tinted surface).
         colorScheme == .dark
             ? Color.white.opacity(0.20)
             : Color.black.opacity(0.14)
@@ -354,7 +360,8 @@ struct SidebarView: View {
 
     private func scheduleTOCRefresh() {
         tocRefreshTask?.cancel()
-        if let contentUTF16Length, contentUTF16Length >= Self.tocLargeContentUTF16Threshold {
+        // FORK: outline size ceiling is user-configurable (Settings → Performance); 0 = whole document.
+        if let contentUTF16Length, contentUTF16Length >= forkOutlineContentLimit() {
             tocItems = [Self.placeholderTOCItem(id: "large", title: "Large file detected: TOC disabled for performance")]
             return
         }
@@ -375,7 +382,8 @@ struct SidebarView: View {
         guard !content.isEmpty else {
             return [placeholderTOCItem(id: "empty", title: "No content available")]
         }
-        if (content as NSString).length >= tocLargeContentUTF16Threshold {
+        // FORK: honor the user-configurable outline ceiling (0 = whole document).
+        if (content as NSString).length >= forkOutlineContentLimit() {
             return [placeholderTOCItem(id: "large", title: "Large file detected: TOC disabled for performance")]
         }
         let lines = content.components(separatedBy: .newlines)
@@ -452,6 +460,12 @@ struct SidebarView: View {
         case "html", "css", "json", "markdown", "csv":
             toc = lines.enumerated().compactMap { index, line in
                 markupTOCItem(for: line, previousLine: index > 0 ? lines[index - 1] : nil, index: index, language: language)
+            }
+        // FORK: XML/SVG had no outline branch — fell to `default`, which drops lines ≥120 chars, so
+        // real XML produced "No headers found". Extract opening element tags instead.
+        case "xml", "svg":
+            toc = lines.enumerated().compactMap { index, line in
+                forkXMLTOCItem(for: line, index: index, language: language)
             }
         case "csharp":
             toc = lines.enumerated().compactMap { index, line in
@@ -741,6 +755,43 @@ struct SidebarView: View {
         return nil
     }
 
+    // FORK: outline entry for an XML/SVG line. Surfaces the opening element on lines that start a
+    // tag (skips closing tags, comments, declarations, and text nodes). Uses the element's nesting
+    // depth (leading indent) as the TOC level and shows the tag name + first attribute for context.
+    private static func forkXMLTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+        guard trimmed.hasPrefix("<") else { return nil }
+        // Skip closing tags </…>, comments <!--…-->, declarations/PIs <?…?> and <!DOCTYPE…>.
+        guard !trimmed.hasPrefix("</"),
+              !trimmed.hasPrefix("<!"),
+              !trimmed.hasPrefix("<?") else { return nil }
+        // Capture the element name after '<' (letters, digits, ':', '-', '_', '.').
+        guard let match = trimmed.range(
+            of: #"^<([A-Za-z_][\w:.\-]*)"#,
+            options: .regularExpression
+        ) else { return nil }
+        let elementName = String(trimmed[match]).dropFirst() // strip leading '<'
+        guard !elementName.isEmpty else { return nil }
+
+        // Enrich with the first attribute (e.g. id/name) when present, for disambiguation.
+        var title = String(elementName)
+        if let attr = trimmed.range(
+            of: #"\b([A-Za-z_][\w:.\-]*)\s*=\s*"[^"]*""#,
+            options: .regularExpression
+        ) {
+            let attrText = String(trimmed[attr])
+            if title.count + attrText.count + 1 <= 80 {
+                title += " " + attrText
+            }
+        }
+
+        let indent = leadingIndentSpaces(in: line)
+        let level = min(max(indent / 2 + 1, 1), 6)
+        return TOCItem(id: "xml-\(index)", title: title, line: index + 1, level: level, kind: .type)
+    }
+
     private static func leadingIndentSpaces(in line: String) -> Int {
         line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { total, character in
             total + (character == "\t" ? 4 : 1)
@@ -754,8 +805,6 @@ struct SidebarView: View {
     private static func placeholderTOCItem(id: String, title: String) -> TOCItem {
         TOCItem(id: id, title: title, line: nil, level: 1, kind: .placeholder)
     }
-
-    private static let tocLargeContentUTF16Threshold = 400_000
 
     private static func makeTOCItem(id: String, title: String, line: Int, language: String) -> TOCItem {
         let metadata = tocMetadata(for: title, language: language)
@@ -1359,17 +1408,16 @@ struct ProjectStructureSidebarView: View {
             return AnyShapeStyle(.ultraThinMaterial)
             #endif
         }
-#if os(macOS)
-        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
-#else
-        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
-#endif
+        // MARK: - FORK (UX-F2): distinct chrome tint (see the TOC sidebar's sidebarSurfaceFill above).
+        let theme = currentEditorTheme(colorScheme: colorScheme)
+        return AnyShapeStyle(theme.background.forkBlended(with: theme.text, amount: colorScheme == .dark ? 0.08 : 0.06))
     }
 
     private var sidebarSurfaceStroke: Color {
+        // MARK: - FORK (UX-F2): both-theme-visible edge.
         colorScheme == .dark
-            ? Color.white.opacity(0.12)
-            : Color.black.opacity(0.08)
+            ? Color.white.opacity(0.18)
+            : Color.black.opacity(0.12)
     }
 
     private var findInFilesContent: some View {

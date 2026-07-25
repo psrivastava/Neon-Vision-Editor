@@ -212,6 +212,9 @@ struct NeonSettingsView: View {
     @AppStorage("SettingsPerformancePreset") private var performancePresetRaw: String = ContentView.PerformancePreset.balanced.rawValue
     @AppStorage("SettingsLargeFileSyntaxHighlighting") private var largeFileSyntaxHighlightingRaw: String = "minimal"
     @AppStorage("SettingsLargeFileOpenMode") private var largeFileOpenModeRaw: String = "deferred"
+    // FORK: user-configurable thresholds (UTF-16 length; 0 = unlimited / whole document).
+    @AppStorage("SettingsForkNonJSONHighlightMaxUTF16") private var forkNonJSONHighlightMaxRaw: Int = 250_000
+    @AppStorage("SettingsForkOutlineMaxUTF16") private var forkOutlineMaxRaw: Int = 400_000
 #if os(iOS) || os(visionOS)
     @AppStorage("SettingsToolbarShowSearchIOS") private var toolbarShowSearchIOS: Bool = true
     @AppStorage("SettingsToolbarShowCompareIOS") private var toolbarShowCompareIOS: Bool = true
@@ -2721,21 +2724,22 @@ struct NeonSettingsView: View {
                     Text("Minimal").tag("minimal")
                 }
                 .pickerStyle(.segmented)
-                Picker("Large File Open", selection: $largeFileOpenModeRaw) {
-                    Text("Standard").tag("standard")
-                    Text("Responsive").tag("deferred")
-                    Text("Plain Text").tag("plainText")
-                }
-                .pickerStyle(.segmented)
+                // FORK: the "Large File Open" mode picker was removed — the mode is now auto-selected
+                // per document open (Responsive under the highlight threshold, Plain Text over) and
+                // overridable from the status-bar control for that document only. See "Large-File
+                // Thresholds" below to tune the size boundary.
                 Text("Minimal colors only visible JSON lines plus a small buffer using a strict work budget.")
                     .font(Typography.footnote)
                     .foregroundStyle(.secondary)
-                Text("Large File Mode remains editable. Responsive defers costly loading, layout, and syntax work; Plain Text also turns off syntax coloring, previews, and the minimap.")
+                Text("Large files auto-open in Responsive or Plain Text based on size; switch modes for the current document from the status bar.")
                     .font(Typography.footnote)
                     .foregroundStyle(.secondary)
                 Text("Files at 100 MB or more open as a read-only 4 MB partial preview so the complete file is never copied into memory.")
                     .font(Typography.footnote)
                     .foregroundStyle(.secondary)
+
+                // FORK: configurable thresholds for non-JSON highlighting + document outline.
+                forkThresholdSettings
             }
 
             settingsCardSection(
@@ -2798,21 +2802,22 @@ struct NeonSettingsView: View {
                         Text("Minimal").tag("minimal")
                     }
                     .pickerStyle(.segmented)
-                    Picker("Large File Open", selection: $largeFileOpenModeRaw) {
-                        Text("Standard").tag("standard")
-                        Text("Responsive").tag("deferred")
-                        Text("Plain Text").tag("plainText")
-                    }
-                    .pickerStyle(.segmented)
+                    // FORK: the "Large File Open" mode picker was removed — the mode is now auto-selected
+                    // per document open (Responsive under the highlight threshold, Plain Text over) and
+                    // overridable from the status-bar control for that document only. Tune the size
+                    // boundary in "Large-File Thresholds" below.
                     Text("Minimal colors only visible JSON lines plus a small buffer using a strict work budget.")
                         .font(Typography.footnote)
                         .foregroundStyle(.secondary)
-                    Text("Large File Mode remains editable. Responsive defers costly loading, layout, and syntax work; Plain Text also turns off syntax coloring, previews, and the minimap.")
+                    Text("Large files auto-open in Responsive or Plain Text based on size; switch modes for the current document from the status bar.")
                         .font(Typography.footnote)
                         .foregroundStyle(.secondary)
                     Text("Files at 100 MB or more open as a read-only 4 MB partial preview so the complete file is never copied into memory.")
                         .font(Typography.footnote)
                         .foregroundStyle(.secondary)
+
+                    // FORK: configurable thresholds for non-JSON highlighting + document outline.
+                    forkThresholdSettings
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -2844,6 +2849,42 @@ struct NeonSettingsView: View {
             .padding(UI.groupPadding)
         }
 #endif
+    }
+
+    // MARK: - FORK — configurable large-file thresholds
+
+    // (UTF-16 length, value stored in AppStorage). 0 == unlimited / whole document.
+    private static let forkThresholdChoices: [(label: String, value: Int)] = [
+        ("100K", 100_000),
+        ("250K", 250_000),
+        ("500K", 500_000),
+        ("1M", 1_000_000),
+        ("2M", 2_000_000),
+        ("Whole document", 0)
+    ]
+
+    @ViewBuilder
+    private var forkThresholdSettings: some View {
+        Divider()
+        Text("Large-File Thresholds")
+            .font(Typography.sectionHeadline)
+        Picker("Syntax highlighting up to", selection: $forkNonJSONHighlightMaxRaw) {
+            ForEach(Self.forkThresholdChoices, id: \.value) { choice in
+                Text(choice.label).tag(choice.value)
+            }
+        }
+        Text("Non-JSON large files (XML, logs, etc.) color the visible region up to this size. Larger files stay plain for responsiveness. “Whole document” removes the cap.")
+            .font(Typography.footnote)
+            .foregroundStyle(.secondary)
+
+        Picker("Document outline up to", selection: $forkOutlineMaxRaw) {
+            ForEach(Self.forkThresholdChoices, id: \.value) { choice in
+                Text(choice.label).tag(choice.value)
+            }
+        }
+        Text("The symbol/outline sidebar is built for files up to this size. “Whole document” always builds it, which can be slow on very large files.")
+            .font(Typography.footnote)
+            .foregroundStyle(.secondary)
     }
 
     // MARK: - Template Settings

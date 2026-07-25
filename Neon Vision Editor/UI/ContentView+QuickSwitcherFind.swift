@@ -62,7 +62,11 @@ extension ContentView {
             .init(id: "cmd:folder_compare", title: "Folder Compare…", subtitle: "Compare two folders and review changes", isPinned: false, canTogglePin: false),
             .init(id: "cmd:toggle_git_tab", title: "Toggle Git Tab", subtitle: "Show or hide the Git changes tab", isPinned: false, canTogglePin: false)
         ]
-        items.append(contentsOf: commandItems)
+        // MARK: - FORK — Cmd+P is Quick OPEN (files/tabs only). Commands moved to the dedicated
+        // command palette on Cmd+Shift+P, so we no longer mix the 23 command rows into this list.
+        // (The `commandItems` array is retained above so the command palette / other callers that
+        // reference these ids keep working; it's just not injected into the file switcher anymore.)
+        _ = commandItems
 
         for tab in viewModel.tabs {
             let subtitle = tab.fileURL?.path ?? "Open tab"

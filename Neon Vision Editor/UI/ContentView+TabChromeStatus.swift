@@ -272,6 +272,28 @@ extension ContentView {
     }
 #endif
 
+    // MARK: - FORK (UX-F3): primary status items — position/selection/counts. Shown first, prominent.
+    private func forkPrimaryStatusItems() -> [String] {
+        var items: [String] = []
+        if statusBarShowCursor { items.append(caretStatus) }
+        if statusBarShowSelection, let selection = selectionStatusText { items.append(selection) }
+        if statusBarShowLineCount { items.append("Lines: \(statusLineCount)") }
+        if statusBarShowWordCount && !effectiveLargeFileModeEnabled { items.append("Words: \(statusWordCount)") }
+        return items
+    }
+
+    // MARK: - FORK (UX-F3): secondary/document-metadata items — encoding, line endings, indentation,
+    // size, git. Demoted (muted, after a separator) so the bar reads as tiers, not one flat wall.
+    private func forkSecondaryStatusItems() -> [String] {
+        var items: [String] = []
+        if statusBarShowEncoding { items.append(viewModel.selectedTab?.fileEncoding.displayName ?? "UTF-8") }
+        if statusBarShowLineEndings { items.append(lineEndingStatusText) }
+        if statusBarShowIndentation { items.append(indentationStatusText) }
+        if statusBarShowFileSize { items.append(fileSizeStatusText) }
+        if statusBarShowGit, let git = gitStatusText { items.append(git) }
+        return items
+    }
+
     private func statusBarItems() -> [String] {
         var items: [String] = []
         if statusBarShowCursor {
@@ -365,7 +387,9 @@ extension ContentView {
 
     @ViewBuilder
     var wordCountView: some View {
-        HStack(spacing: 10) {
+        // FORK: baseline-align the whole status row so the large-file dropdown and the tiered metadata
+        // strip share one text baseline (reported: status items not aligned on the y-axis).
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             if let externalStatus = viewModel.externalFileRefreshStatus {
                 Label(
                     externalStatus.message,
@@ -411,19 +435,10 @@ extension ContentView {
             }
 
             if effectiveLargeFileModeEnabled {
-                largeFileStatusBadge
-                Picker("Large file open mode", selection: $largeFileOpenModeRaw) {
-                    Text("Standard").tag("standard")
-                    Text("Responsive").tag("deferred")
-                    Text("Plain Text").tag("plainText")
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .frame(width: 280)
-                .fixedSize(horizontal: false, vertical: true)
-                .controlSize(.small)
-                .accessibilityLabel("Large file open mode")
-                .accessibilityHint(largeFileModeFeatureDetails)
+                // MARK: - FORK — single large-file control: the dropdown (with size, editable state,
+                // and per-option hover details) lives here in the status bar. The old inline segmented
+                // picker + separate capsule badge + top-right overlay badge were consolidated into this.
+                largeFileSessionBadge
             }
             if !remoteSessionStatusBadgeText.isEmpty {
                 remoteSessionBadge
@@ -432,30 +447,16 @@ extension ContentView {
                 selectedRemoteDocumentBadge
             }
             Spacer()
-            Text(macStatusBarText)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            // MARK: - FORK (UX-F3): tiered status bar — primary info prominent, secondary metadata
+            // demoted/muted after a divider, instead of one flat 8-item gray wall (reported: "busy").
+            forkTieredStatusBar
                 .padding(.bottom, 8)
                 .padding(.trailing, 16)
         }
-        .background(editorSurfaceBackgroundStyle)
-    }
-
-    private var largeFileStatusBadge: some View {
-        Text(largeFileStatusBadgeText)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(
-                Capsule(style: .continuous)
-                    .fill(Color.secondary.opacity(0.16))
-            )
-            .accessibilityLabel("Large file mode")
-            .accessibilityValue(currentLargeFileOpenModeLabel)
-            .accessibilityHint(largeFileModeFeatureDetails)
+        // MARK: - FORK (UX-F2): give the status bar a distinct chrome surface + a top hairline so it
+        // stops blending into the editor content above it (reported: status bar has no separation).
+        .background(forkChromeSurfaceStyle)
+        .overlay(alignment: .top) { forkChromeTopSeparator }
     }
 
     private var remoteSessionBadge: some View {
@@ -521,33 +522,60 @@ extension ContentView {
     private var largeFileOpenModeMenuContent: some View {
         Section("Large File Mode") {
             Text("\(currentDocumentFileSizeText) • \(viewModel.selectedTab?.isPartialFilePreview == true ? "Read-Only" : "Editable")")
-            Text(largeFileModeFeatureDetails)
+            // FORK: mode is auto-selected by size on every open; this states what was picked and why.
+            Text(forkLargeFileModeIsAuto
+                 ? "Auto-selected \(currentLargeFileOpenModeLabel) for this size. Override below for this document only."
+                 : "Overridden to \(currentLargeFileOpenModeLabel) for this document. Reopening re-selects automatically.")
         }
         Divider()
+        // FORK: three explicit modes. The size-based auto pick is tagged "Auto"; picking any option is
+        // an explicit override that lasts only for THIS document (never persisted; reopen re-decides).
+        // Each option's `.help()` explains it on hover, before you switch.
         Button {
             largeFileOpenModeRaw = "standard"
         } label: {
-            largeFileOpenModeMenuLabel(title: "Standard", isSelected: largeFileOpenModeRaw == "standard")
+            largeFileOpenModeMenuLabel(mode: "standard", title: "Standard")
         }
+        .help(forkLargeFileModeSummary(for: "standard"))
         Button {
             largeFileOpenModeRaw = "deferred"
         } label: {
-            largeFileOpenModeMenuLabel(title: "Responsive", isSelected: largeFileOpenModeRaw == "deferred")
+            largeFileOpenModeMenuLabel(mode: "deferred", title: "Responsive")
         }
+        .help(forkLargeFileModeSummary(for: "deferred"))
         Button {
             largeFileOpenModeRaw = "plainText"
         } label: {
-            largeFileOpenModeMenuLabel(title: "Plain Text", isSelected: largeFileOpenModeRaw == "plainText")
+            largeFileOpenModeMenuLabel(mode: "plainText", title: "Plain Text")
+        }
+        .help(forkLargeFileModeSummary(for: "plainText"))
+    }
+
+    private func largeFileOpenModeMenuLabel(mode: String, title: String) -> some View {
+        HStack {
+            Text(title)
+            // FORK: mark the option the size-based auto rule would choose.
+            if mode == forkAutoSelectedLargeFileMode {
+                Text("Auto")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 10)
+            if largeFileOpenModeRaw == mode {
+                Image(systemName: "checkmark")
+            }
         }
     }
 
-    private func largeFileOpenModeMenuLabel(title: String, isSelected: Bool) -> some View {
-        HStack {
-            Text(title)
-            Spacer(minLength: 10)
-            if isSelected {
-                Image(systemName: "checkmark")
-            }
+    // FORK: per-mode description (what each open mode does), used for the hover help on each option.
+    func forkLargeFileModeSummary(for mode: String) -> String {
+        switch mode {
+        case "standard":
+            return "Editing stays available; expensive analysis can be reduced for responsiveness."
+        case "plainText":
+            return "Editing stays available without syntax coloring, previews, or a minimap."
+        default:
+            return "Editing stays available while loading, layout, and syntax work are deferred or limited."
         }
     }
 
@@ -890,15 +918,14 @@ extension ContentView {
 #if os(macOS)
     @ViewBuilder
     private var tabBarBottomDivider: some View {
-        if usesAnySidebarTabTransition {
-            Divider()
-                .opacity(0.22)
-                .padding(.leading, 18)
-                .padding(.trailing, usesTrailingTabTransition ? 18 : 0)
-        } else {
-            Divider()
-                .opacity(0.45)
-        }
+        // MARK: - FORK (UX-F2): use the chrome separator so the tab bar's bottom edge is visible in
+        // both themes (was a translucent Divider at 0.22–0.45 opacity that faded into the editor).
+        Rectangle()
+            .fill(forkChromeSeparatorColor)
+            .frame(height: 1)
+            .opacity(usesAnySidebarTabTransition ? 0.6 : 1)
+            .padding(.leading, usesAnySidebarTabTransition ? 18 : 0)
+            .padding(.trailing, usesAnySidebarTabTransition && usesTrailingTabTransition ? 18 : 0)
     }
 #endif
 
@@ -915,6 +942,50 @@ extension ContentView {
         guard vimModeEnabled else { return " • Vim: OFF" }
         return vimInsertMode ? " • Vim: INSERT" : " • Vim: NORMAL"
 #endif
+    }
+
+    // MARK: - FORK (UX-F3): tiered status bar renderer. Primary items in chrome text; a muted
+    // separator; secondary metadata + Vim in a dimmer tone. Reads as hierarchy, not a flat wall.
+    @ViewBuilder
+    var forkTieredStatusBar: some View {
+        // One flat, uniformly-spaced row. Each item is its own fixed-size Text so words never
+        // truncate mid-string; NO layoutPriority (that made the HStack hand spare width to primary
+        // items and open an uneven gap). Primary = chrome text; secondary = muted; Vim = accent.
+        let primary = forkPrimaryStatusItems().map { ($0, ForkStatusTier.primary) }
+        let secondary = forkSecondaryStatusItems().map { ($0, ForkStatusTier.secondary) }
+        let vimText = vimStatusSuffix.replacingOccurrences(of: " • ", with: "")
+        let vim = vimText.isEmpty ? [] : [(vimText, ForkStatusTier.vim)]
+        let all = primary + secondary + vim
+        // FORK: every item shares ONE font size, weight, and color, and the row aligns on the text
+        // baseline — so items read as a single evenly-colored, y-aligned strip (reported: items were
+        // unevenly colored and mis-aligned on the y-axis due to mixed 12/11pt sizes + opacity tiers).
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            ForEach(Array(all.enumerated()), id: \.offset) { index, entry in
+                if index > 0 {
+                    Text("·")
+                        .font(.system(size: 12))
+                        .foregroundColor(forkChromeSeparatorColor)
+                        .fixedSize()
+                }
+                Text(entry.0)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(forkStatusColor(for: entry.1))
+                    .fixedSize()
+            }
+        }
+    }
+
+    private enum ForkStatusTier { case primary, secondary, vim }
+
+    private func forkStatusColor(for tier: ForkStatusTier) -> Color {
+        // FORK: uniform color for all metadata items; only active Vim mode gets an accent tint so it
+        // still stands out. Everything else is the same chrome text color for a consistent strip.
+        switch tier {
+        case .primary, .secondary:
+            return forkChromeTextColor
+        case .vim:
+            return vimModeEnabled ? Color.accentColor.opacity(0.9) : forkChromeTextColor
+        }
     }
 
     var importProgressPercentText: String {

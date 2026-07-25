@@ -550,6 +550,11 @@ struct ContentView: View {
     @State var droppedFileLoadProgress: Double = 0
     @State var droppedFileLoadLabel: String = ""
     @State var largeFileModeEnabled: Bool = false
+    // MARK: - FORK — the large-file mode is AUTO-determined per document open (Responsive under the
+    // highlight ceiling, Plain Text over; Standard never auto). This tracks which resource we've
+    // already auto-decided for so we don't clobber an explicit user override on every re-render.
+    // Ephemeral by design: switching/reopening a document re-runs the determination, nothing persists.
+    @State var forkAutoModeDecidedForResourceID: String? = nil
     @State var settingsSheetDetent: PresentationDetent = .large
     @SceneStorage("ProjectSidebarWidth") var projectSidebarWidth: Double = 450
     @State var projectSidebarResizeStartWidth: CGFloat? = nil
@@ -577,6 +582,10 @@ struct ContentView: View {
     @AppStorage("SettingsProjectNavigatorPlacement") var projectNavigatorPlacementRaw: String = ProjectNavigatorPlacement.trailing.rawValue
     @AppStorage("SettingsPerformancePreset") var performancePresetRaw: String = PerformancePreset.balanced.rawValue
     @AppStorage("SettingsLargeFileOpenMode") var largeFileOpenModeRaw: String = "deferred"
+    // FORK: configurable non-JSON highlight ceiling; observed to re-apply live on change.
+    @AppStorage("SettingsForkNonJSONHighlightMaxUTF16") var forkNonJSONHighlightMaxRaw: Int = 250_000
+    // FORK: configurable outline ceiling; observed so sidebarTOCContent recomputes when it changes.
+    @AppStorage("SettingsForkOutlineMaxUTF16") var forkOutlineMaxRaw: Int = 400_000
     @AppStorage("SettingsRemoteSessionsEnabled") private var remoteSessionsEnabled: Bool = false
     @AppStorage("SettingsRemotePreparedTarget") private var remotePreparedTarget: String = ""
     @State private var remoteSessionStore = RemoteSessionStore.shared
@@ -1285,8 +1294,13 @@ struct ContentView: View {
                     if shouldPreEnableLargeMode, !largeFileModeEnabled {
                         largeFileModeEnabled = true
                     }
+                    // FORK: a fresh load starts — forget the prior auto decision so the mode is
+                    // re-determined from the final size once loading completes (no persistence).
+                    forkAutoModeDecidedForResourceID = nil
                 } else {
                     scheduleLargeFileModeReevaluation(after: 0.8)
+                    // FORK: size is now final — auto-pick Responsive/Plain Text for this document.
+                    forkApplyAutoLargeFileModeIfNeeded()
                 }
                 scheduleHighlightRefresh()
             }
@@ -2038,6 +2052,20 @@ struct ContentView: View {
         }
         .onChange(of: largeFileOpenModeRaw) { _, _ in
             updateWindowChrome()
+            // MARK: - FORK — live re-apply the large-file open mode to the CURRENTLY open document.
+            // Upstream only consults the mode at file-open time, so switching mid-session did nothing
+            // until close+reopen. The document text is unchanged across a mode switch, so bumping the
+            // external-mutation revision alone is NOT enough — the highlight cache still matches
+            // (same text/lang/scheme) and `scheduleHighlightIfNeeded` early-returns. `highlightRefreshToken`
+            // is part of the cache-equality key, so bumping it forces the recolor (same lever used for
+            // theme/translucency changes). E.g. Plain Text → Standard now recolors immediately.
+            editorExternalMutationRevision &+= 1
+            highlightRefreshToken &+= 1
+        }
+        // FORK: re-apply highlighting live when the configurable non-JSON highlight ceiling changes.
+        .onChange(of: forkNonJSONHighlightMaxRaw) { _, _ in
+            editorExternalMutationRevision &+= 1
+            highlightRefreshToken &+= 1
         }
         .onChange(of: remoteSessionsEnabled) { _, _ in
             updateWindowChrome()
@@ -2224,6 +2252,8 @@ struct ContentView: View {
             .onChange(of: viewModel.selectedTabID) { previousTabID, selectedTabID in
                 guard previousTabID != selectedTabID else { return }
                 previousSelectedTabID = previousTabID
+                // FORK: re-determine the auto large-file mode for the newly selected document.
+                forkApplyAutoLargeFileModeIfNeeded()
 #if os(macOS)
                 updateWindowChrome()
 #endif
@@ -3398,6 +3428,40 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - FORK — auto mode determination (no persistence)
+    //
+    // On each document open the mode is chosen from size vs the configurable highlight ceiling:
+    //   • fits under the ceiling  → Responsive (viewport highlighting)
+    //   • over the ceiling        → Plain Text (no highlighting, fast)
+    // Standard is never auto-selected — it's only reachable when the user explicitly picks it (the
+    // "make it slow, I want full highlighting" choice). The result is written to the live effective
+    // mode (largeFileOpenModeRaw) that all downstream consumers already read; it is NOT a persisted
+    // user preference in spirit — every open re-determines it, and an explicit pick lasts only for
+    // the current document (see forkAutoModeDecidedForResourceID).
+
+    /// The mode auto-selection would pick for the current document, by size.
+    var forkAutoSelectedLargeFileMode: String {
+        let ceiling = forkNonJSONHighlightMaxRaw <= 0 ? Int.max : forkNonJSONHighlightMaxRaw
+        return currentDocumentUTF16Length <= ceiling ? "deferred" : "plainText"
+    }
+
+    /// True when the current mode is the one auto-selection would pick (vs. an explicit override).
+    var forkLargeFileModeIsAuto: Bool {
+        largeFileOpenModeRaw == forkAutoSelectedLargeFileMode
+    }
+
+    /// Re-run the size-based auto determination for the currently open document. Called on open and
+    /// on tab switch. Skips if we already decided for this resource (preserves an explicit override).
+    func forkApplyAutoLargeFileModeIfNeeded() {
+        let resourceID = documentResourceID(for: viewModel.selectedTabID)
+        guard forkAutoModeDecidedForResourceID != resourceID else { return }
+        forkAutoModeDecidedForResourceID = resourceID
+        let auto = forkAutoSelectedLargeFileMode
+        if largeFileOpenModeRaw != auto {
+            largeFileOpenModeRaw = auto
+        }
+    }
+
     var currentDocumentFileSizeText: String {
         let byteCount = viewModel.selectedTab?.fileByteCount ?? currentContent.utf8.count
         return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
@@ -3426,7 +3490,10 @@ struct ContentView: View {
         if viewModel.selectedTab?.isPartialFilePreview == true {
             return "Partial Open • \(currentDocumentFileSizeText) • Read-Only"
         }
-        return "Large File • \(currentDocumentFileSizeText) • \(currentLargeFileOpenModeLabel)"
+        // FORK: tag the mode with "Auto" when it's the size-based auto pick (vs an explicit override),
+        // so the user can see what was auto-selected for this document.
+        let modeLabel = forkLargeFileModeIsAuto ? "\(currentLargeFileOpenModeLabel) · Auto" : currentLargeFileOpenModeLabel
+        return "Large File • \(currentDocumentFileSizeText) • \(modeLabel)"
     }
 
     var remoteSessionStatusBadgeText: String {
@@ -3512,7 +3579,15 @@ struct ContentView: View {
     }
 
     private var sidebarTOCContent: String {
-        if effectiveLargeFileModeEnabled || currentDocumentUTF16Length >= 400_000 {
+        // MARK: - FORK — feed the outline real content up to the user-configurable outline ceiling,
+        // even in large-file mode. Upstream blanked the outline for ANY large file (and any file
+        // ≥400K), so a 313 KB XML opened as "Large File" always produced an empty outline regardless
+        // of the outline threshold. Now the single gate is the configurable limit (0 = whole document);
+        // SidebarView applies the same ceiling before it scans, so we never hand it more than allowed.
+        // Read the observed @AppStorage (not the UserDefaults helper) so this recomputes live when
+        // the user changes the outline ceiling. 0 = whole document (no limit).
+        let limit = forkOutlineMaxRaw <= 0 ? Int.max : forkOutlineMaxRaw
+        if currentDocumentUTF16Length >= limit {
             return ""
         }
         return currentContent
@@ -3845,7 +3920,9 @@ struct ContentView: View {
     }
 
     private var tocSidebarResizeHandle: some View {
-        let drag = DragGesture(minimumDistance: 0)
+        // FORK BUGFIX: global coordinate space so the handle's own motion doesn't pollute the drag
+        // translation (removes the resize jitter). See ContentView+ProjectSidebar for the rationale.
+        let drag = DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 let startWidth = tocSidebarResizeStartWidth ?? clampedTOCSidebarWidth
                 if tocSidebarResizeStartWidth == nil {
@@ -3936,7 +4013,9 @@ struct ContentView: View {
                     markdownFormattingControlBar
                 }
 
-                if (isDelimitedFileLanguage || isPlistDocument || isAppleCrashReportDocument) && !brainDumpLayoutEnabled {
+                // FORK: unified view-mode bar — CSV/plist/crash AND preview (Markdown/HTML/SVG) now
+                // share one inline control here, instead of the preview toggle living in the toolbar.
+                if forkShouldShowViewModeBar && !brainDumpLayoutEnabled {
                     structuredDataModeControl
                 }
 
@@ -4029,14 +4108,9 @@ struct ContentView: View {
                         }
                     }
                 )
-                .overlay(alignment: .topTrailing) {
-                    if effectiveLargeFileModeEnabled && !brainDumpLayoutEnabled {
-                        largeFileSessionBadge
-                            .padding(.top, 10)
-                            .padding(.trailing, 12)
-                        .zIndex(5)
-                    }
-                }
+                // MARK: - FORK — the top-right large-file session badge was removed: it duplicated the
+                // status-bar large-file control and obstructed the top-right of the viewport. The single
+                // source of truth for large-file mode now lives in the status bar (see largeFileSessionBadge).
                 .overlay(alignment: markdownFormattingOverlayAlignment) {
                     if shouldPlaceMarkdownFormattingBelowTabs {
                         markdownFormattingControlBar
