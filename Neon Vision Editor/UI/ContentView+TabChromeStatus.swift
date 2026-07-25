@@ -737,26 +737,38 @@ extension ContentView {
         let isSelected = viewModel.selectedTabID == tab.id
         let wasPreviouslySelected = previousSelectedTabID == tab.id && !isSelected
         let isDropTarget = tabDropInsertionTabID == tab.id
-        return HStack(spacing: 8) {
+        return HStack(spacing: ForkDesign.Space.sm) {
             fileTabSelectButton(for: tab, isSelected: isSelected)
             fileTabCloseButton(for: tab)
         }
+        // MARK: - FORK (Bold chrome): the tab bar itself is now accent-tinted, so the active tab reads
+        // as continuous with the CANVAS (the true editor background) — a clear "this is the open
+        // document" cue against the themed shell — carried by a hairline accent border. Inactive tabs
+        // stay quiet, receding into the themed chrome.
         .background(
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(0.18) : Color.secondary.opacity(0.10))
+            RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous)
+                .fill(isSelected
+                      ? AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
+                      : AnyShapeStyle(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.10)))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous)
+                .stroke(isSelected ? forkAccent.opacity(0.55) : Color.clear, lineWidth: 1)
         )
         .overlay(alignment: isDropTarget && !tabDropInsertionBefore ? .trailing : .leading) {
 #if os(macOS)
-            if isSelected || wasPreviouslySelected || isDropTarget {
+            // FORK (Phase 3): selection is now carried by the accent border above, so the left-edge
+            // capsule is reserved for the drop-target and just-deselected cues (avoids double-signalling).
+            if wasPreviouslySelected || isDropTarget {
                 Capsule()
-                    .fill(isDropTarget || isSelected ? Color.accentColor : Color.yellow)
+                    .fill(isDropTarget ? forkAccent : Color.yellow)
                     .frame(width: 3)
                     .padding(.vertical, 3)
                     .accessibilityHidden(true)
             }
 #endif
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .contentShape(RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous))
 #if os(macOS)
         .onTapGesture {
             viewModel.selectTab(id: tab.id)
@@ -930,7 +942,8 @@ extension ContentView {
 #endif
 
     private var fileTabBarContainerShape: RoundedRectangle {
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
+        // FORK (Phase 3 token pass): container radius from the shared scale (was literal 14).
+        RoundedRectangle(cornerRadius: ForkDesign.Radius.large, style: .continuous)
     }
 
     private var vimStatusSuffix: String {
@@ -978,9 +991,16 @@ extension ContentView {
                 }
                 .padding(.horizontal, ForkDesign.Space.sm)
                 .padding(.vertical, ForkDesign.Space.xxs)
+                // FORK (Bold chrome): the status strip is now accent-tinted, so the primary pill reads
+                // as canvas-continuous (theme background) with a hairline accent border — the same
+                // "raised on the shell" language as the active tab.
                 .background(
                     RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous)
-                        .fill(forkAccent.opacity(colorScheme == .dark ? 0.16 : 0.10))
+                        .fill(currentEditorTheme(colorScheme: colorScheme).background)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous)
+                        .stroke(forkAccent.opacity(0.35), lineWidth: 1)
                 )
             }
 

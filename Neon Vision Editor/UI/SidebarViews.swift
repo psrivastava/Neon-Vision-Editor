@@ -129,18 +129,17 @@ struct SidebarView: View {
     }
 
     private var sidebarSurfaceFill: AnyShapeStyle {
-        if translucentBackgroundEnabled {
-            #if os(macOS)
-            let mode = MacTranslucencyMode(rawValue: macTranslucencyModeRaw) ?? .balanced
-            return AnyShapeStyle(mode.material.opacity(mode.opacity))
-            #else
-            return AnyShapeStyle(.ultraThinMaterial)
-            #endif
-        }
-        // MARK: - FORK (UX-F2): tint the sidebar surface off the editor background so the panel reads
-        // as distinct chrome instead of blending into the editor (matches ContentView.forkChromeSurfaceColor).
+        // MARK: - FORK (Bold chrome): the sidebar wears the active theme's signature hue, matching the
+        // status bar / tab bar (ContentView.forkChromeSurfaceColor → forkBoldChromeSurfaceColor). When
+        // translucency is on we tint the glass so the theme shows through the vibrancy rather than a
+        // theme-independent flat material.
         let theme = currentEditorTheme(colorScheme: colorScheme)
-        return AnyShapeStyle(theme.background.forkBlended(with: theme.text, amount: colorScheme == .dark ? 0.08 : 0.06))
+        let bold = forkBoldChromeSurfaceColor(theme: theme, colorScheme: colorScheme)
+        if translucentBackgroundEnabled {
+            let frostOpacity = colorScheme == .dark ? 0.62 : 0.55
+            return AnyShapeStyle(bold.opacity(frostOpacity))
+        }
+        return AnyShapeStyle(bold)
     }
 
     private var sidebarSurfaceStroke: Color {

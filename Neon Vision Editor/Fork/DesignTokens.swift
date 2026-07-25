@@ -106,8 +106,9 @@ extension ContentView {
         forkChromeTextColor.forkBlended(with: forkChromeSurfaceColor, amount: 0.22)
     }
 
-    /// Accent for the single "active/selected" chrome affordance. Uses the system accent so it tracks
-    /// the user's macOS tint and the app theme, rather than a hardcoded brand hue (Direction B:
-    /// consistent *use* of one accent, not one fixed color).
-    var forkAccent: Color { Color.accentColor }
+    /// Accent for the single "active/selected" chrome affordance (active tab, status pill, Vim
+    /// indicator). BOLD chrome: this tracks the active theme's signature hue so the accent family
+    /// moves with the theme alongside the shell tint, rather than the system tint. Direction B —
+    /// consistent *use* of one accent, sourced from the theme.
+    var forkAccent: Color { forkThemeSignatureAccent }
 }

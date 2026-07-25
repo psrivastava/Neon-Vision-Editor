@@ -716,6 +716,81 @@ func isValidRange(_ range: NSRange, utf16Length: Int) -> Bool {
     isSyntaxHighlightRangeValid(range, utf16Length: utf16Length)
 }
 
+// MARK: - FORK — CSV rainbow columns
+//
+// Single-pass scanner over the requested range. Each field is colored by its COLUMN index (cycled
+// through the theme's own literal palette), so column 1, 2, 3… each read in a distinct hue. The
+// column index resets to 0 at every newline and increments at each UNQUOTED comma. Quoted fields
+// (including embedded commas / "" escapes) are treated as one field. Commas themselves stay muted
+// (the theme's comment color) so the columns visually separate. Purely additive; regex path unused
+// for CSV now (see caller).
+nonisolated func forkCSVRainbowColorRanges(
+    text: NSString,
+    in range: NSRange,
+    colors: SyntaxColors
+) -> [(NSRange, Color)] {
+    let palette = colors.forkRainbowPalette
+    guard !palette.isEmpty else { return [] }
+    let rangeEnd = NSMaxRange(range)
+    var out: [(NSRange, Color)] = []
+
+    var i = range.location
+    var column = 0
+    var fieldStart = i          // start of the current field's visible text
+    var fieldHasContent = false // whether we've seen any non-separator char in this field
+
+    func flushField(end: Int) {
+        if fieldHasContent && end > fieldStart {
+            out.append((NSRange(location: fieldStart, length: end - fieldStart),
+                        palette[column % palette.count]))
+        }
+    }
+
+    while i < rangeEnd {
+        let ch = text.character(at: i)
+        if ch == 34 { // " — consume a quoted field (may contain commas, newlines, "" escapes)
+            fieldHasContent = true
+            i += 1
+            while i < rangeEnd {
+                let c = text.character(at: i)
+                if c == 34 {
+                    if i + 1 < rangeEnd && text.character(at: i + 1) == 34 {
+                        i += 2   // "" escape
+                        continue
+                    }
+                    i += 1
+                    break
+                }
+                i += 1
+            }
+            continue
+        }
+        if ch == 44 { // , — field separator
+            flushField(end: i)
+            out.append((NSRange(location: i, length: 1), colors.comment)) // muted separator
+            column += 1
+            i += 1
+            fieldStart = i
+            fieldHasContent = false
+            continue
+        }
+        if ch == 10 || ch == 13 { // newline — end of row, reset columns
+            flushField(end: i)
+            column = 0
+            i += 1
+            fieldStart = i
+            fieldHasContent = false
+            continue
+        }
+        if ch != 32 && ch != 9 { // non-whitespace marks real field content
+            fieldHasContent = true
+        }
+        i += 1
+    }
+    flushField(end: rangeEnd)
+    return out
+}
+
 nonisolated func fastSyntaxColorRanges(
     language: String,
     profile: SyntaxPatternProfile,
@@ -724,46 +799,16 @@ nonisolated func fastSyntaxColorRanges(
     colors: SyntaxColors
 ) -> [(NSRange, Color)]? {
     let lower = language.lowercased()
-    let useCSVFastProfile: Bool = {
+    // FORK: all CSV (any size, both fast profile and normal) uses the rainbow-column colorizer.
+    // Regex→fixed-color can't express "column N → color N" because the color depends on comma
+    // position, not text; this single-pass scanner tracks the column index instead.
+    if lower == "csv" {
         switch profile {
-        case .csvFast:
-            return true
-        case .full:
-            return lower == "csv" && range.length >= 180_000
+        case .csvFast, .full:
+            return forkCSVRainbowColorRanges(text: text, in: range, colors: colors)
         default:
-            return false
+            break
         }
-    }()
-    if useCSVFastProfile {
-        let rangeEnd = NSMaxRange(range)
-        var out: [(NSRange, Color)] = []
-        var i = range.location
-        while i < rangeEnd {
-            let ch = text.character(at: i)
-            if ch == 34 { // "
-                let start = i
-                i += 1
-                while i < rangeEnd {
-                    let c = text.character(at: i)
-                    if c == 34 {
-                        if i + 1 < rangeEnd && text.character(at: i + 1) == 34 {
-                            i += 2
-                            continue
-                        }
-                        i += 1
-                        break
-                    }
-                    i += 1
-                }
-                out.append((NSRange(location: start, length: max(0, i - start)), colors.string))
-                continue
-            }
-            if ch == 44 { // ,
-                out.append((NSRange(location: i, length: 1), colors.property))
-            }
-            i += 1
-        }
-        return out
     }
 
     if case .htmlFast = profile, lower == "html" || lower == "xml" {

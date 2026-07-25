@@ -44,6 +44,16 @@ struct SyntaxColors: Sendable {
     let builtin: Color
     let type: Color
 
+    // MARK: - FORK — CSV rainbow columns
+    //
+    // Ordered palette of THIS theme's own literal syntax colors, cycled per CSV column so each column
+    // reads in a distinct hue (columnIndex % count). Order chosen for maximum hue separation between
+    // adjacent columns; every entry is a real theme color, so it honors the active theme automatically.
+    // `nonisolated` so the syntax range-computer (which runs off the main actor) can read it.
+    nonisolated var forkRainbowPalette: [Color] {
+        [keyword, string, number, type, builtin, variable, tag, atom, def, meta]
+    }
+
     static func fromVibrantLightTheme(colorScheme: ColorScheme) -> SyntaxColors {
         let baseColors: [String: (light: Color, dark: Color)] = [
             "keyword": (light: Color(red: 251/255, green: 0/255, blue: 186/255), dark: Color(red: 251/255, green: 0/255, blue: 186/255)),

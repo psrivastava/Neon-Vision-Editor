@@ -19,34 +19,33 @@ import SwiftUI
 
 extension ContentView {
 
-    /// Surface fill for chrome (status bar, sidebars, tab bar). One step off the editor background so
-    /// chrome is visually distinct. Respects translucency: when the window is translucent we lean on
-    /// a material rather than a flat tint so the vibrancy is preserved.
+    /// Surface fill for chrome (status bar, sidebars, tab bar). BOLD (MeshClaw-style): the shell wears
+    /// the active theme's signature hue so switching themes visibly recolors the chrome, not just the
+    /// code. When the window is translucent we keep the vibrancy but tint it, so the glass is themed
+    /// too — a partially-opaque accent frost over the window's visual-effect backing.
     var forkChromeSurfaceStyle: AnyShapeStyle {
-#if os(macOS)
         if enableTranslucentWindow {
-            // A slightly stronger material than the editor's so chrome still separates over vibrancy.
-            return AnyShapeStyle(.regularMaterial)
+            // Themed frost: the bold surface at partial opacity lets the window vibrancy bleed through
+            // while still carrying the theme hue (a flat material would read theme-independent).
+            let frostOpacity = colorScheme == .dark ? 0.62 : 0.55
+            return AnyShapeStyle(forkChromeSurfaceColor.opacity(frostOpacity))
         }
         return AnyShapeStyle(forkChromeSurfaceColor)
-#else
-        if enableTranslucentWindow {
-            return AnyShapeStyle(.thinMaterial)
-        }
-        return AnyShapeStyle(forkChromeSurfaceColor)
-#endif
     }
 
-    /// Solid chrome tone: the editor background nudged toward the foreground text, so it reads as a
-    /// separate surface in both light and dark themes (dark → slightly lighter, light → slightly
-    /// darker). Derived from the theme so it stays correct when the user switches themes.
+    /// Bold chrome tone: the editor background pulled toward the theme's signature accent, so the shell
+    /// visibly "wears" the theme in both light and dark. Derived from the theme, so it re-tints the
+    /// moment the user switches themes. Shared with the sidebars via `forkBoldChromeSurfaceColor`.
     var forkChromeSurfaceColor: Color {
         let theme = currentEditorTheme(colorScheme: colorScheme)
-        let base = theme.background
-        let tint = theme.text
-        // 8% toward text in dark, 6% in light — enough to separate, not enough to look like a panel.
-        let amount = colorScheme == .dark ? 0.08 : 0.06
-        return base.forkBlended(with: tint, amount: amount)
+        return forkBoldChromeSurfaceColor(theme: theme, colorScheme: colorScheme)
+    }
+
+    /// The theme's signature hue — the color the bold chrome (and the active-tab / status-pill accent)
+    /// wears. Uses the theme's own `keyword` syntax color, the most saturated identity color across the
+    /// palettes, so each theme keeps a distinct chrome character.
+    var forkThemeSignatureAccent: Color {
+        currentEditorTheme(colorScheme: colorScheme).syntax.keyword
     }
 
     /// Hairline separator color for chrome edges (top of status bar, under the tab bar, pane edges).
@@ -55,11 +54,17 @@ extension ContentView {
         colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.12)
     }
 
-    /// Higher-contrast status/label text than `.secondary` (which fails 4.5:1 on the blended surface).
+    /// Higher-contrast status/label text than `.secondary`. On the BOLD accent-tinted surface a plain
+    /// blend of the editor text can lose contrast (the surface is no longer near-background), so we
+    /// bias toward the high-contrast pole — white on dark chrome, near-black on light chrome — and only
+    /// lightly soften it. Keeps ≥ 4.5:1 across the themed shells.
     var forkChromeTextColor: Color {
         let theme = currentEditorTheme(colorScheme: colorScheme)
-        // Editor foreground softened ~30% toward the surface — legible but still secondary-feeling.
-        return theme.text.forkBlended(with: forkChromeSurfaceColor, amount: 0.30)
+        let pole: Color = colorScheme == .dark ? .white : .black
+        // Start from the theme text, pull it toward the contrast pole so it survives the bold tint,
+        // then soften a hair toward the surface so it still reads as chrome, not editor body text.
+        let boosted = theme.text.forkBlended(with: pole, amount: colorScheme == .dark ? 0.35 : 0.45)
+        return boosted.forkBlended(with: forkChromeSurfaceColor, amount: 0.12)
     }
 
     /// A 1px top separator to sit above a docked chrome bar (e.g. the status bar). Place as an overlay
@@ -71,6 +76,24 @@ extension ContentView {
             .frame(maxWidth: .infinity, alignment: .top)
             .accessibilityHidden(true)
     }
+}
+
+/// The single source of truth for the BOLD chrome tone, as a free function so both `ContentView`
+/// (status bar, tab bar) and `SidebarViews` produce the identical surface. The editor background is
+/// pulled a substantial way toward the theme's signature accent (its `keyword` color), then nudged
+/// lighter/darker so the chrome still separates from the code canvas beneath it.
+///
+/// Bold intensity: ~26% toward the accent in dark, ~20% in light — assertive enough that each theme
+/// clearly "wears" its color across the shell (the MeshClaw feel), while the canvas stays the true
+/// theme background. Shared by `ContentView` and `SidebarViews` (both main-actor).
+@MainActor
+func forkBoldChromeSurfaceColor(theme: EditorTheme, colorScheme: ColorScheme) -> Color {
+    let accent = theme.syntax.keyword
+    let accentAmount = colorScheme == .dark ? 0.26 : 0.20
+    let tinted = theme.background.forkBlended(with: accent, amount: accentAmount)
+    // Small push toward the text pole so the accent-tinted shell still reads as a distinct surface
+    // above/around the editor background (dark → a touch lighter, light → a touch darker).
+    return tinted.forkBlended(with: theme.text, amount: colorScheme == .dark ? 0.05 : 0.04)
 }
 
 extension Color {
