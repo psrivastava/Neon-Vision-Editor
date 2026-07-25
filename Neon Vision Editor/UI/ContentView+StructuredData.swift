@@ -28,7 +28,7 @@ extension ContentView {
     }
 
     private var forkPreviewModeControl: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ForkDesign.Space.sm) {
             forkPreviewModePicker
             if isPreviewVisible {
                 // Same preview-position control that used to sit in the toolbar, now inline.
@@ -36,8 +36,8 @@ extension ContentView {
             }
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, ForkDesign.Space.md)
+        .padding(.vertical, ForkDesign.Space.sm)
         .background {
             structuredHeaderBackgroundShape
                 .fill(delimitedHeaderBackgroundColor)
@@ -59,7 +59,7 @@ extension ContentView {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(maxWidth: 210)
+        .frame(maxWidth: ForkDesign.Control.segmentedMaxWidth)
         .disabled(!isPreviewSupportedDocument)
         .accessibilityLabel(previewTitle)
         .accessibilityHint("Switch between the source text and the rendered preview")
@@ -83,22 +83,22 @@ extension ContentView {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: ForkDesign.Space.sm) {
                     delimitedModePicker
                     structuredDelimitedStatus
                     Spacer(minLength: 0)
                 }
             }
 #else
-            HStack(spacing: 10) {
+            HStack(spacing: ForkDesign.Space.sm) {
                 delimitedModePicker
                 structuredDelimitedStatus
                 Spacer(minLength: 0)
             }
 #endif
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, ForkDesign.Space.md)
+        .padding(.vertical, ForkDesign.Space.sm)
         .background {
             structuredHeaderBackgroundShape
                 .fill(delimitedHeaderBackgroundColor)
@@ -116,22 +116,22 @@ extension ContentView {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             } else {
-                HStack(spacing: 10) {
+                HStack(spacing: ForkDesign.Space.sm) {
                     plistModePicker
                     structuredPlistStatus
                     Spacer(minLength: 0)
                 }
             }
 #else
-            HStack(spacing: 10) {
+            HStack(spacing: ForkDesign.Space.sm) {
                 plistModePicker
                 structuredPlistStatus
                 Spacer(minLength: 0)
             }
 #endif
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, ForkDesign.Space.md)
+        .padding(.vertical, ForkDesign.Space.sm)
         .background {
             structuredHeaderBackgroundShape
                 .fill(delimitedHeaderBackgroundColor)
@@ -139,13 +139,13 @@ extension ContentView {
     }
 
     private var crashReportModeControl: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: ForkDesign.Space.sm) {
             crashReportModePicker
             structuredCrashReportStatus
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, ForkDesign.Space.md)
+        .padding(.vertical, ForkDesign.Space.sm)
         .background {
             structuredHeaderBackgroundShape
                 .fill(delimitedHeaderBackgroundColor)
@@ -159,7 +159,7 @@ extension ContentView {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(maxWidth: 210)
+        .frame(maxWidth: ForkDesign.Control.segmentedMaxWidth)
         .accessibilityLabel("CSV or TSV view mode")
         .accessibilityHint("Switch between table mode and raw text mode")
     }
@@ -193,7 +193,7 @@ extension ContentView {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(maxWidth: 240)
+        .frame(maxWidth: ForkDesign.Control.segmentedMaxWidth)
         .accessibilityLabel("plist view mode")
         .accessibilityHint("Switch between structured plist mode and raw text mode")
     }
@@ -205,7 +205,7 @@ extension ContentView {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(maxWidth: 240)
+        .frame(maxWidth: ForkDesign.Control.segmentedMaxWidth)
         .accessibilityLabel("Apple crash report view mode")
         .accessibilityHint("Switch between a categorized crash summary and raw text")
     }

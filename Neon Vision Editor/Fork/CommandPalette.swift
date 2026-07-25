@@ -99,6 +99,13 @@ private struct ForkCommandPaletteView: View {
                 .focused($queryFieldFocused)
                 .onChange(of: query) { _, _ in selectedIndex = 0 }
                 .onSubmit { runSelected() }
+                // FORK: the focused field is first responder and swallows Escape before the background
+                // KeyCatcherView sees it, so Cmd+Shift+P wouldn't dismiss on Esc. Handle Escape on the
+                // field itself (macOS 14+ onKeyPress) — arrow/enter still flow to the KeyHandler.
+                .onKeyPress(.escape) {
+                    onClose()
+                    return .handled
+                }
 
             Divider()
 

@@ -948,43 +948,67 @@ extension ContentView {
     // separator; secondary metadata + Vim in a dimmer tone. Reads as hierarchy, not a flat wall.
     @ViewBuilder
     var forkTieredStatusBar: some View {
-        // One flat, uniformly-spaced row. Each item is its own fixed-size Text so words never
-        // truncate mid-string; NO layoutPriority (that made the HStack hand spare width to primary
-        // items and open an uneven gap). Primary = chrome text; secondary = muted; Vim = accent.
-        let primary = forkPrimaryStatusItems().map { ($0, ForkStatusTier.primary) }
-        let secondary = forkSecondaryStatusItems().map { ($0, ForkStatusTier.secondary) }
+        // MARK: - FORK (Phase 3, design-system): real visual hierarchy instead of one flat gray strip.
+        //  • Primary items (cursor position, line count) sit in a subtle accent-tinted PILL with
+        //    monospaced digits so the numbers don't jitter as you move the caret.
+        //  • Secondary metadata (encoding, line endings, indentation, size, git) is muted, dot-joined,
+        //    and sits after a clear gap — reads as "detail", not competing with the primary group.
+        //  • Vim keeps its accent tint when active.
+        //  All sizes/spacing/radius/colors come from ForkDesign tokens.
+        let primary = forkPrimaryStatusItems()
+        let secondary = forkSecondaryStatusItems()
         let vimText = vimStatusSuffix.replacingOccurrences(of: " • ", with: "")
-        let vim = vimText.isEmpty ? [] : [(vimText, ForkStatusTier.vim)]
-        let all = primary + secondary + vim
-        // FORK: every item shares ONE font size, weight, and color, and the row aligns on the text
-        // baseline — so items read as a single evenly-colored, y-aligned strip (reported: items were
-        // unevenly colored and mis-aligned on the y-axis due to mixed 12/11pt sizes + opacity tiers).
-        HStack(alignment: .firstTextBaseline, spacing: 6) {
-            ForEach(Array(all.enumerated()), id: \.offset) { index, entry in
-                if index > 0 {
-                    Text("·")
-                        .font(.system(size: 12))
-                        .foregroundColor(forkChromeSeparatorColor)
-                        .fixedSize()
+
+        HStack(alignment: .firstTextBaseline, spacing: ForkDesign.Space.md) {
+            // Primary group — grouped pill with monospaced numerals.
+            if !primary.isEmpty {
+                HStack(spacing: ForkDesign.Space.sm) {
+                    ForEach(Array(primary.enumerated()), id: \.offset) { index, item in
+                        if index > 0 {
+                            Text("·")
+                                .font(ForkDesign.Text.caption(.regular))
+                                .foregroundColor(forkChromeSeparatorColor)
+                                .fixedSize()
+                        }
+                        Text(item)
+                            .font(.system(size: ForkDesign.Text.bodySize, weight: .medium, design: .monospaced))
+                            .foregroundColor(forkTextPrimary)
+                            .fixedSize()
+                    }
                 }
-                Text(entry.0)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(forkStatusColor(for: entry.1))
+                .padding(.horizontal, ForkDesign.Space.sm)
+                .padding(.vertical, ForkDesign.Space.xxs)
+                .background(
+                    RoundedRectangle(cornerRadius: ForkDesign.Radius.small, style: .continuous)
+                        .fill(forkAccent.opacity(colorScheme == .dark ? 0.16 : 0.10))
+                )
+            }
+
+            // Secondary group — muted, dot-joined metadata.
+            if !secondary.isEmpty {
+                HStack(spacing: ForkDesign.Space.sm) {
+                    ForEach(Array(secondary.enumerated()), id: \.offset) { index, item in
+                        if index > 0 {
+                            Text("·")
+                                .font(ForkDesign.Text.caption(.regular))
+                                .foregroundColor(forkChromeSeparatorColor)
+                                .fixedSize()
+                        }
+                        Text(item)
+                            .font(ForkDesign.Text.caption())
+                            .foregroundColor(forkTextSecondary)
+                            .fixedSize()
+                    }
+                }
+            }
+
+            // Vim indicator — accent when active.
+            if !vimText.isEmpty {
+                Text(vimText)
+                    .font(ForkDesign.Text.caption(.semibold))
+                    .foregroundColor(vimModeEnabled ? forkAccent : forkTextSecondary)
                     .fixedSize()
             }
-        }
-    }
-
-    private enum ForkStatusTier { case primary, secondary, vim }
-
-    private func forkStatusColor(for tier: ForkStatusTier) -> Color {
-        // FORK: uniform color for all metadata items; only active Vim mode gets an accent tint so it
-        // still stands out. Everything else is the same chrome text color for a consistent strip.
-        switch tier {
-        case .primary, .secondary:
-            return forkChromeTextColor
-        case .vim:
-            return vimModeEnabled ? Color.accentColor.opacity(0.9) : forkChromeTextColor
         }
     }
 
