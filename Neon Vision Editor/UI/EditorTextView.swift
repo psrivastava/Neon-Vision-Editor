@@ -799,6 +799,15 @@ nonisolated func fastSyntaxColorRanges(
     colors: SyntaxColors
 ) -> [(NSRange, Color)]? {
     let lower = language.lowercased()
+    // MARK: - FORK — selectable syntax engine (Settings → Editor). When the user has chosen the
+    // tree-sitter engine, try it first; it returns nil for any language without a loaded grammar or
+    // on parse failure, so we fall through to the existing regex path below (the toggle can never
+    // break a language — worst case is "same as regex"). Phase A: the tree-sitter highlighter is a
+    // stub that always returns nil, so this is a no-op until the grammars are wired in Phase B.
+    if forkCurrentSyntaxEngine() == .treeSitter,
+       let treeSitterRanges = forkTreeSitterColorRanges(language: lower, text: text, in: range, colors: colors) {
+        return treeSitterRanges
+    }
     // FORK: all CSV (any size, both fast profile and normal) uses the rainbow-column colorizer.
     // Regex→fixed-color can't express "column N → color N" because the color depends on comma
     // position, not text; this single-pass scanner tracks the column index instead.

@@ -588,6 +588,8 @@ struct ContentView: View {
     @AppStorage("SettingsForkNonJSONHighlightMaxUTF16") var forkNonJSONHighlightMaxRaw: Int = 250_000
     // FORK: configurable outline ceiling; observed so sidebarTOCContent recomputes when it changes.
     @AppStorage("SettingsForkOutlineMaxUTF16") var forkOutlineMaxRaw: Int = 400_000
+    // FORK: selectable syntax engine; observed so flipping it re-highlights the open document live.
+    @AppStorage("SettingsSyntaxEngine") var syntaxEngineRaw: String = SettingsSyntaxEngine.regex.rawValue
     @AppStorage("SettingsRemoteSessionsEnabled") private var remoteSessionsEnabled: Bool = false
     @AppStorage("SettingsRemotePreparedTarget") private var remotePreparedTarget: String = ""
     @State private var remoteSessionStore = RemoteSessionStore.shared
@@ -2073,6 +2075,12 @@ struct ContentView: View {
         }
         // FORK: re-apply highlighting live when the configurable non-JSON highlight ceiling changes.
         .onChange(of: forkNonJSONHighlightMaxRaw) { _, _ in
+            editorExternalMutationRevision &+= 1
+            highlightRefreshToken &+= 1
+        }
+        // FORK: flipping the syntax engine (regex ↔ tree-sitter) re-highlights the open document
+        // immediately so the two engines can be A/B compared on the same file without reopening.
+        .onChange(of: syntaxEngineRaw) { _, _ in
             editorExternalMutationRevision &+= 1
             highlightRefreshToken &+= 1
         }

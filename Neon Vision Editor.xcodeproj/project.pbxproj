@@ -15,6 +15,18 @@
 		A10000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* ShareViewController.swift */; };
 		A10000000000000000000002 /* Neon Vision Editor Share Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */; };
+		A1B2C3D40000000000000011 /* SwiftTreeSitter in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40000000000000001 /* SwiftTreeSitter */; };
+		A1B2C3D40000000000000012 /* TreeSitterHTML in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40000000000000002 /* TreeSitterHTML */; };
+		A1B2C3D4000000000000B001 /* TreeSitterCSS in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C001 /* TreeSitterCSS */; };
+		A1B2C3D4000000000000B002 /* TreeSitterJSON in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C002 /* TreeSitterJSON */; };
+		A1B2C3D4000000000000B003 /* TreeSitterJavaScript in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C003 /* TreeSitterJavaScript */; };
+		A1B2C3D4000000000000B004 /* TreeSitterPython in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C004 /* TreeSitterPython */; };
+		A1B2C3D4000000000000B005 /* TreeSitterC in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C005 /* TreeSitterC */; };
+		A1B2C3D4000000000000B006 /* TreeSitterBash in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C006 /* TreeSitterBash */; };
+		A1B2C3D4000000000000B007 /* TreeSitterGo in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C007 /* TreeSitterGo */; };
+		A1B2C3D4000000000000B008 /* TreeSitterRuby in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C008 /* TreeSitterRuby */; };
+		A1B2C3D4000000000000B009 /* TreeSitterRust in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C009 /* TreeSitterRust */; };
+		A1B2C3D4000000000000B010 /* TreeSitterJava in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C010 /* TreeSitterJava */; };
 		D20000000000000000000008 /* Neon Vision Editor Share Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
@@ -128,6 +140,18 @@
 			files = (
 				98AB77E63011389800F533FA /* SwiftData.framework in Frameworks */,
 				B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */,
+				A1B2C3D40000000000000011 /* SwiftTreeSitter in Frameworks */,
+				A1B2C3D40000000000000012 /* TreeSitterHTML in Frameworks */,
+				A1B2C3D4000000000000B001 /* TreeSitterCSS in Frameworks */,
+				A1B2C3D4000000000000B002 /* TreeSitterJSON in Frameworks */,
+				A1B2C3D4000000000000B003 /* TreeSitterJavaScript in Frameworks */,
+				A1B2C3D4000000000000B004 /* TreeSitterPython in Frameworks */,
+				A1B2C3D4000000000000B005 /* TreeSitterC in Frameworks */,
+				A1B2C3D4000000000000B006 /* TreeSitterBash in Frameworks */,
+				A1B2C3D4000000000000B007 /* TreeSitterGo in Frameworks */,
+				A1B2C3D4000000000000B008 /* TreeSitterRuby in Frameworks */,
+				A1B2C3D4000000000000B009 /* TreeSitterRust in Frameworks */,
+				A1B2C3D4000000000000B010 /* TreeSitterJava in Frameworks */,
 			);
 		};
 /* End PBXFrameworksBuildPhase section */
@@ -285,6 +309,18 @@
 			name = "Neon Vision Editor Direct";
 			packageProductDependencies = (
 				B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */,
+				A1B2C3D40000000000000001 /* SwiftTreeSitter */,
+				A1B2C3D40000000000000002 /* TreeSitterHTML */,
+				A1B2C3D4000000000000C001 /* TreeSitterCSS */,
+				A1B2C3D4000000000000C002 /* TreeSitterJSON */,
+				A1B2C3D4000000000000C003 /* TreeSitterJavaScript */,
+				A1B2C3D4000000000000C004 /* TreeSitterPython */,
+				A1B2C3D4000000000000C005 /* TreeSitterC */,
+				A1B2C3D4000000000000C006 /* TreeSitterBash */,
+				A1B2C3D4000000000000C007 /* TreeSitterGo */,
+				A1B2C3D4000000000000C008 /* TreeSitterRuby */,
+				A1B2C3D4000000000000C009 /* TreeSitterRust */,
+				A1B2C3D4000000000000C010 /* TreeSitterJava */,
 			);
 			productName = "Neon Vision Editor";
 			productReference = D20000000000000000000001 /* Neon Vision Editor.app */;
@@ -331,6 +367,18 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */,
+				A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */,
+				A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */,
+				A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */,
+				A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */,
+				A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */,
+				A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */,
+				A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */,
+				A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */,
+				A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */,
+				A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */,
+				A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */,
 			);
 			preferredProjectObjectVersion = 100;
 			productRefGroup = 98EAE6342E5F15E80050E579 /* Products */;
@@ -1289,6 +1337,72 @@
 				minimumVersion = 2.9.0;
 			};
 		};
+		A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ChimeHQ/SwiftTreeSitter";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.9.0;
+			};
+		};
+		A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-html";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.23.2;
+			};
+		};
+		A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-css";
+			requirement = { kind = exactVersion; version = 0.23.2; };
+		};
+		A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-json";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.24.8; };
+		};
+		A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-javascript";
+			requirement = { kind = exactVersion; version = 0.23.1; };
+		};
+		A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-python";
+			requirement = { kind = exactVersion; version = 0.23.6; };
+		};
+		A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-c";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.24.2; };
+		};
+		A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-bash";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.25.1; };
+		};
+		A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-go";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.25.0; };
+		};
+		A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-ruby";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.23.1; };
+		};
+		A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-rust";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.24.2; };
+		};
+		A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-java";
+			requirement = { kind = upToNextMinorVersion; minimumVersion = 0.23.5; };
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -1296,6 +1410,66 @@
 			isa = XCSwiftPackageProductDependency;
 			package = B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */;
 			productName = Sparkle;
+		};
+		A1B2C3D40000000000000001 /* SwiftTreeSitter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */;
+			productName = SwiftTreeSitter;
+		};
+		A1B2C3D40000000000000002 /* TreeSitterHTML */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */;
+			productName = TreeSitterHTML;
+		};
+		A1B2C3D4000000000000C001 /* TreeSitterCSS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */;
+			productName = TreeSitterCSS;
+		};
+		A1B2C3D4000000000000C002 /* TreeSitterJSON */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */;
+			productName = TreeSitterJSON;
+		};
+		A1B2C3D4000000000000C003 /* TreeSitterJavaScript */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */;
+			productName = TreeSitterJavaScript;
+		};
+		A1B2C3D4000000000000C004 /* TreeSitterPython */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */;
+			productName = TreeSitterPython;
+		};
+		A1B2C3D4000000000000C005 /* TreeSitterC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */;
+			productName = TreeSitterC;
+		};
+		A1B2C3D4000000000000C006 /* TreeSitterBash */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */;
+			productName = TreeSitterBash;
+		};
+		A1B2C3D4000000000000C007 /* TreeSitterGo */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */;
+			productName = TreeSitterGo;
+		};
+		A1B2C3D4000000000000C008 /* TreeSitterRuby */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */;
+			productName = TreeSitterRuby;
+		};
+		A1B2C3D4000000000000C009 /* TreeSitterRust */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */;
+			productName = TreeSitterRust;
+		};
+		A1B2C3D4000000000000C010 /* TreeSitterJava */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */;
+			productName = TreeSitterJava;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -535,6 +535,7 @@ struct NeonVisionEditorApp: App {
             "SettingsShowLineNumbers": true,
             "SettingsForkShowBreadcrumbBar": true, // FORK: breadcrumb bar (task 6)
             "SettingsForkPreviewOrientation": "side", // FORK: preview split orientation (task 8) — side | bottom
+            "SettingsSyntaxEngine": "regex", // FORK: highlight engine — regex (default) | treeSitter
             "SettingsForkNonJSONHighlightMaxUTF16": 250_000, // FORK: non-JSON large-file highlight ceiling (0 = unlimited)
             "SettingsForkOutlineMaxUTF16": 400_000, // FORK: document-outline size ceiling (0 = whole document)
             "SettingsHighlightCurrentLine": false,

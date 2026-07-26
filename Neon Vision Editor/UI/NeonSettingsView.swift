@@ -215,6 +215,8 @@ struct NeonSettingsView: View {
     // FORK: user-configurable thresholds (UTF-16 length; 0 = unlimited / whole document).
     @AppStorage("SettingsForkNonJSONHighlightMaxUTF16") private var forkNonJSONHighlightMaxRaw: Int = 250_000
     @AppStorage("SettingsForkOutlineMaxUTF16") private var forkOutlineMaxRaw: Int = 400_000
+    // FORK: selectable syntax highlighting engine (regex default / tree-sitter beta).
+    @AppStorage("SettingsSyntaxEngine") private var syntaxEngineRaw: String = SettingsSyntaxEngine.regex.rawValue
 #if os(iOS) || os(visionOS)
     @AppStorage("SettingsToolbarShowSearchIOS") private var toolbarShowSearchIOS: Bool = true
     @AppStorage("SettingsToolbarShowCompareIOS") private var toolbarShowCompareIOS: Bool = true
@@ -2865,6 +2867,18 @@ struct NeonSettingsView: View {
 
     @ViewBuilder
     private var forkThresholdSettings: some View {
+        Divider()
+        Text("Syntax Highlighting Engine")
+            .font(Typography.sectionHeadline)
+        Picker("Engine", selection: $syntaxEngineRaw) {
+            ForEach(SettingsSyntaxEngine.allCases, id: \.rawValue) { engine in
+                Text(engine.displayName).tag(engine.rawValue)
+            }
+        }
+        Text((SettingsSyntaxEngine(rawValue: syntaxEngineRaw) ?? .regex).helpText)
+            .font(Typography.footnote)
+            .foregroundStyle(.secondary)
+
         Divider()
         Text("Large-File Thresholds")
             .font(Typography.sectionHeadline)
