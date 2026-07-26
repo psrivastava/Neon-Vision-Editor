@@ -977,6 +977,11 @@ func currentEditorTheme(colorScheme: ColorScheme) -> EditorTheme {
             brightenInDark: 0.08
         )
 
+    // NOTE: an earlier WCAG contrast-floor pass here blended each token toward pure black/white to
+    // hit 4.5:1 — but blending toward the achromatic pole DESATURATES the color, muddying the vivid
+    // theme palettes (and weakly-colored languages like HTML) far more than the tiny legibility gain
+    // was worth. Reverted. The tokens are already mode-adjusted above; if a real contrast floor is
+    // wanted it must operate in HSL (lift lightness, preserve hue/saturation), not blend to gray.
     let syntax = SyntaxColors(
         keyword: keyword,
         string: string,

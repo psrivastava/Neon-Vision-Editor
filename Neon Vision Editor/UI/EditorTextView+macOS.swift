@@ -65,7 +65,11 @@ struct CustomTextEditor: NSViewRepresentable {
     }
 
     private func currentLineHighlightColor(for colorScheme: ColorScheme) -> NSColor {
-        NSColor.systemBlue.withAlphaComponent(colorScheme == .dark ? 0.30 : 0.22)
+        // FORK: derive the current-line band from the active theme's cursor color instead of a fixed
+        // systemBlue, so it belongs to whatever theme is active (a blue band looked foreign on green/
+        // purple/amber themes across every language). Kept faint so it never fights the caret or text.
+        let theme = currentEditorTheme(colorScheme: colorScheme)
+        return NSColor(theme.cursor).withAlphaComponent(colorScheme == .dark ? 0.22 : 0.16)
     }
 
     nonisolated static func shouldAllowNonContiguousLayout(
@@ -1441,14 +1445,21 @@ struct CustomTextEditor: NSViewRepresentable {
                         let scopeRange = bracketMatch?.scopeRange ?? indentationMatch?.scopeRange
                         let guideRanges = bracketMatch?.guideMarkerRanges ?? indentationMatch?.guideMarkerRanges ?? []
 
+                        // FORK: derive the scope background + guide colors from the ACTIVE THEME
+                        // instead of hardcoded systemOrange/systemBlue. With themed chrome, a fixed
+                        // orange scope band and blue guides read as foreign on every non-blue theme
+                        // (reported: "region highlight looks off across many languages"). The theme's
+                        // selection color is designed to sit behind text legibly; scope uses it faint,
+                        // guides a touch stronger.
+                        let scopeTint = NSColor(theme.selection)
                         if wantsScopeBackground, let scope = scopeRange, isValidRange(scope, utf16Length: textLength) {
-                            tv.textStorage?.addAttribute(.backgroundColor, value: NSColor.systemOrange.withAlphaComponent(0.18), range: scope)
+                            tv.textStorage?.addAttribute(.backgroundColor, value: scopeTint.withAlphaComponent(0.22), range: scope)
                         }
 
                         if wantsScopeGuides {
                             for marker in guideRanges {
                                 if isValidRange(marker, utf16Length: textLength) {
-                                    tv.textStorage?.addAttribute(.backgroundColor, value: NSColor.systemBlue.withAlphaComponent(0.36), range: marker)
+                                    tv.textStorage?.addAttribute(.backgroundColor, value: scopeTint.withAlphaComponent(0.42), range: marker)
                                 }
                             }
                         }

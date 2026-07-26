@@ -1320,7 +1320,10 @@ struct CustomTextEditor: UIViewRepresentable {
     }
 
     private func currentLineHighlightColor(for colorScheme: ColorScheme) -> UIColor {
-        UIColor.systemBlue.withAlphaComponent(colorScheme == .dark ? 0.30 : 0.22)
+        // FORK: derive the current-line band from the active theme's cursor color (parity with macOS)
+        // instead of a fixed systemBlue, so it belongs to the active theme across all languages.
+        let theme = currentEditorTheme(colorScheme: colorScheme)
+        return UIColor(theme.cursor).withAlphaComponent(colorScheme == .dark ? 0.22 : 0.16)
     }
 
     private func applyInvisibleCharacterPreference(_ textView: UITextView) {
@@ -2400,13 +2403,16 @@ struct CustomTextEditor: UIViewRepresentable {
                     let scopeRange = bracketMatch?.scopeRange ?? indentationMatch?.scopeRange
                     let guideRanges = bracketMatch?.guideMarkerRanges ?? indentationMatch?.guideMarkerRanges ?? []
 
+                    // FORK: theme-derived scope colors (parity with macOS) — the theme's selection
+                    // color instead of hardcoded orange/blue, so scope highlight belongs to the theme.
+                    let scopeTint = UIColor(theme.selection)
                     if wantsScopeBackground, let scope = scopeRange, isValidRange(scope, utf16Length: textLength) {
-                        textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemOrange.withAlphaComponent(0.18), range: scope)
+                        textView.textStorage.addAttribute(.backgroundColor, value: scopeTint.withAlphaComponent(0.22), range: scope)
                     }
                     if wantsScopeGuides {
                         for marker in guideRanges {
                             if isValidRange(marker, utf16Length: textLength) {
-                                textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemBlue.withAlphaComponent(0.36), range: marker)
+                                textView.textStorage.addAttribute(.backgroundColor, value: scopeTint.withAlphaComponent(0.42), range: marker)
                             }
                         }
                     }

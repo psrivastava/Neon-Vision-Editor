@@ -120,58 +120,67 @@ func supportsResponsiveLargeFileHighlight(language: String, textLength: Int) -> 
         supportsResponsiveLargeFileHighlight(language: language)
 }
 
-// MARK: - FORK — large-file open-mode divergence
+// MARK: - FORK — one highlight strategy, computed once
 //
-// Upstream only permits *JSON-family* large files to highlight (viewport-limited); every other
-// language is suppressed in large-file mode, so Standard / Responsive / Plain Text look identical
-// for e.g. a large XML — the open-mode picker appears to do nothing.
+// Previously five overlapping predicates (`supportsResponsiveLargeFileHighlight` ×2,
+// `forkLargeFileViewportHighlightAllowed`, `forkEffectiveLargeFileHighlight`,
+// `forkLargeFileSupportsPerScrollRehighlight`) decided "can this large file highlight, and how" —
+// spread across four files and mutually inconsistent (a JSON 400K–1.2M highlighted on open but went
+// stale on scroll because two of them disagreed on the cap). This enum is the single source of
+// truth; the consumed predicates below are thin wrappers over it.
 //
-// This predicate extends the SAME viewport-bounded highlight path to any language when the file is
-// under the responsive cap and the mode isn't Plain Text. It deliberately reuses
-// `ultraLargeResponsiveSyntaxUTF16Length` as the ceiling so genuinely huge files stay unhighlighted
-// for performance — the highlight itself is still range-limited to the viewport (see
-// `preferredHighlightRange`) and runs off the main thread. Plain Text short-circuits to `false`,
-// which is what makes it visibly differ from Standard / Responsive.
-func forkLargeFileViewportHighlightAllowed(language: String, textLength: Int) -> Bool {
-    // The non-JSON highlight ceiling governs only the AUTO mode pick (Responsive vs Plain Text at
-    // open) — it must NOT veto an explicit user override. Here we honor whatever mode is active:
-    //   • Plain Text → no highlighting.
-    //   • Responsive → viewport-limited highlighting, cheap at any size (only the visible region).
-    //   • Standard   → full-document highlighting; the explicit "may be slow" choice, capped only by
-    //     the hard upstream minimal-syntax ceiling so it never attempts a truly gigantic full pass.
-    guard currentLargeFileSyntaxHighlightMode() == .minimal else { return false }
+// Upstream only permits JSON-family large files to highlight; the fork extends the SAME
+// viewport-bounded path to any language so the open-mode picker works for e.g. large XML. The
+// highlight is still range-limited to the viewport (see `preferredHighlightRange`) and runs off the
+// main thread; genuinely huge files are protected by that viewport clamp, not by suppression here.
+enum HighlightStrategy: Sendable {
+    case off                // no syntax coloring (Plain Text, or highlighting mode off)
+    case viewportOnce       // one-shot viewport pass; NOT re-run on scroll (non-JSON: regex too costly per frame)
+    case viewportPerScroll  // viewport pass, safely re-run on every scroll (JSON fast path: tokenizer + per-frame budget)
+    case full               // full-document pass (Standard: the explicit "may be slow" choice)
+}
+
+/// The single decision for how a large file should highlight, from (language, size, open mode,
+/// syntax mode). The configurable non-JSON ceiling governs only the AUTO mode pick at open
+/// (see `forkAutoSelectedLargeFileMode`) — it must NOT veto an explicit override, so it is not
+/// re-applied here; the active open mode is honored directly.
+func forkHighlightStrategy(language: String, textLength: Int) -> HighlightStrategy {
+    guard currentLargeFileSyntaxHighlightMode() == .minimal else { return .off }
     switch currentLargeFileOpenMode() {
     case .plainText:
-        return false
+        return .off
     case .standard:
-        return textLength <= EditorRuntimeLimits.syntaxMinimalUTF16Length
+        // Full document, capped only by the hard minimal-syntax ceiling so it never attempts a
+        // truly gigantic full pass.
+        return textLength <= EditorRuntimeLimits.syntaxMinimalUTF16Length ? .full : .off
     case .deferred:
-        return true
+        // Viewport-limited. JSON has a fast tokenizer + per-frame token budget, so it re-highlights
+        // per scroll (this also fixes the old 400K-cap mismatch that left mid-size JSON stale on
+        // scroll). Non-JSON gets a one-shot viewport pass — re-running the regex every scroll frame
+        // is what made large non-JSON files sluggish.
+        return isJSONLikeLanguage(language) ? .viewportPerScroll : .viewportOnce
     }
 }
 
-// FORK (#2): true only for the JSON-family fast path, which safely re-highlights on every scroll
-// (fast tokenizer + per-frame token budget). Non-JSON large files must NOT re-highlight per scroll —
-// they get a one-shot viewport pass on open / mode-switch and are left alone while scrolling.
+// FORK: the effective "may this large file highlight (viewport-limited or full)?" gate. Call sites
+// consult this instead of `supportsResponsiveLargeFileHighlight(language:textLength:)` so non-JSON
+// languages (XML, etc.) also honor the open-mode picker while keeping the JSON fast paths intact.
+func forkEffectiveLargeFileHighlight(language: String, textLength: Int) -> Bool {
+    forkHighlightStrategy(language: language, textLength: textLength) != .off
+}
+
+// FORK: true only when scrolling should re-run the highlight — the JSON-family fast path. Non-JSON
+// large files get a one-shot viewport pass on open / mode-switch and are left alone while scrolling.
 func forkLargeFileSupportsPerScrollRehighlight(language: String, textLength: Int) -> Bool {
-    supportsResponsiveLargeFileHighlight(language: language, textLength: textLength)
+    forkHighlightStrategy(language: language, textLength: textLength) == .viewportPerScroll
 }
 
 // MARK: - FORK — user-configurable thresholds (Settings → Editor Behavior → Performance)
 //
-// Both are stored as a UTF-16 length in UserDefaults. A stored value of 0 means "no limit —
-// apply to the whole document". Missing key falls back to the built-in default.
+// Stored as a UTF-16 length in UserDefaults. A stored value of 0 means "no limit — apply to the
+// whole document". Missing key falls back to the built-in default.
 
-let forkNonJSONHighlightLimitKey = "SettingsForkNonJSONHighlightMaxUTF16"
 let forkOutlineLimitKey = "SettingsForkOutlineMaxUTF16"
-
-/// Ceiling (UTF-16 length) below which non-JSON large files may viewport-highlight. 0 = unlimited.
-func forkNonJSONHighlightLimit() -> Int {
-    guard let raw = UserDefaults.standard.object(forKey: forkNonJSONHighlightLimitKey) as? Int else {
-        return EditorRuntimeLimits.forkNonJSONLargeFileHighlightUTF16Length
-    }
-    return raw <= 0 ? Int.max : raw
-}
 
 /// Ceiling (UTF-16 length) below which the document outline (TOC) is built. 0 = unlimited.
 func forkOutlineContentLimit() -> Int {
@@ -179,14 +188,6 @@ func forkOutlineContentLimit() -> Int {
         return 400_000
     }
     return raw <= 0 ? Int.max : raw
-}
-
-// FORK: the effective "may this large file highlight (viewport-limited)?" gate. Upstream call sites
-// consult this instead of `supportsResponsiveLargeFileHighlight(language:textLength:)` so non-JSON
-// languages (XML, etc.) also honor the open-mode picker while keeping the JSON fast paths intact.
-func forkEffectiveLargeFileHighlight(language: String, textLength: Int) -> Bool {
-    supportsResponsiveLargeFileHighlight(language: language, textLength: textLength) ||
-        forkLargeFileViewportHighlightAllowed(language: language, textLength: textLength)
 }
 
 enum LargeFileSyntaxHighlightMode: String {

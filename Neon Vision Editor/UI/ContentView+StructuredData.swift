@@ -67,9 +67,7 @@ extension ContentView {
 
     /// Segment label for the rendered side, tailored to the document kind.
     private var previewSegmentLabel: String {
-        if isSVGDocument { return "SVG" }
-        if isHTMLPreviewDocument { return "Rendered" }
-        return "Rendered"
+        isSVGDocument ? "SVG" : "Rendered"
     }
 
     private var delimitedModeControl: some View {

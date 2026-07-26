@@ -551,10 +551,12 @@ struct ContentView: View {
     @State var droppedFileLoadLabel: String = ""
     @State var largeFileModeEnabled: Bool = false
     // MARK: - FORK — the large-file mode is AUTO-determined per document open (Responsive under the
-    // highlight ceiling, Plain Text over; Standard never auto). This tracks which resource we've
+    // highlight ceiling, Plain Text over; Standard never auto). This tracks which resources we've
     // already auto-decided for so we don't clobber an explicit user override on every re-render.
-    // Ephemeral by design: switching/reopening a document re-runs the determination, nothing persists.
-    @State var forkAutoModeDecidedForResourceID: String? = nil
+    // A SET (not a single scalar) so an explicit override on tab A survives switching to tab B and
+    // back — each resource is auto-decided exactly once per open. Ephemeral by design: a fresh load
+    // clears the set so the document is re-determined from its final size; nothing persists.
+    @State var forkAutoModeDecidedResourceIDs: Set<String> = []
     @State var settingsSheetDetent: PresentationDetent = .large
     @SceneStorage("ProjectSidebarWidth") var projectSidebarWidth: Double = 450
     @State var projectSidebarResizeStartWidth: CGFloat? = nil
@@ -1294,9 +1296,16 @@ struct ContentView: View {
                     if shouldPreEnableLargeMode, !largeFileModeEnabled {
                         largeFileModeEnabled = true
                     }
-                    // FORK: a fresh load starts — forget the prior auto decision so the mode is
-                    // re-determined from the final size once loading completes (no persistence).
-                    forkAutoModeDecidedForResourceID = nil
+                    // FORK: a fresh load starts — forget the prior resource's auto decision so the
+                    // mode is re-determined from the final size once loading completes. H2: also
+                    // clear any forced non-standard mode left in the persisted key by a previous
+                    // (possibly huge) document, so it can't bleed in as a wrong initial mode. An
+                    // explicit "standard" (the user's deliberate slow-but-full choice) is preserved.
+                    let newResourceID = documentResourceID(for: viewModel.selectedTabID)
+                    forkAutoModeDecidedResourceIDs.remove(newResourceID)
+                    if largeFileOpenModeRaw == "plainText" {
+                        largeFileOpenModeRaw = "deferred"
+                    }
                 } else {
                     scheduleLargeFileModeReevaluation(after: 0.8)
                     // FORK: size is now final — auto-pick Responsive/Plain Text for this document.
@@ -3437,7 +3446,7 @@ struct ContentView: View {
     // "make it slow, I want full highlighting" choice). The result is written to the live effective
     // mode (largeFileOpenModeRaw) that all downstream consumers already read; it is NOT a persisted
     // user preference in spirit — every open re-determines it, and an explicit pick lasts only for
-    // the current document (see forkAutoModeDecidedForResourceID).
+    // the current document (see forkAutoModeDecidedResourceIDs).
 
     /// The mode auto-selection would pick for the current document, by size.
     var forkAutoSelectedLargeFileMode: String {
@@ -3451,11 +3460,17 @@ struct ContentView: View {
     }
 
     /// Re-run the size-based auto determination for the currently open document. Called on open and
-    /// on tab switch. Skips if we already decided for this resource (preserves an explicit override).
+    /// on tab switch. Skips if we already decided for this resource (preserves an explicit override
+    /// across tab switches — the decided set is keyed per resource, not a single scalar).
+    ///
+    /// H2: only large-file documents drive the mode. For a normal small file we neither decide nor
+    /// write `largeFileOpenModeRaw`, so a huge file's forced `plainText` can't leak into the
+    /// persisted key and bleed into the next launch as a wrong initial mode.
     func forkApplyAutoLargeFileModeIfNeeded() {
+        guard effectiveLargeFileModeEnabled else { return }
         let resourceID = documentResourceID(for: viewModel.selectedTabID)
-        guard forkAutoModeDecidedForResourceID != resourceID else { return }
-        forkAutoModeDecidedForResourceID = resourceID
+        guard !forkAutoModeDecidedResourceIDs.contains(resourceID) else { return }
+        forkAutoModeDecidedResourceIDs.insert(resourceID)
         let auto = forkAutoSelectedLargeFileMode
         if largeFileOpenModeRaw != auto {
             largeFileOpenModeRaw = auto

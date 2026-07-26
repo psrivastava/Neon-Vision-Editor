@@ -569,13 +569,8 @@ func getSyntaxPatterns(
             #"\b([0-9]+(\.[0-9]+)?)\b"#: colors.number
         ]
     case "html":
-        if profile == .htmlFast {
-            return [
-                // Fast path for very large HTML: focus on structural readability.
-                "<[/!A-Za-z][^>]*>": colors.tag,
-                "\\b[a-zA-Z_:][-a-zA-Z0-9_:.]*(?=\\s*=)": colors.property
-            ]
-        }
+        // NOTE: the `.htmlFast` profile is handled earlier by `fastSyntaxColorRanges`
+        // (fastHTMLSyntaxColorRanges), so it never reaches this regex table — this is the full path.
         return [
             #"(?s)<!--.*?-->"#: colors.comment,
             #"<!DOCTYPE\s+[^>]+>"#: colors.meta,
@@ -784,21 +779,9 @@ func getSyntaxPatterns(
             #"\b(true|false)\b"#: colors.keyword,
             #"(?m)#.*$"#: colors.comment
         ]
-    case "csv":
-        if profile == .csvFast {
-            return [
-                // Fast CSV profile for large datasets: keep only separators/headers/quoted chunks.
-                #"(?m)^[^\n,]+(,\s*[^\n,]+)*$"#: colors.meta,
-                #"\"([^\"\n]|\"\")*\""#: colors.string,
-                #","#: colors.property
-            ]
-        }
-        return [
-            #"\A([^\n,]+)(,\s*[^\n,]+)*"#: colors.meta,
-            #"\"([^\"\n]|\"\")*\""#: colors.string,
-            #"\b(-?[0-9]+(\.[0-9]+)?)\b"#: colors.number,
-            #","#: colors.property
-        ]
+    // NOTE: CSV never reaches this regex table — `fastSyntaxColorRanges` routes ALL CSV (any size,
+    // both `.csvFast` and `.full`) to `forkCSVRainbowColorRanges`, which colors each column a distinct
+    // hue (a fixed regex→color map can't express "column N → color N"). No `case "csv"` needed here.
     case "ini":
         return [
             #"^\[[^\]]+\]"#: colors.meta,
