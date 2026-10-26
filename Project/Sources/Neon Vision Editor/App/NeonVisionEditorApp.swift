@@ -581,6 +581,8 @@ struct NeonVisionEditorApp: App {
         // - keep line numbers on
         // - keep style/space visualization toggles off unless user enables them in Settings
         defaults.register(defaults: [
+            // FORK: default syntax engine (regex = upstream behavior). Replay: keep this key registered here.
+            "SettingsSyntaxEngine": SettingsSyntaxEngine.regex.rawValue,
             "SettingsShowLineNumbers": true,
             "SettingsHighlightCurrentLine": false,
             "SettingsHighlightMatchingBrackets": false,
@@ -723,6 +725,12 @@ struct NeonVisionEditorApp: App {
                 .modifier(EditorSceneStorageModifier())
                 .onAppear { _ = AppearanceThemeCloudSync.syncIfEnabled() }
                 .onAppear { scheduleMacWindowChromePolicy() }
+                .onAppear {
+                    // FORK: install the command-palette observer once (⌘⇧P). macOS-only.
+                    #if os(macOS)
+                    ForkCommandPaletteInstaller.installIfNeeded()
+                    #endif
+                }
                 .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
                 .onAppear { applyRuntimeLanguageOverride() }
                 .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
@@ -768,6 +776,12 @@ struct NeonVisionEditorApp: App {
                 .modifier(EditorSceneStorageModifier())
                 .onAppear { _ = AppearanceThemeCloudSync.syncIfEnabled() }
                 .onAppear { scheduleMacWindowChromePolicy() }
+                .onAppear {
+                    // FORK: install the command-palette observer once (⌘⇧P). macOS-only.
+                    #if os(macOS)
+                    ForkCommandPaletteInstaller.installIfNeeded()
+                    #endif
+                }
                 .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
                 .onAppear { applyRuntimeLanguageOverride() }
                 .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
@@ -931,6 +945,8 @@ struct NeonVisionEditorApp: App {
         }
 
         .commands {
+            // FORK: Transform menu + Command Palette (⌘⇧P). See Fork/MenuCommands.swift.
+            ForkMenuCommands()
             NeonVisionMacAppCommands(
                 activeEditorViewModel: { activeEditorViewModel },
                 hasActiveEditorWindow: { WindowViewModelRegistry.shared.activeViewModel() != nil },

@@ -199,6 +199,8 @@ extension ContentView {
 
     static let markdownPreviewTemplateOptions: [MarkdownPreviewTemplateOption] = [
         MarkdownPreviewTemplateOption(id: "default", title: "Default"),
+        // FORK: live-editor-theme-tinted preview template (see Fork/MarkdownPreviewVivid.swift).
+        MarkdownPreviewTemplateOption(id: "vivid", title: "Vivid"),
         MarkdownPreviewTemplateOption(id: "neon-editorial", title: "Neon Editorial"),
         MarkdownPreviewTemplateOption(id: "developer-slate", title: "Developer Slate"),
         MarkdownPreviewTemplateOption(id: "nordic-light", title: "Nordic Light"),
@@ -2866,6 +2868,9 @@ extension ContentView {
 
         let templateAccentCSS: String
         switch template {
+        // FORK: "vivid" layers theme-tinted prose chrome over the default base (Fork/MarkdownPreviewVivid.swift).
+        case "vivid":
+            templateAccentCSS = forkVividAccentCSS(preferDarkMode: preferDarkMode)
         case "article", "focus-writing":
             templateAccentCSS = """
             h1 { font-size: 2.25em; letter-spacing: -0.035em; border-bottom: 0; }

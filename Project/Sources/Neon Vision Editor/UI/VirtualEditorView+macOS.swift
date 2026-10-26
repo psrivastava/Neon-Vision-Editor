@@ -1992,14 +1992,24 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
         let baseline = row.baseline
         let leadingWhitespace = line.prefix { $0 == " " || $0 == "\t" }
         let markerColor = (dark ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).withAlphaComponent(0.45)
+        // FORK: indentation guides — subtle dotted hairline at each indent *level* (every indentWidth
+        // columns), not a solid pipe at every space. Lower alpha + a dotted dash keeps them unobtrusive.
+        let guideColor = (dark ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).withAlphaComponent(0.18)
+        let guideStep = max(1, indentWidth)
         let characterWidth = ("m" as NSString).size(withAttributes: [.font: editorFont]).width
         let originX = gutterWidth + Geometry.gutterTextInset
         var column = 0
         for character in leadingWhitespace {
             let x = originX + CGFloat(column) * characterWidth
-            if showsIndentationGuides, character == " " {
-                markerColor.setFill()
-                NSRect(x: x + characterWidth * 0.5, y: baseline - lineHeight + 3, width: 1, height: lineHeight - 5).fill()
+            if showsIndentationGuides, character == " ", column % guideStep == 0 {
+                let gx = x + 0.5 // pixel-align the hairline
+                let guide = NSBezierPath()
+                guide.move(to: NSPoint(x: gx, y: baseline - lineHeight + 3))
+                guide.line(to: NSPoint(x: gx, y: baseline - 2))
+                guide.lineWidth = 1
+                guide.setLineDash([1, 3], count: 2, phase: 0)
+                guideColor.setStroke()
+                guide.stroke()
             }
             if showsInvisibleCharacters {
                 let marker = character == "\t" ? "⇥" : "·"
@@ -3718,6 +3728,8 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
         let colors = resolvedSyntaxColors
         let patterns = getSyntaxPatterns(for: syntaxLanguage, colors: colors)
         let emphasisPatterns = syntaxEmphasisPatterns(for: syntaxLanguage)
+        // FORK-SEAM(tree-sitter): capture the active engine once for the detached worker below.
+        let forkUseTreeSitter = forkCurrentSyntaxEngine() == .treeSitter
         let formattingTheme = resolvedEditorTheme
         let usesMarkdownSourceFonts = isMarkdownSyntaxLanguage(syntaxLanguage)
         let htmlText = viewportText
@@ -3737,6 +3749,39 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
                     let text = htmlText as NSString
                     let ranges = HTMLSyntaxHighlighter.ranges(in: text, range: NSRange(location: 0, length: text.length), state: &state, colors: colors)
                     for (range, color) in ranges {
+                        guard !Task.isCancelled else { return result }
+                        var low = 0
+                        var high = lines.count
+                        while low < high {
+                            let middle = (low + high) / 2
+                            if lines[middle].startUTF16 <= range.location { low = middle + 1 }
+                            else { high = middle }
+                        }
+                        var index = max(0, low - 1)
+                        while index < lines.count && lines[index].startUTF16 < NSMaxRange(range) {
+                            let line = lines[index]
+                            let overlap = NSIntersectionRange(range, NSRange(location: line.startUTF16, length: line.text.utf16.count))
+                            if overlap.length > 0 {
+                                result[line.localLine, default: []].append(VirtualEditorSyntaxSpan(
+                                    range: NSRange(location: overlap.location - line.startUTF16, length: overlap.length), color: color))
+                            }
+                            index += 1
+                        }
+                    }
+                    return result
+                }
+                // FORK-SEAM(tree-sitter): when the tree-sitter engine is selected, parse the whole
+                // viewport once and distribute the resulting color ranges across lines (mirroring the
+                // HTML path above). Non-HTML languages only — HTML keeps its dedicated highlighter.
+                // A nil result means no grammar for this language, so we fall through to regex below.
+                if forkUseTreeSitter,
+                   let treeSitterRanges = forkTreeSitterColorRanges(
+                       language: syntaxLanguage,
+                       text: htmlText as NSString,
+                       in: NSRange(location: 0, length: (htmlText as NSString).length),
+                       colors: colors
+                   ) {
+                    for (range, color) in treeSitterRanges {
                         guard !Task.isCancelled else { return result }
                         var low = 0
                         var high = lines.count

@@ -837,6 +837,8 @@ struct ContentView: View {
     @AppStorage(SettingsPreferenceKey.themeHexOverrides) private var settingsThemeHexOverridesData: Data = Data()
     @State var lastProviderUsed: String = "Apple"
     @State private var highlightRefreshToken: Int = 0
+    // FORK: observe the syntax-engine toggle so flipping it re-highlights the open document instantly.
+    @AppStorage("SettingsSyntaxEngine") private var forkSyntaxEngineRaw = SettingsSyntaxEngine.regex.rawValue
     @State var editorExternalMutationRevision: Int = 0
     @State private var secondaryContentContext: SecondaryContentContext?
 
@@ -2233,6 +2235,18 @@ struct ContentView: View {
                 pendingMarkdownPreviewEditorScrollWorkItem = workItem
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.033, execute: workItem)
             }
+            // MARK: - FORK command observers (string transforms, markup, line endings, copy)
+            // Collapsed into one ViewModifier so the 5 observers are a single type-check unit
+            // (keeps this already-large body from tripping the SwiftUI type-checker timeout).
+            .modifier(ForkCommandObservers(
+                matchesWindow: forkMatchesWindow,
+                applyTransform: forkApplyStringTransform,
+                formatMarkup: { forkFormatMarkup(pretty: $0) },
+                convertLineEndings: forkConvertLineEndings,
+                copyRichText: forkCopyAsRichText,
+                syntaxEngineRaw: forkSyntaxEngineRaw,
+                onSyntaxEngineChange: { highlightRefreshToken &+= 1 }
+            ))
             .onReceive(NotificationCenter.default.publisher(for: .markdownPreviewViewportDidChange)) { notif in
                 guard markdownPreviewSynchronousScroll,
                       showMarkdownPreviewPane,

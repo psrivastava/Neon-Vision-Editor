@@ -703,6 +703,16 @@ nonisolated func fastSyntaxColorRanges(
     colors: SyntaxColors
 ) -> [(NSRange, Color)]? {
     let lower = language.lowercased()
+
+    // FORK-SEAM(tree-sitter): when the engine toggle (Settings → Syntax Highlighting Engine) is set
+    // to tree-sitter and a grammar is loaded for this language, use the structural parser. Returns
+    // nil for any language without a grammar, so the CSV/HTML/regex paths below stay the fallback.
+    // Replay: re-insert this block at the top of fastSyntaxColorRanges after `lower` is defined.
+    if forkCurrentSyntaxEngine() == .treeSitter,
+       let treeSitterRanges = forkTreeSitterColorRanges(language: lower, text: text, in: range, colors: colors) {
+        return treeSitterRanges
+    }
+
     let useCSVFastProfile: Bool = {
         switch profile {
         case .csvFast:

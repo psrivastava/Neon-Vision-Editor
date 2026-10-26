@@ -145,6 +145,8 @@ struct NeonSettingsView: View {
     @AppStorage("SettingsLargeFileSyntaxHighlighting") private var largeFileSyntaxHighlightingRaw: String = "minimal"
     @AppStorage("SettingsLargeFileOpenMode") private var largeFileOpenModeRaw: String = "deferred"
     @AppStorage("SettingsGeneratedFileSyntaxHighlighting") private var generatedFileSyntaxHighlightingRaw: String = "automatic"
+    // FORK: tree-sitter engine toggle. Replay: this @AppStorage + the picker in editorBehaviorSettings.
+    @AppStorage("SettingsSyntaxEngine") private var syntaxEngineRaw: String = SettingsSyntaxEngine.regex.rawValue
 #if os(iOS) || os(visionOS)
     @AppStorage("SettingsToolbarShowSearchIOS") private var toolbarShowSearchIOS: Bool = true
     @AppStorage("SettingsToolbarShowCompareIOS") private var toolbarShowCompareIOS: Bool = true
@@ -3729,6 +3731,19 @@ struct NeonSettingsView: View {
                     }
                     .pickerStyle(.segmented)
                     Text("Balanced keeps default behavior. Large Files and Battery enter performance mode earlier.")
+                        .font(Typography.footnote)
+                        .foregroundStyle(.secondary)
+
+                    // FORK: syntax-engine toggle (regex vs tree-sitter).
+                    Text("Syntax Highlighting Engine")
+                        .font(Typography.sectionHeadline)
+                    Picker("Engine", selection: $syntaxEngineRaw) {
+                        ForEach(SettingsSyntaxEngine.allCases, id: \.rawValue) { engine in
+                            Text(engine.displayName).tag(engine.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    Text((SettingsSyntaxEngine(rawValue: syntaxEngineRaw) ?? .regex).helpText)
                         .font(Typography.footnote)
                         .foregroundStyle(.secondary)
 
