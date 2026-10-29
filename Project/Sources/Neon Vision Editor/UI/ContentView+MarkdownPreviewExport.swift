@@ -2272,7 +2272,7 @@ extension ContentView {
           --md-content-background: \(palette.contentBackground);
           --md-content-border: 1px solid \(palette.contentBorder);
           --md-text-color: \(palette.text);
-          --md-heading-color: \(palette.heading);
+          --md-heading-color: \(palette.accent); /* FORK: accent (was palette.heading, a near-text shade) */
           --md-muted-color: \(palette.muted);
           --md-accent-color: \(palette.accent);
           --md-link-color: \(palette.link);

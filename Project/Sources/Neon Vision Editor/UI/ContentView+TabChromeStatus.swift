@@ -336,10 +336,20 @@ extension ContentView {
         if statusBarShowFileSize {
             items.append(fileSizeStatusText)
         }
+        if statusBarShowLastModified, let modified = lastModifiedStatusText {
+            items.append(modified)
+        }
         if statusBarShowGit, let git = gitStatusText {
             items.append(git)
         }
         return items
+    }
+
+    /// FORK: last-modified timestamp for the status bar. Reads the tab's in-memory
+    /// `lastKnownFileModificationDate` (no per-render filesystem stat). Nil for unsaved buffers.
+    private var lastModifiedStatusText: String? {
+        guard let date = viewModel.selectedTab?.lastKnownFileModificationDate else { return nil }
+        return "Modified: " + date.formatted(date: .abbreviated, time: .shortened)
     }
 
 #if os(iOS) || os(visionOS)
@@ -650,7 +660,16 @@ extension ContentView {
             .padding(.bottom, 8)
             .padding(.trailing, 16)
         }
-        .background(editorSurfaceBackgroundStyle)
+        .background(forkStatusBarBackgroundStyle) // FORK E16: status bar elevation step
+    }
+
+    // FORK E16: status bar sits one elevation step above the panel chrome in the
+    // A2 surface system; upstream surface style otherwise.
+    private var forkStatusBarBackgroundStyle: AnyShapeStyle {
+#if os(macOS)
+        if let fork = forkChromeColor(.statusBar) { return AnyShapeStyle(fork) }
+#endif
+        return editorSurfaceBackgroundStyle
     }
 
     private var largeFileStatusBadge: some View {

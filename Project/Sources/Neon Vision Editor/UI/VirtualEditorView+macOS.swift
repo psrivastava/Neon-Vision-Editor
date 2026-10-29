@@ -1862,8 +1862,20 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
         context.clip(to: dirtyRect)
         defer { context.restoreGState() }
         if !translucentBackgroundEnabled {
-            NSColor(resolvedEditorTheme.background).setFill()
+            let editorBackground = NSColor(resolvedEditorTheme.background)
+            editorBackground.setFill()
             dirtyRect.fill()
+            // FORK: give the gutter a subtly distinct shade + a hairline separator so the text area
+            // reads as its own surface instead of one flat color blending into the window chrome.
+            let gutterDark = scheme == .dark
+            let blendTarget: NSColor = gutterDark ? .white : .black
+            let gutterTint = editorBackground.blended(withFraction: gutterDark ? 0.05 : 0.08, of: blendTarget) ?? editorBackground
+            gutterTint.setFill()
+            NSRect(x: 0, y: dirtyRect.minY, width: gutterWidth, height: dirtyRect.height).fill()
+            if let separator = editorBackground.blended(withFraction: gutterDark ? 0.14 : 0.10, of: blendTarget) {
+                separator.setFill()
+                NSRect(x: gutterWidth - 0.5, y: dirtyRect.minY, width: 0.5, height: dirtyRect.height).fill()
+            }
         }
         if viewportReadFailed {
             (viewportReadFailureMessage as NSString).draw(in: bounds.insetBy(dx: 24, dy: 24),

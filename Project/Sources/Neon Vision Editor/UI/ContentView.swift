@@ -877,6 +877,9 @@ struct ContentView: View {
 #endif
 #if os(macOS)
     @AppStorage("SettingsMacTranslucencyMode") var macTranslucencyModeRaw: String = "balanced"
+    // FORK E16: A2 elevation-stepped chrome surface preset (Fork/SurfaceStyle.swift).
+    // Theme Tint is the default: the whole chrome follows the active theme hue.
+    @AppStorage(ForkSurfacePreset.storageKey) var forkSurfaceStyleRaw: String = ForkSurfacePreset.theme.rawValue
 #endif
 
     @State var showFindReplace: Bool = false
@@ -1094,6 +1097,7 @@ struct ContentView: View {
     @AppStorage("SettingsStatusBarShowSelection") var statusBarShowSelection: Bool = true
     @AppStorage("SettingsStatusBarShowFileSize") var statusBarShowFileSize: Bool = false
     @AppStorage("SettingsStatusBarShowGit") var statusBarShowGit: Bool = true
+    @AppStorage("SettingsStatusBarShowLastModified") var statusBarShowLastModified: Bool = true
     @AppStorage("EditorVimModeEnabled") var vimModeEnabled: Bool = false
     @State var vimInsertMode: Bool = true
     @State var safeModeRecoveryPreparedForNextLaunch: Bool = false
@@ -1705,8 +1709,20 @@ struct ContentView: View {
             selectedModeRaw: macTranslucencyModeRaw
         )
     }
+    // FORK E16: A2 surface seam — theme-derived elevation-stepped chrome.
+    // Returns nil (upstream behavior) when the preset is Default or the user
+    // explicitly enabled the translucent window.
+    func forkChromeColor(_ level: ForkSurfaceLevel) -> Color? {
+        guard !enableTranslucentWindow else { return nil }
+        return ForkSurfaceStyle.chromeColor(
+            presetRaw: forkSurfaceStyleRaw,
+            level: level,
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background
+        )
+    }
     private var macSolidSurfaceColor: Color {
-        Color(
+        if let fork = forkChromeColor(.panel) { return fork }
+        return Color(
             MacEditorSurfacePolicy.windowBackground(
                 translucent: false,
                 modeRaw: macTranslucencyModeRaw,
@@ -1723,6 +1739,7 @@ struct ContentView: View {
         currentEditorTheme(colorScheme: colorScheme).background.opacity(0.90)
     }
     private var macEditorSurfaceBackgroundStyle: AnyShapeStyle {
+        if let fork = forkChromeColor(.panel) { return AnyShapeStyle(fork) } // FORK E16
         if macNativeTranslucencyEnabled {
             return macUnifiedTranslucentMaterialStyle
         }
@@ -1732,6 +1749,7 @@ struct ContentView: View {
         return AnyShapeStyle(macSolidSurfaceColor)
     }
     private var macChromeBackgroundStyle: AnyShapeStyle {
+        if let fork = forkChromeColor(.panel) { return AnyShapeStyle(fork) } // FORK E16
         if macNativeTranslucencyEnabled {
             return macUnifiedTranslucentMaterialStyle
         }
@@ -1739,6 +1757,7 @@ struct ContentView: View {
     }
 
     var macToolbarBackgroundStyle: AnyShapeStyle {
+        if let fork = forkChromeColor(.tabStrip) { return AnyShapeStyle(fork) } // FORK E16
         if macNativeTranslucencyEnabled {
             // The NSWindow owns the translucent chrome surface. Keep SwiftUI
             // clear here so the toolbar and tab strip reveal that same window
@@ -5913,7 +5932,9 @@ struct ContentView: View {
     var editorView: some View {
         @Bindable var bindableViewModel = viewModel
         let shouldThrottleFeatures = shouldThrottleHeavyEditorFeatures()
-        let effectiveHighlightCurrentLine = highlightCurrentLine && !shouldThrottleFeatures
+        // FORK: current-line highlight is viewport-only (one rect over laid-out rows,
+        // same cost class as selection drawing), so it stays on for large files.
+        let effectiveHighlightCurrentLine = highlightCurrentLine
         let effectiveBracketHighlight = highlightMatchingBrackets && !shouldThrottleFeatures
         let effectiveScopeGuides = showScopeGuides && !shouldThrottleFeatures
         let effectiveScopeBackground = highlightScopeBackground && !shouldThrottleFeatures

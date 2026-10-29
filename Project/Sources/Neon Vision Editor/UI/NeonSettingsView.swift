@@ -78,6 +78,8 @@ struct NeonSettingsView: View {
 #endif
     @AppStorage("SettingsMacTranslucencyMode") private var macTranslucencyModeRaw: String = "balanced"
     @AppStorage("SettingsOpaqueEditorSurfaceMac") private var opaqueEditorSurfaceMac: Bool = true
+    // FORK E17: A2 chrome surface preset (Fork/SurfaceStyle.swift). Theme Tint default.
+    @AppStorage(ForkSurfacePreset.storageKey) private var forkSurfaceStyleRaw: String = ForkSurfacePreset.theme.rawValue
     @AppStorage(AppearanceThemeCloudSync.enabledKey) private var iCloudAppearanceThemeSyncEnabled: Bool = false
     @AppStorage(AppearanceThemeCloudSync.statusKey) private var iCloudAppearanceThemeSyncStatus: String = AppearanceThemeCloudSync.currentStatus
     @AppStorage("SettingsReopenLastSession") private var reopenLastSession: Bool = true
@@ -128,6 +130,7 @@ struct NeonSettingsView: View {
     @AppStorage("SettingsStatusBarShowSelection") private var statusBarShowSelection: Bool = true
     @AppStorage("SettingsStatusBarShowFileSize") private var statusBarShowFileSize: Bool = false
     @AppStorage("SettingsStatusBarShowGit") private var statusBarShowGit: Bool = true
+    @AppStorage("SettingsStatusBarShowLastModified") private var statusBarShowLastModified: Bool = true
     @AppStorage("SettingsAutoIndent") private var autoIndent: Bool = true
     @AppStorage("SettingsAutoCloseBrackets") private var autoCloseBrackets: Bool = false
     @AppStorage(SettingsPreferenceKey.autocorrectionEnabled) private var autocorrectionEnabled: Bool = false
@@ -718,6 +721,23 @@ struct NeonSettingsView: View {
             get: { selectedMacTranslucencyMode.sliderValue },
             set: { macTranslucencyModeRaw = MacTranslucencyModeOption.resolving(sliderValue: $0).rawValue }
         )
+    }
+
+    // FORK E17: A2 chrome surface preset picker. Theme Tint derives the whole
+    // chrome (panels, tab strip, status bar) from the active editor theme with
+    // elevation steps; White/Grey are neutral light chromes. Requires the
+    // translucent window to be off.
+    private var forkChromeSurfacePicker: some View {
+        Picker(localized("Chrome Surface"), selection: $forkSurfaceStyleRaw) {
+            ForEach(ForkSurfacePreset.allCases) { preset in
+                Text(localized(preset.title)).tag(preset.rawValue)
+            }
+        }
+        .pickerStyle(.menu)
+        .frame(maxWidth: macSettingsControlMaxWidth, alignment: .leading)
+        .disabled(translucentWindow)
+        .help(localized("Tints the window chrome from the active theme with elevation steps, or uses a neutral White/Grey chrome."))
+        .accessibilityHint(localized("Chooses how the window chrome around the editor is colored."))
     }
 
 #endif
@@ -2345,6 +2365,8 @@ struct NeonSettingsView: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .disabled(translucentWindow)
 
+                    forkChromeSurfacePicker // FORK E17
+
                     HStack(alignment: .center, spacing: UI.space8) {
                         Text(localized("Window Surface"))
                             .frame(width: isCompactSettingsLayout ? nil : standardLabelWidth, alignment: .leading)
@@ -3518,6 +3540,7 @@ struct NeonSettingsView: View {
             Toggle("Selection Size", isOn: $statusBarShowSelection)
             Toggle("File Size", isOn: $statusBarShowFileSize)
             Toggle("Git Branch and Changes", isOn: $statusBarShowGit)
+            Toggle("Last Modified Time", isOn: $statusBarShowLastModified)
 #if os(iOS) || os(visionOS)
             Divider()
             VStack(alignment: .leading, spacing: 6) {
