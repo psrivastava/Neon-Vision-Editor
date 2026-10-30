@@ -84,6 +84,7 @@ extension ContentView {
             .init(id: "cmd:preset_battery", title: "Performance: Battery", subtitle: "Reduce background work for lower power use", isPinned: false, canTogglePin: false)
         ]
         items.append(contentsOf: commandItems)
+        items.append(contentsOf: ForkPaletteBridge.items) // FORK-SEAM E19: fork commands in this palette
 
         for tab in viewModel.tabs {
             let subtitle = tab.fileURL?.path ?? "Open tab"
@@ -353,7 +354,7 @@ extension ContentView {
         case "cmd:preset_battery":
             performancePresetRaw = PerformancePreset.battery.rawValue
         default:
-            break
+            forkRunPaletteCommand(commandID) // FORK-SEAM E19: fork-owned "cmd:fork.*" ids
         }
     }
 

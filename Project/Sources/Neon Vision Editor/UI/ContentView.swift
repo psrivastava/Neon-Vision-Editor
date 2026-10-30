@@ -891,6 +891,11 @@ struct ContentView: View {
     @AppStorage("EditorFindCaseSensitive") var findCaseSensitive: Bool = false
     @AppStorage("EditorFindWholeWord") var findWholeWord: Bool = false
     @State var findStatusMessage: String = ""
+    /// FORK: feedback for format/minify/transform/line-ending/copy commands. Separate from
+    /// `findStatusMessage` because that one only renders inside the inline Find bar — invisible
+    /// when the user runs a fork command with Find closed, which made every fork action look like
+    /// a silent no-op even when it worked. Surfaced in the persistent status bar instead.
+    @State var forkStatusMessage: String = ""
     @State var findMatchCount: Int = 0
     @State var findSession = EditorFindSessionState()
     @State var findRefreshTask: Task<Void, Never>?

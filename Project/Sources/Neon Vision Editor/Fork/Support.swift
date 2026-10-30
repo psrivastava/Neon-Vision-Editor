@@ -22,6 +22,10 @@ extension Notification.Name {
     static let forkFormatMarkupRequested = Notification.Name("forkFormatMarkupRequested")
     /// Minify the current XML/HTML document.
     static let forkMinifyMarkupRequested = Notification.Name("forkMinifyMarkupRequested")
+    /// Pretty-print the current document, whatever its language (ForkFormatRouter picks the formatter).
+    static let forkFormatDocumentRequested = Notification.Name("forkFormatDocumentRequested")
+    /// Minify the current document (JSON and markup only).
+    static let forkMinifyDocumentRequested = Notification.Name("forkMinifyDocumentRequested")
     /// Copy the current selection (or whole document) as HTML + RTF to the pasteboard.
     static let forkCopyAsRichTextRequested = Notification.Name("forkCopyAsRichTextRequested")
     /// Convert the current document's line endings. Posted with `object: ForkLineEnding.rawValue`.

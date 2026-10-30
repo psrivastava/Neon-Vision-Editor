@@ -47,8 +47,9 @@ public enum ForkCommandRegistry {
         commands.append(ForkCommand(id: "toggleProjectSidebar", title: "Toggle Project Structure Sidebar", category: "View", notification: .toggleProjectStructureSidebarRequested))
 
         // Fork: markup formatting + rich copy.
-        commands.append(ForkCommand(id: "formatMarkup", title: "Format Markup (XML/HTML)", category: "Format", notification: .forkFormatMarkupRequested))
-        commands.append(ForkCommand(id: "minifyMarkup", title: "Minify Markup (XML/HTML)", category: "Format", notification: .forkMinifyMarkupRequested))
+        // "Prettify" is in the title so both search terms find it.
+        commands.append(ForkCommand(id: "formatDocument", title: "Format Document (Prettify)", category: "Format", notification: .forkFormatDocumentRequested))
+        commands.append(ForkCommand(id: "minifyDocument", title: "Minify Document (JSON/Markup)", category: "Format", notification: .forkMinifyDocumentRequested))
         commands.append(ForkCommand(id: "formatJSON", title: "Format JSON", category: "Format", notification: .formatJSONDocumentRequested))
         commands.append(ForkCommand(id: "copyRich", title: "Copy as HTML / Rich Text", category: "Edit", notification: .forkCopyAsRichTextRequested))
 

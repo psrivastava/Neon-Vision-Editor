@@ -310,6 +310,11 @@ extension ContentView {
 
     private func statusBarItems() -> [String] {
         var items: [String] = []
+        // FORK: format/minify/transform/line-ending/copy feedback. Shown first so it isn't
+        // truncated on narrow layouts (see `maxItemCount` callers).
+        if !forkStatusMessage.isEmpty {
+            items.append(forkStatusMessage)
+        }
         if statusBarShowCursor {
             items.append(caretStatus)
         }

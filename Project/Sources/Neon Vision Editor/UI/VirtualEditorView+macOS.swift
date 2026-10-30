@@ -2003,7 +2003,11 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
         let line = (viewportText as NSString).substring(with: NSRange(location: start, length: length))
         let baseline = row.baseline
         let leadingWhitespace = line.prefix { $0 == " " || $0 == "\t" }
-        let markerColor = (dark ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).withAlphaComponent(0.45)
+        let markerColor = (dark ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).withAlphaComponent(0.35)
+        // FORK: space dots render in a smaller font than tab arrows so they read as a subtle
+        // typographic hint rather than a bold period character.
+        let spaceDotFont = NSFont(name: editorFont.fontName, size: editorFont.pointSize * 0.5) ?? NSFont.systemFont(ofSize: editorFont.pointSize * 0.5)
+        let spaceDotBaselineAdjustment = (editorFont.pointSize - spaceDotFont.pointSize) * 0.3
         // FORK: indentation guides — subtle dotted hairline at each indent *level* (every indentWidth
         // columns), not a solid pipe at every space. Lower alpha + a dotted dash keeps them unobtrusive.
         let guideColor = (dark ? NSColor.secondaryLabelColor : NSColor.tertiaryLabelColor).withAlphaComponent(0.18)
@@ -2024,20 +2028,33 @@ final class VirtualEditorCanvas: NSView, NSTextInputClient {
                 guide.stroke()
             }
             if showsInvisibleCharacters {
-                let marker = character == "\t" ? "⇥" : "·"
-                (marker as NSString).draw(
-                    at: NSPoint(x: x, y: baseline),
-                    withAttributes: [.font: editorFont, .foregroundColor: markerColor]
-                )
+                if character == "\t" {
+                    ("⇥" as NSString).draw(
+                        at: NSPoint(x: x, y: baseline),
+                        withAttributes: [.font: editorFont, .foregroundColor: markerColor]
+                    )
+                } else {
+                    ("·" as NSString).draw(
+                        at: NSPoint(x: x, y: baseline + spaceDotBaselineAdjustment),
+                        withAttributes: [.font: spaceDotFont, .foregroundColor: markerColor]
+                    )
+                }
             }
             column += character == "\t" ? 4 : 1
         }
         guard showsInvisibleCharacters else { return }
-        for (offset, character) in line.enumerated() where character == "\t" {
-            if offset >= leadingWhitespace.count {
+        for (offset, character) in line.enumerated() where offset >= leadingWhitespace.count {
+            guard character == " " || character == "\t" else { continue }
+            let x = originX + CGFloat(offset) * characterWidth
+            if character == "\t" {
                 ("⇥" as NSString).draw(
-                    at: NSPoint(x: originX + CGFloat(offset) * characterWidth, y: baseline),
+                    at: NSPoint(x: x, y: baseline),
                     withAttributes: [.font: editorFont, .foregroundColor: markerColor]
+                )
+            } else {
+                ("·" as NSString).draw(
+                    at: NSPoint(x: x, y: baseline + spaceDotBaselineAdjustment),
+                    withAttributes: [.font: spaceDotFont, .foregroundColor: markerColor]
                 )
             }
         }

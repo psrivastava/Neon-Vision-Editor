@@ -3445,7 +3445,13 @@ class EditorViewModel {
         guard trimTrailingWhitespace else { return normalized }
         return normalized
             .components(separatedBy: "\n")
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .map { line -> String in
+                var view = Substring(line)
+                while let last = view.last, last == " " || last == "\t" {
+                    view = view.dropLast()
+                }
+                return String(view)
+            }
             .joined(separator: "\n")
     }
 

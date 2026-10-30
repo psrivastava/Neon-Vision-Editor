@@ -18,8 +18,10 @@ struct ForkMenuCommands: Commands {
         // Command palette lives in the Editor-adjacent command space; Cmd+Shift+P (distinct from
         // Cmd+P Quick Open). Placed before Search so it is easy to find.
         CommandGroup(after: .textEditing) {
-            Button("Command Palette…") { post(.forkShowCommandPaletteRequested) }
-                .keyboardShortcut("p", modifiers: [.command, .shift])
+            // NOT Cmd+Shift+P: upstream already binds that to "Toggle Document Preview"
+            // (App/AppMenus.swift), and the duplicate meant this palette never opened.
+            Button("Fork Command Palette…") { post(.forkShowCommandPaletteRequested) }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
         }
 
         CommandMenu("Transform") {
@@ -30,8 +32,9 @@ struct ForkMenuCommands: Commands {
 
             Divider()
 
-            Button("Format Markup (XML/HTML)") { post(.forkFormatMarkupRequested) }
-            Button("Minify Markup (XML/HTML)") { post(.forkMinifyMarkupRequested) }
+            Button("Format Document (Prettify)") { post(.forkFormatDocumentRequested) }
+                .keyboardShortcut("f", modifiers: [.command, .shift, .option])
+            Button("Minify Document (JSON/Markup)") { post(.forkMinifyDocumentRequested) }
 
             Menu("Convert Line Endings") {
                 Button("LF (Unix)") { post(.forkConvertLineEndingsRequested, object: ForkLineEnding.lf.rawValue) }

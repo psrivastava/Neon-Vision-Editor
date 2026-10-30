@@ -40,34 +40,108 @@ extension ContentView {
         let source = currentContentBinding.wrappedValue
         let result = transform.apply(to: source)
         guard result != source else {
-            findStatusMessage = "\(transform.title): no change"
+            forkStatusMessage = "\(transform.title): no change"
             return
         }
         editorExternalMutationRevision &+= 1
         currentContentBinding.wrappedValue = result
-        findStatusMessage = "Applied \(transform.title)"
+        forkStatusMessage = "Applied \(transform.title)"
     }
 
-    // MARK: - Markup formatting
+    // MARK: - Document formatting
 
-    func forkFormatMarkup(pretty: Bool) {
-        guard ForkDocumentFormatter.handles(language: currentLanguage) else {
-            findStatusMessage = "Formatting is available for XML, HTML, and SVG documents."
+    /// Ceiling for formatting a file-backed (virtual) document. Formatting is inherently
+    /// whole-document, so the text has to be materialized; above this size that costs more memory
+    /// than the feature is worth, and we say so instead of hanging or silently doing nothing.
+    private static let forkFormatMaxUTF16Length = 10_000_000
+
+    /// Unified "Format Document" entry point. Routes by language (JSON / markup / C-family code)
+    /// and works for both in-memory and file-backed documents.
+    func forkFormatDocument(pretty: Bool) {
+        let language = currentLanguage
+        guard ForkFormatRouter.kind(for: language) != .unsupported else {
+            forkStatusMessage = "No formatter for \(language). Supported: \(ForkFormatRouter.supportedSummary)."
             return
         }
-        guard !requiresMaterializedEditorTransform() else { return }
-        let source = currentContentBinding.wrappedValue
-        do {
-            let output = pretty ? try ForkDocumentFormatter.prettyPrint(source)
-                                : try ForkDocumentFormatter.minify(source)
-            editorExternalMutationRevision &+= 1
-            currentContentBinding.wrappedValue = output
-            findStatusMessage = pretty ? "Formatted markup" : "Minified markup"
-        } catch ForkDocumentFormatter.FormatError.empty {
-            // Nothing to format; stay silent.
-        } catch {
-            findStatusMessage = "Could not format markup."
+        if !pretty, !ForkFormatRouter.supportsMinify(language: language) {
+            forkStatusMessage = "Minify applies to JSON and markup documents only."
+            return
         }
+
+        guard let source = forkFormattableSourceText() else { return }
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        let indentUnit = indentStyle == "tabs" ? "\t" : String(repeating: " ", count: max(1, indentWidth))
+        let output: String
+        do {
+            output = pretty
+                ? try ForkFormatRouter.format(source, language: language, indentUnit: indentUnit)
+                : try ForkFormatRouter.minify(source, language: language)
+        } catch ForkDocumentFormatter.FormatError.empty {
+            return
+        } catch let error as ForkFormatRouter.RouterError {
+            forkStatusMessage = error == .minifyUnsupported
+                ? "Minify applies to JSON and markup documents only."
+                : "No formatter for \(language)."
+            return
+        } catch {
+            forkStatusMessage = ForkFormatRouter.kind(for: language) == .json
+                ? "Invalid JSON: \(error.localizedDescription)"
+                : "Could not format this document."
+            return
+        }
+
+        guard output != source else {
+            forkStatusMessage = "Already formatted"
+            return
+        }
+        guard forkWriteFormattedText(output) else { return }
+        forkStatusMessage = pretty ? "Formatted document" : "Minified document"
+    }
+
+    /// Back-compat shim: the markup-specific menu items and notifications still route here.
+    func forkFormatMarkup(pretty: Bool) {
+        forkFormatDocument(pretty: pretty)
+    }
+
+    /// Whole-document text for formatting, materializing a file-backed document when needed.
+    /// Returns nil (after setting a status message) when the document cannot be formatted.
+    private func forkFormattableSourceText() -> String? {
+        guard let tab = viewModel.selectedTab else { return nil }
+        guard tab.usesFileBackedStorage else {
+            return currentContentBinding.wrappedValue
+        }
+        if tab.isPartialFilePreview {
+            forkStatusMessage = "This file is open as a partial preview; formatting needs the whole document."
+            return nil
+        }
+        let length = tab.document.utf16Length
+        guard length <= Self.forkFormatMaxUTF16Length else {
+            forkStatusMessage = "Document is too large to format (over \(Self.forkFormatMaxUTF16Length / 1_000_000) M characters)."
+            return nil
+        }
+        let text = tab.document.string()
+        guard !text.isEmpty || length == 0 else {
+            forkStatusMessage = "Could not read the document text."
+            return nil
+        }
+        return text
+    }
+
+    /// Write formatted text back through whichever storage the tab uses.
+    private func forkWriteFormattedText(_ output: String) -> Bool {
+        guard let tab = viewModel.selectedTab else { return false }
+        if tab.usesFileBackedStorage {
+            guard tab.replaceContentStorage(with: output, markDirty: true) else {
+                forkStatusMessage = "Could not apply the formatted text."
+                return false
+            }
+            editorExternalMutationRevision &+= 1
+            return true
+        }
+        editorExternalMutationRevision &+= 1
+        currentContentBinding.wrappedValue = output
+        return true
     }
 
     // MARK: - Line-ending conversion
@@ -76,12 +150,12 @@ extension ContentView {
         let source = currentContentBinding.wrappedValue
         let converted = ForkLineEndingConverter.convert(source, to: target)
         guard converted != source else {
-            findStatusMessage = "Line endings already \(target.shortLabel)"
+            forkStatusMessage = "Line endings already \(target.shortLabel)"
             return
         }
         editorExternalMutationRevision &+= 1
         currentContentBinding.wrappedValue = converted
-        findStatusMessage = "Converted line endings to \(target.shortLabel)"
+        forkStatusMessage = "Converted line endings to \(target.shortLabel)"
     }
 
     // MARK: - Copy (plain-text; virtual editor has no attributed storage to export)
@@ -97,7 +171,7 @@ extension ContentView {
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 #endif
-        findStatusMessage = "Copied document text"
+        forkStatusMessage = "Copied document text"
     }
 
     // MARK: - Breadcrumb bar
@@ -145,6 +219,14 @@ struct ForkCommandObservers: ViewModifier {
                 formatMarkup(true)
             }
             .onReceive(NotificationCenter.default.publisher(for: .forkMinifyMarkupRequested)) { notif in
+                guard matchesWindow(notif) else { return }
+                formatMarkup(false)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .forkFormatDocumentRequested)) { notif in
+                guard matchesWindow(notif) else { return }
+                formatMarkup(true)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .forkMinifyDocumentRequested)) { notif in
                 guard matchesWindow(notif) else { return }
                 formatMarkup(false)
             }

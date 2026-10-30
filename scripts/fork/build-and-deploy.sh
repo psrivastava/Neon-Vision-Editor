@@ -21,6 +21,13 @@ EXECUTABLE_NAME="Neon Vision Editor"       # CFBundleExecutable — unchanged; b
 ARCHIVE_PATH="${ARCHIVE_PATH:-/tmp/NeonVisionEditor-fork.xcarchive}"
 INSTALL_DIR="${INSTALL_DIR:-/Applications}"
 BUILD_LOG="${BUILD_LOG:-/tmp/nve_fork_archive.log}"
+# Optional: build in a dedicated DerivedData dir. Set DERIVED_DATA_PATH to dodge a corrupted
+# default DerivedData (e.g. the stale macro cache behind 'swift-plugin-server produced
+# malformed response') without deleting anything.
+DERIVED_DATA_ARGS=()
+if [[ -n "${DERIVED_DATA_PATH:-}" ]]; then
+  DERIVED_DATA_ARGS=(-derivedDataPath "$DERIVED_DATA_PATH")
+fi
 
 echo "==> [1/4] Release archive (signing disabled)…"
 # Signing off matches release.sh; a locally-archived app is unsigned but runnable locally.
@@ -30,6 +37,7 @@ xcodebuild \
   -configuration Release \
   -destination "generic/platform=macOS" \
   -archivePath "$ARCHIVE_PATH" \
+  ${DERIVED_DATA_ARGS[@]+"${DERIVED_DATA_ARGS[@]}"} \
   MACOSX_DEPLOYMENT_TARGET=15.5 \
   CODE_SIGNING_ALLOWED=NO \
   CODE_SIGNING_REQUIRED=NO \

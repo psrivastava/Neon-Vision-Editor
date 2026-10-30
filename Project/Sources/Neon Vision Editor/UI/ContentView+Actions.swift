@@ -673,12 +673,23 @@ extension ContentView {
         findStatusMessage = "Copied \(reference)"
     }
 
+    // FORK-SEAM E19: route the Tools > JSON items through the unified fork formatter, which also
+    // handles file-backed (large) documents. Upstream's `transformCurrentJSONDocument` bails out
+    // on those, so Format JSON silently did nothing on exactly the files that need it.
     func formatJSONDocument() {
-        transformCurrentJSONDocument(prettyPrinted: true)
+        guard currentLanguage.lowercased().hasPrefix("json") else {
+            forkStatusMessage = "JSON tools are available for JSON documents."
+            return
+        }
+        forkFormatDocument(pretty: true)
     }
 
     func combineJSONLines() {
-        transformCurrentJSONDocument(prettyPrinted: false)
+        guard currentLanguage.lowercased().hasPrefix("json") else {
+            forkStatusMessage = "JSON tools are available for JSON documents."
+            return
+        }
+        forkFormatDocument(pretty: false)
     }
 
     private func transformCurrentJSONDocument(prettyPrinted: Bool) {
