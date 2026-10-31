@@ -896,7 +896,10 @@ extension ContentView {
 
     func requestCloseTab(_ tab: TabData) {
         #if os(macOS)
-        if let hostWindowNumber {
+        // Native window tabs: one document per window, so closing the tab is
+        // closing the window. With fork in-app tabs, only the last tab does.
+        let closesWindow = !MacDocumentTabPolicy.forkInAppTabsEnabled || viewModel.tabs.count <= 1
+        if closesWindow, let hostWindowNumber {
             NSApp.window(withWindowNumber: hostWindowNumber)?.performClose(nil)
             return
         }

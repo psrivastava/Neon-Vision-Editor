@@ -18,6 +18,12 @@ Branch: `rebuild/upstream-v2.1`. Deploy target: `/Applications/nve.app` (via
 | **Text utilities** | String transforms, line-ending conversion, XML/HTML document formatting (pure, unit-tested). | `Fork/StringTransforms.swift`, `Fork/LineEndings.swift`, `Fork/DocumentFormatter.swift` |
 | **Subtle indentation guides** | Replaced upstream's solid per-space pipe with a faint dotted hairline per indent level. | `VirtualEditorView+macOS.swift` `drawWhitespaceAndIndentationDecorations` |
 | **Code folding — model only** | `ForkFoldRange` + tree-sitter fold-range computation. Editor integration (hiding lines) is **not** built. | `Fork/CodeFolding.swift`, `forkTreeSitterFoldRanges` in `Fork/TreeSitterHighlighter.swift` |
+| **Window shell redesign (NotepadMac-style)** | Three rounded 12pt cards (TOC / editor / project) on a themed backdrop; gutters double as resize handles; traffic lights sit over the left card; in-app pill tabs replace the native window tab bar. | `UI/ContentView.swift` (`macOSTOCSplitLayout`, `macShellBackdropColor`), `UI/SidebarViews.swift`, `UI/ContentView+ProjectSidebar.swift`, `Fork/SurfaceStyle.swift` (`shellBackdrop`, `panelCardFill`) |
+| **In-editor title row + overflow toolbar** | Window `NSToolbar` is hidden; the title row (sidebar toggle, app icon + name, 6 inline actions in a rounded group, `⋯` overflow menu, right sidebar toggle) lives in the editor card header. Uses `ViewThatFits` so the row degrades 6→3→0 inline actions as the window narrows, then relies on the overflow menu — nothing ever clips. | `UI/ContentView+Toolbar.swift` (`forkTitleBar`, `forkTitleBarActions`, `macDocumentToolbarGroups`) |
+| **In-app document tab pills** | Native window-tabbing disabled via `MacDocumentTabPolicy.forkInAppTabsEnabled`; file-opens stay in the current window as pills. Hover shows the `~`-abbreviated path; right-click gives Close Tab / Close Other / Close to the Right / Copy File Name / Copy File Path / Reveal in Finder. Two-tone treatment: current tab filled, previously-selected tab muted accent. | `UI/ContentView+TabChromeStatus.swift` (`forkMacTabStrip`, `forkMacTabPill`, `forkMacTabContextMenu`), `App/MacDocumentWindowTabs.swift` (`preferredTabbingMode`, destination nulled when in-app tabs on), `UI/ContentView.swift` (`previousSelectedTabID`) |
+| **Right sidebar — Git + Terminal tabs, sync-to-current-file** | Added a `Git` tab (unconditional; renders `gitFileStatusMap` as A/M/D/R rows, click opens file). Terminal tab is already present under `#if os(macOS) && !APP_STORE_BUILD`. Sync-to-current-file button (⇄, `arrow.left.arrow.right`) expands the tree to the selected tab's file. Tab pills have the same two-tone treatment as document pills. | `UI/SidebarViews.swift` (`ProjectSidebarTab.git`, `gitContent`, `gitChangeRow`, `tabButton` previous-tint, sync button in `filesContent`) |
+| **Native-drag resize handles** | Resize divider's hover area used to be a transparent SwiftUI view, which lost the mouse to AppKit neighbours (editor) and let `isMovableByWindowBackground` turn the gesture into a window move. Added an `onNativeDrag` path on `MacSidebarResizeDivider` — the AppKit tracking view handles mouseDown/Dragged/Up in window coordinates, overrides `mouseDownCanMoveWindow = false`, and biases its hit area away from the editor. | `UI/ContentView+ProjectSidebar.swift` (`MacSidebarResizeDivider.onNativeDrag`, `MacSidebarResizeCursorTrackingView.TrackingView`) |
+| **Deploy guard: don't swap bundle under a running instance** | `scripts/fork/build-and-deploy.sh` now asks `/Applications/nve.app` to quit via `osascript "quit app"` before the clean-copy step (unix inodes stay mapped under a running process — rm+cp "works" on disk but the live process keeps running the old binary from memory). Waits up to 15 s; aborts if the app is still up (e.g. an unsaved-changes prompt). | `scripts/fork/build-and-deploy.sh` |
 
 ## Learnings & gotchas (the expensive ones)
 
@@ -58,6 +64,34 @@ Branch: `rebuild/upstream-v2.1`. Deploy target: `/Applications/nve.app` (via
 7. **A symbol/outline navigator already exists upstream** (`DocumentSymbolNavigator`, "Go to Symbol",
    outline sidebar) — so there's no need to build structure-navigation; it's regex-based and could be
    upgraded to tree-sitter later if desired.
+
+8. **The editor card's header host swallows the titlebar's reserved space.** The macOS title row is
+   rendered through `MacDocumentContentController` as an `NSHostingView` accessory. Hosting views are
+   safe-area-aware by default on macOS Sequoia+: with the window's `fullSizeContentView` style the host
+   silently pads itself down by the titlebar height, so the toolbar row sits below an empty band even
+   though the SwiftUI view says it's flush. **Lesson: set `host.safeAreaRegions = []` on every
+   `NSHostingView` in the editor stack** (header + replacement region), not just the per-pane header.
+   See `MacDocumentContentController.swift` lines 108 (`updateAccessory`), 274 (per-pane header), 348
+   (region host).
+
+9. **SwiftUI `isMovableByWindowBackground` beats custom gestures.** With the window set movable by its
+   background, a transparent SwiftUI view handling a `DragGesture` loses the first mouse-down to
+   AppKit's window-drag path. Resize handles need either `mouseDownCanMoveWindow = false` on an actual
+   `NSView`, or AppKit-side mouse tracking (`mouseDown`/`mouseDragged`/`mouseUp`). The fork uses the
+   second — a `TrackingView` that measures translation in window coordinates and drives the width
+   state directly. **Lesson: never trust SwiftUI gestures for resize-adjacent-to-AppKit chrome when
+   the window is movable by background.**
+
+10. **The release-copy script needs a liveness guard.** `rm -rf /Applications/nve.app && cp -R` under
+    a running instance succeeds silently on disk, but the kernel keeps the old inodes mapped for the
+    live process, so the user keeps testing yesterday's binary while trusting today's hash. Any lazy
+    resource read from the live process can then mismatch the swapped bundle and crash. The script
+    now asks the app to quit via `osascript "quit app"` before the copy and aborts if it stays up.
+
+11. **Native `NSToolbar` always wins hit-testing at the window top.** Hiding it (`isVisible = false`)
+    is enough to free the band for SwiftUI content, but the title text can still re-appear whenever
+    `window.title` is set. Keep `window.titleVisibility = .hidden` reasserted inside
+    `applyDocumentMetadata`, not just once at window creation.
 
 ## Known limitations / next candidates
 

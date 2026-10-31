@@ -883,6 +883,8 @@ struct ContentView: View {
 #endif
 
     @State var showFindReplace: Bool = false
+    /// Previously-selected document tab for the two-tone pill (upstream parity).
+    @State var previousSelectedTabID: UUID? = nil
     @State var showSettingsSheet: Bool = false
     @State var showUpdateDialog: Bool = false
     @State var findQuery: String = ""
@@ -1364,15 +1366,15 @@ struct ContentView: View {
         PerformancePreset(rawValue: performancePresetRaw) ?? .balanced
     }
 
-    var minimumProjectSidebarWidth: CGFloat { 300 }
+    var minimumProjectSidebarWidth: CGFloat { 220 }
     var maximumProjectSidebarWidth: CGFloat { 680 }
 #if os(macOS)
     /// Shared transparent interaction width for every macOS pane divider.
-    var macOSResizeHitTargetWidth: CGFloat { 11 }
+    var macOSResizeHitTargetWidth: CGFloat { 14 }
 #endif
     var projectSidebarResizeHandleWidth: CGFloat {
 #if os(macOS)
-        11
+        6 // Shell redesign: the gutter between cards is the handle.
 #else
         16
 #endif
@@ -1387,7 +1389,7 @@ struct ContentView: View {
 #if os(macOS)
     var minimumTOCSidebarWidth: CGFloat { 200 }
     var maximumTOCSidebarWidth: CGFloat { 600 }
-    var tocSidebarResizeHandleWidth: CGFloat { 11 }
+    var tocSidebarResizeHandleWidth: CGFloat { 6 } // gutter = handle
     var tocSidebarResizeHitTargetWidth: CGFloat { macOSResizeHitTargetWidth }
 #endif
 
@@ -1781,10 +1783,20 @@ struct ContentView: View {
     var macSidebarColumnBackground: some View {
         ZStack(alignment: .top) {
             Rectangle().fill(editorSurfaceBackgroundStyle)
-            Rectangle()
-                .fill(macToolbarBackgroundStyle)
-                .frame(height: 42)
+            // Darken the column so the inset rounded sidebar card reads
+            // against the chrome in both light and dark themes; otherwise the
+            // card and the window background are near-identical and the gap
+            // shows as an unthemed grey strip.
+            Rectangle().fill(macSidebarColumnChromeDarkening)
+            // No toolbar band: the NSToolbar is hidden (FORK), so the darkened
+            // chrome runs uninterrupted to the top of the window frame.
         }
+    }
+
+    var macSidebarColumnChromeDarkening: Color {
+        effectiveEditorColorScheme == .dark
+            ? Color.black.opacity(0.22)
+            : Color.black.opacity(0.055)
     }
 
     private var macInterPaneBackgroundStyle: AnyShapeStyle {
@@ -4834,7 +4846,8 @@ struct ContentView: View {
                         tabID: viewModel.selectedTabID,
                         focusEditor: false
                     )
-                }
+                },
+                onToggleSidebar: { toggleSidebarFromToolbar() }
             )
                 .frame(minWidth: 200, idealWidth: 250, maxWidth: 600)
 #if os(macOS)
@@ -5636,22 +5649,54 @@ struct ContentView: View {
     }
 
 #if os(macOS)
+    /// FORK shell redesign: three rounded cards (TOC / editor / project) on a
+    /// themed backdrop. The gutters between cards double as resize handles.
     private var macOSTOCSplitLayout: some View {
-        HStack(spacing: 0) {
+        let showProjectPanel = showProjectStructureSidebar && !brainDumpLayoutEnabled && !focusModeEnabled
+        return HStack(spacing: 0) {
             if shouldUseSplitView {
                 sidebarView
                     .frame(width: clampedTOCSidebarWidth)
-                    .background(macSidebarColumnBackground)
                 tocSidebarResizeHandle
             }
+            if showProjectPanel && projectNavigatorPlacement == .leading {
+                projectStructureSidebarPanel
+                projectSidebarResizeHandle
+            }
             editorView
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        .stroke(macShellCardStroke, lineWidth: 1)
+                )
                 .layoutPriority(1)
+            if showProjectPanel && projectNavigatorPlacement == .trailing {
+                projectSidebarResizeHandle
+                projectStructureSidebarPanel
+            }
         }
-        .background(editorSurfaceBackgroundStyle)
+        .padding(6)
+        .background(macShellBackdropColor)
+        .ignoresSafeArea(edges: .top)
+    }
+
+    var macShellBackdropColor: Color {
+        ForkSurfaceStyle.shellBackdrop(
+            themeBackground: currentEditorTheme(colorScheme: effectiveEditorColorScheme).background,
+            isDark: effectiveEditorColorScheme == .dark
+        )
+    }
+
+    var macShellCardStroke: Color {
+        effectiveEditorColorScheme == .dark
+            ? Color.white.opacity(0.10)
+            : Color.black.opacity(0.10)
     }
 
     private var tocSidebarResizeHandle: some View {
-        let drag = DragGesture(minimumDistance: 0)
+        // Global space: the handle moves as the width changes, so a local
+        // translation feeds back into itself and the layout oscillates.
+        let drag = DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 let startWidth = tocSidebarResizeStartWidth ?? clampedTOCSidebarWidth
                 if tocSidebarResizeStartWidth == nil {
@@ -5676,8 +5721,8 @@ struct ContentView: View {
             // Keep the resize boundary on the same material as the editor
             // window. A solid theme color creates a white strip in translucent
             // mode even though both adjacent panes use the window material.
-            surfaceStyle: macInterPaneBackgroundStyle,
-            topSurfaceStyle: macToolbarBackgroundStyle,
+            surfaceStyle: AnyShapeStyle(Color.clear), // backdrop gutter shows through
+            topSurfaceStyle: AnyShapeStyle(Color.clear), // FORK: no NSToolbar band
             isActive: isTOCSidebarResizeHandleHovered || tocSidebarResizeStartWidth != nil,
             isDragging: tocSidebarResizeStartWidth != nil,
             isHovered: $isTOCSidebarResizeHandleHovered,
@@ -5691,6 +5736,17 @@ struct ContentView: View {
                     maximumTOCSidebarWidth
                 )
                 tocSidebarWidth = Double(adjusted)
+            },
+            hitTargetBias: -1,
+            onNativeDrag: { dx in
+                let start = tocSidebarResizeStartWidth ?? clampedTOCSidebarWidth
+                if tocSidebarResizeStartWidth == nil { tocSidebarResizeStartWidth = start }
+                tocSidebarWidth = Double(min(max(start + dx, minimumTOCSidebarWidth), maximumTOCSidebarWidth))
+            },
+            onNativeDragEnded: {
+                tocSidebarResizeStartWidth = nil
+                isTOCSidebarResizeHandleHovered = false
+                MacSidebarResizeCursor.reset(ownerID: "toc-sidebar")
             }
         )
     }
@@ -5773,17 +5829,8 @@ struct ContentView: View {
     private func macDocumentLayout(primaryEditor: MacDocumentContentController.Configuration) -> some View {
         var layout = MacDocumentLayout(primary: .init(id: "document", content: { AnyView(EmptyView()) }), source: primaryEditor,
             availablePreviewWidthChanged: { previewPaneAvailableWidth = $0 })
-        if showProjectStructureSidebar && !brainDumpLayoutEnabled && !focusModeEnabled {
-            if projectNavigatorPlacement == .leading {
-                layout.leadingSidebar = .init(id: "project", content: {
-                    macHostedContent(HStack(spacing: 0) { projectStructureSidebarPanel; projectSidebarResizeHandle })
-                })
-            } else {
-                layout.trailingSidebar = .init(id: "project", content: {
-                    macHostedContent(HStack(spacing: 0) { projectSidebarResizeHandle; projectStructureSidebarPanel })
-                })
-            }
-        }
+        // FORK shell redesign: the project sidebar is a top-level card in
+        // macOSTOCSplitLayout now, not a region inside the AppKit layout.
         if let presentation = editorDiffPresentation {
             layout.source = nil
             layout.primary = .init(id: "diff", content: {
@@ -5877,9 +5924,15 @@ struct ContentView: View {
             shouldShow: shouldShowMarkdownFormattingControls,
             overlaysEditor: shouldOverlayMarkdownFormattingControls,
             reservesChromeRow: shouldPlaceMarkdownFormattingBelowTabs)
-        if isConvertingTextToMarkdown || isStructuringTextAsJSON || showBracketHelperBarMac || formatting || structured {
+        // FORK shell redesign: the editor card owns the title row (toolbar +
+        // overflow) and the in-app tab strip; the window titlebar stays empty.
+        if !focusModeEnabled || isConvertingTextToMarkdown || isStructuringTextAsJSON || showBracketHelperBarMac || formatting || structured {
             configuration.header = {
                 AnyView(VStack(spacing: 0) {
+                    if !focusModeEnabled {
+                        forkTitleBar
+                        forkMacTabStrip
+                    }
                     if isConvertingTextToMarkdown { markdownConversionProgressBanner }
                     if isStructuringTextAsJSON { jsonStructuringProgressBanner }
                     if showBracketHelperBarMac { bracketHelperBar }

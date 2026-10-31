@@ -823,6 +823,146 @@ extension ContentView {
         return parts.joined(separator: ", ")
     }
 
+#if os(macOS)
+    /// FORK shell redesign: in-app pill tabs inside the editor card. Replaces
+    /// the native window tab bar (tabbingMode is .disallowed when the fork
+    /// in-app tabs flag is on), so documents open as tabs in this window.
+    var forkMacTabStrip: some View {
+        HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(viewModel.tabs) { tab in
+                        forkMacTabPill(tab)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Button { viewModel.addNewTab() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 24, height: 22)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("New Tab (Cmd+T)")
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .background(macToolbarBackgroundStyle)
+    }
+
+    @ViewBuilder
+    private func forkMacTabContextMenu(_ tab: TabData) -> some View {
+        let index = viewModel.tabs.firstIndex { $0.id == tab.id } ?? 0
+        let others = viewModel.tabs.filter { $0.id != tab.id }
+        let toTheRight = Array(viewModel.tabs.dropFirst(index + 1))
+        Button("Close Tab", systemImage: "xmark") { requestCloseTab(tab) }
+        Button("Close Other Tabs") { forkCloseTabsSkippingDirty(others) }
+            .disabled(others.isEmpty)
+        Button("Close Tabs to the Right") { forkCloseTabsSkippingDirty(toTheRight) }
+            .disabled(toTheRight.isEmpty)
+        Divider()
+        Button("Copy File Name", systemImage: "doc.on.doc") {
+            forkCopyToPasteboard(tab.fileURL?.lastPathComponent ?? tab.name)
+        }
+        Button("Copy File Path", systemImage: "link") {
+            if let path = tab.fileURL?.path { forkCopyToPasteboard(path) }
+        }
+        .disabled(tab.fileURL == nil)
+        Button("Reveal in Finder", systemImage: "folder") {
+            if let url = tab.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        .disabled(tab.fileURL == nil)
+    }
+
+    /// Bulk close never discards edits: clean tabs close, tabs with unsaved
+    /// changes stay open for the user to save or close individually.
+    private func forkCloseTabsSkippingDirty(_ tabs: [TabData]) {
+        for tab in tabs where !tab.isDirty {
+            viewModel.closeTab(tabID: tab.id)
+        }
+    }
+
+    private func forkCopyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    private func forkMacTabPill(_ tab: TabData) -> some View {
+        let isSelected = viewModel.selectedTabID == tab.id
+        let isPrevious = !isSelected && previousSelectedTabID == tab.id
+        // Not a Button wrapping a Button: a nested close button would fire the
+        // select action on the same click. Tap gesture selects; only the ✕ is
+        // a real button.
+        return HStack(spacing: 5) {
+            Text(tab.name)
+                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if tab.isDirty {
+                Circle().fill(.secondary).frame(width: 5, height: 5)
+            }
+            Button {
+                requestCloseTab(tab)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .opacity(isSelected ? 0.7 : 0.4)
+            .help("Close Tab")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .frame(minWidth: 70, maxWidth: 200)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(forkMacTabPillFill(isSelected: isSelected, isPrevious: isPrevious))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(isSelected ? macShellCardStroke
+                        : isPrevious ? Color.accentColor.opacity(0.35)
+                        : Color.clear,
+                        lineWidth: 1)
+        )
+        .foregroundStyle(forkMacTabPillForeground(isSelected: isSelected, isPrevious: isPrevious))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if viewModel.selectedTabID != tab.id {
+                previousSelectedTabID = viewModel.selectedTabID
+                viewModel.selectTab(id: tab.id)
+            }
+        }
+        .help(tab.fileURL.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? tab.name)
+        .contextMenu { forkMacTabContextMenu(tab) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tab.name)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityAction {
+            if viewModel.selectedTabID != tab.id {
+                previousSelectedTabID = viewModel.selectedTabID
+                viewModel.selectTab(id: tab.id)
+            }
+        }
+    }
+
+    private func forkMacTabPillFill(isSelected: Bool, isPrevious: Bool) -> AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(editorSurfaceBackgroundStyle) }
+        if isPrevious { return AnyShapeStyle(Color.accentColor.opacity(0.09)) }
+        return AnyShapeStyle(Color.clear)
+    }
+
+    private func forkMacTabPillForeground(isSelected: Bool, isPrevious: Bool) -> AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(HierarchicalShapeStyle.primary) }
+        if isPrevious { return AnyShapeStyle(Color.accentColor.opacity(0.9)) }
+        return AnyShapeStyle(HierarchicalShapeStyle.secondary)
+    }
+#endif
+
     @ViewBuilder
     var tabBarView: some View {
 #if os(macOS)

@@ -29,6 +29,7 @@ struct SidebarView: View {
     let translucentBackgroundEnabled: Bool
     let onItemSelected: (() -> Void)?
     let onJumpToLine: ((Int) -> Void)?
+    var onToggleSidebar: (() -> Void)? = nil
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     @State private var tocItems: [TOCItem] = [
@@ -38,31 +39,14 @@ struct SidebarView: View {
     @State private var selectedTOCItemID: String?
 
     var body: some View {
-        List {
-            ForEach(tocItems) { item in
-                Button {
-                    selectedTOCItemID = item.id
-                    jump(to: item)
-                } label: {
-                    tocRow(for: item)
-                }
-                .buttonStyle(.plain)
-                .disabled(item.line == nil)
-                .listRowInsets(tocListRowInsets)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .accessibilityLabel(accessibilityLabel(for: item))
-                .accessibilityAddTraits(selectedTOCItemID == item.id ? [.isSelected] : [])
-                .macOverlayScrollerStyle(item.id == tocItems.first?.id)
+        VStack(alignment: .leading, spacing: 0) {
+#if os(macOS)
+            if let onToggleSidebar {
+                tocHeader(onToggleSidebar: onToggleSidebar)
             }
-        }
-        .listStyle(platformListStyle)
-#if os(iOS)
-        .environment(\.defaultMinListRowHeight, isCompactTOCWidth ? 28 : 44)
 #endif
-        .scrollIndicators(.automatic)
-        .scrollContentBackground(.hidden)
-        .background(Color.clear)
+            tocList
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(
             RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous)
@@ -88,6 +72,50 @@ struct SidebarView: View {
         }
     }
 
+#if os(macOS)
+    private func tocHeader(onToggleSidebar: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text("Outline")
+                .font(.headline.weight(.semibold))
+            Spacer(minLength: 8)
+            // The toggle lives in the editor title row so it survives collapse.
+        }
+        .padding(.horizontal, 16)
+        // Clears the traffic lights, which float over this card's top-left
+        // corner now that the shell ignores the top safe area.
+        .padding(.top, 38)
+        .padding(.bottom, 4)
+    }
+#endif
+
+    private var tocList: some View {
+        List {
+            ForEach(tocItems) { item in
+                Button {
+                    selectedTOCItemID = item.id
+                    jump(to: item)
+                } label: {
+                    tocRow(for: item)
+                }
+                .buttonStyle(.plain)
+                .disabled(item.line == nil)
+                .listRowInsets(tocListRowInsets)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityLabel(accessibilityLabel(for: item))
+                .accessibilityAddTraits(selectedTOCItemID == item.id ? [.isSelected] : [])
+                .macOverlayScrollerStyle(item.id == tocItems.first?.id)
+            }
+        }
+        .listStyle(platformListStyle)
+#if os(iOS)
+        .environment(\.defaultMinListRowHeight, isCompactTOCWidth ? 28 : 44)
+#endif
+        .scrollIndicators(.automatic)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+    }
+
     private var sidebarSurfaceFill: AnyShapeStyle {
         if translucentBackgroundEnabled {
 #if os(macOS)
@@ -97,7 +125,11 @@ struct SidebarView: View {
             #endif
         }
 #if os(macOS)
-        return AnyShapeStyle(.ultraThinMaterial)
+        // One elevation step off the editor surface so the card reads as a
+        // distinct pane against both the editor and the shell backdrop.
+        return AnyShapeStyle(ForkSurfaceStyle.panelCardFill(
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background,
+            isDark: colorScheme == .dark))
 #else
         return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
 #endif
@@ -325,13 +357,15 @@ struct SidebarView: View {
             ? EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
             : EdgeInsets(top: 0, leading: 10, bottom: 10, trailing: 10)
 #else
-        EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 4)
+        // Shell redesign: the window shell provides the 6pt backdrop gutters
+        // around each card, so the card itself is flush in its column.
+        EdgeInsets()
 #endif
     }
 
     private var sidebarCornerRadius: CGFloat {
 #if os(macOS)
-        22
+        12
 #else
         20
 #endif
@@ -1004,11 +1038,16 @@ struct ProjectStructureSidebarView: View {
     enum ProjectSidebarTab: String {
         case files
         case search
+        case git
         case diff
 #if os(macOS) && !APP_STORE_BUILD
         case terminal
 #endif
     }
+
+    /// Previously-active tab for the two-tone pill treatment (upstream parity):
+    /// current tab filled accent, previous tab muted accent, others plain.
+    @State private var previousTab: ProjectSidebarTab? = nil
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -1090,6 +1129,8 @@ struct ProjectStructureSidebarView: View {
             filesContent
         case .search:
             findInFilesContent
+        case .git:
+            gitContent
         case .diff:
             compareDiffContent
 #if os(macOS) && !APP_STORE_BUILD
@@ -1105,18 +1146,104 @@ struct ProjectStructureSidebarView: View {
         }
     }
 
+    /// Compact Git-changes list: pulls directly from the status map the parent
+    /// already supplies; clicking opens the file in the editor.
+    private var gitContent: some View {
+        let entries = gitFileStatusMap
+            .sorted { lhs, rhs in lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending }
+        return Group {
+            if entries.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text("No local changes")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(entries, id: \.key) { path, status in
+                            gitChangeRow(path: path, status: status)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func gitChangeRow(path: String, status: GitFileStatus) -> some View {
+        let url = URL(fileURLWithPath: path)
+        let display = url.lastPathComponent
+        let folder = (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+        Button {
+            onOpenProjectFile(url)
+        } label: {
+            HStack(spacing: 6) {
+                Text(gitStatusMarker(status))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(gitStatusTint(status))
+                    .frame(width: 14, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(display)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Text(folder)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(path)
+    }
+
+    private func gitStatusMarker(_ status: GitFileStatus) -> String {
+        switch status {
+        case .added: return "A"
+        case .modified: return "M"
+        case .deleted: return "D"
+        case .renamed: return "R"
+        case .copied: return "C"
+        case .untracked: return "U"
+        case .conflicted: return "!"
+        case .clean: return " "
+        }
+    }
+
+    private func gitStatusTint(_ status: GitFileStatus) -> Color {
+        switch status {
+        case .added, .untracked: return .green
+        case .modified: return .orange
+        case .deleted: return .red
+        case .renamed, .copied: return .blue
+        case .conflicted: return .pink
+        case .clean: return .secondary
+        }
+    }
+
     private var tabBar: some View {
         HStack(spacing: 0) {
-            Group {
-                tabButton(title: "Files", icon: "folder", tab: .files)
-                tabButton(title: "Search", icon: "text.magnifyingglass", tab: .search)
-                if compareDiffPresentation != nil {
-                    tabButton(title: "Diff", icon: "rectangle.split.2x1", tab: .diff)
-                }
-#if os(macOS) && !APP_STORE_BUILD
-                tabButton(title: "Terminal", icon: "terminal", tab: .terminal)
-#endif
+            tabButton(title: "Files", icon: "folder", tab: .files)
+            tabButton(title: "Search", icon: "text.magnifyingglass", tab: .search)
+            tabButton(title: "Git", icon: "arrow.triangle.branch", tab: .git)
+            if compareDiffPresentation != nil {
+                tabButton(title: "Diff", icon: "rectangle.split.2x1", tab: .diff)
             }
+#if os(macOS) && !APP_STORE_BUILD
+            tabButton(title: "Terminal", icon: "terminal", tab: .terminal)
+#endif
         }
         .padding(3)
         .background(sidebarTabRailFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
@@ -1131,33 +1258,35 @@ struct ProjectStructureSidebarView: View {
 
     private func tabButton(title: String, icon: String, tab: ProjectSidebarTab) -> some View {
         let isSelected = activeTab == tab
+        let isPrevious = !isSelected && previousTab == tab
         return Button {
-            activeTab = tab
+            if activeTab != tab {
+                previousTab = activeTab
+                activeTab = tab
+            }
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: icon)
                     .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
-#if os(macOS) && !APP_STORE_BUILD
-                if !isCompactWidth || tab != .terminal || isSelected {
+                if !isCompactWidth || isSelected {
                     Text(title)
                         .lineLimit(1)
                         .minimumScaleFactor(0.78)
                 }
-#else
-                Text(title)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.78)
-#endif
             }
             .font((isCompactWidth ? Font.caption : Font.subheadline).weight(isSelected ? .semibold : .regular))
-            .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+            .foregroundStyle(isSelected ? Color.accentColor
+                             : isPrevious ? Color.accentColor.opacity(0.75)
+                             : Color.secondary)
             .frame(maxWidth: .infinity, minHeight: 36)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 9, style: .continuous)
-                .fill(isSelected ? Color.accentColor.opacity(translucentBackgroundEnabled ? 0.16 : 0.11) : Color.clear)
+                .fill(isSelected ? Color.accentColor.opacity(translucentBackgroundEnabled ? 0.16 : 0.11)
+                      : isPrevious ? Color.accentColor.opacity(0.055)
+                      : Color.clear)
         )
         .help(NSLocalizedString(title, comment: "Project sidebar tab help"))
         .accessibilityLabel(NSLocalizedString(title, comment: "Project sidebar tab accessibility label"))
@@ -1215,6 +1344,18 @@ struct ProjectStructureSidebarView: View {
                         .help(NSLocalizedString("Open File…", comment: "Project sidebar open file action"))
                         .accessibilityLabel(NSLocalizedString("Open file", comment: "Project sidebar open file accessibility label"))
                         .accessibilityHint(NSLocalizedString("Opens a file from disk", comment: "Project sidebar open file accessibility hint"))
+
+                        // Sync-to-current-file: expands the tree so the active
+                        // tab's file is in view. Disabled when there's no
+                        // active document or no project folder.
+                        Button(action: { revealTargetIfNeeded() }) {
+                            sidebarActionIcon("arrow.left.arrow.right")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(selectedFileURL == nil || rootFolderURL == nil)
+                        .opacity((selectedFileURL == nil || rootFolderURL == nil) ? 0.35 : 1)
+                        .help(NSLocalizedString("Sync with Current File", comment: "Project sidebar sync to current file"))
+                        .accessibilityLabel(NSLocalizedString("Sync with current file", comment: "Project sidebar sync accessibility label"))
 
                         Menu {
                             Button {
@@ -1567,7 +1708,10 @@ struct ProjectStructureSidebarView: View {
             #endif
         }
 #if os(macOS)
-        return AnyShapeStyle(.ultraThinMaterial)
+        // One elevation step off the editor surface (see panelCardFill).
+        return AnyShapeStyle(ForkSurfaceStyle.panelCardFill(
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background,
+            isDark: colorScheme == .dark))
 #else
         return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
 #endif
@@ -1633,7 +1777,7 @@ struct ProjectStructureSidebarView: View {
 
     private var sidebarCornerRadius: CGFloat {
 #if os(macOS)
-        22
+        12
 #else
         20
 #endif
@@ -1719,16 +1863,13 @@ struct ProjectStructureSidebarView: View {
         if isCompactProjectLayout { return 4 }
         return isRegularPadLayout ? 6 : 8
 #else
-        8
+        6
 #endif
     }
 
     private var sidebarCardOuterPadding: EdgeInsets {
-#if os(macOS)
-        EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
-#else
+        // Shell redesign: the window shell provides the backdrop gutters.
         EdgeInsets()
-#endif
     }
 
     private var platformListStyle: some ListStyle {

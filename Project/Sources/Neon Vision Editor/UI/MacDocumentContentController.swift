@@ -107,6 +107,10 @@ final class MacDocumentContentController: NSViewController {
         }
         let host = NSHostingView(rootView: hostContent(factory()))
         host.sceneBridgingOptions = []
+        // The fork title row is the "header" accessory and sits under the
+        // transparent titlebar; a safe-area-aware host pads it down by the
+        // titlebar height, leaving an empty band above the toolbar.
+        host.safeAreaRegions = []
         host.sizingOptions = fillsHeight ? [] : [.intrinsicContentSize]
         if !fillsHeight {
             host.setContentHuggingPriority(.required, for: .vertical)
@@ -273,6 +277,10 @@ final class MacDocumentContentController: NSViewController {
                 else {
                     let host = NSHostingView(rootView: hostContent(makeHeader()))
                     host.sceneBridgingOptions = []
+                    // The fork shell runs the editor card up under the
+                    // transparent titlebar; without this the header pads itself
+                    // down by the titlebar height and leaves an empty band.
+                    host.safeAreaRegions = []
                     host.sizingOptions = [.intrinsicContentSize]
                     host.setContentHuggingPriority(.required, for: .vertical)
                     header = host
@@ -348,6 +356,8 @@ struct MacDocumentLayout: NSViewControllerRepresentable {
                 let host = NSHostingView(rootView: region.content())
                 host.identifier = .init("NeonDocumentRegion." + region.id)
                 host.sceneBridgingOptions = []
+                host.safeAreaRegions = [] // same titlebar inset as the header
+
                 host.sizingOptions = isPrimary ? [] : [.intrinsicContentSize]
                 host.setContentHuggingPriority(isPrimary ? .init(1) : .required, for: .horizontal)
                 host.setContentCompressionResistancePriority(isPrimary ? .init(1) : .required, for: .horizontal)

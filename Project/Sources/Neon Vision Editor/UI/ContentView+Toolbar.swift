@@ -3169,7 +3169,9 @@ extension ContentView {
         }
     }
 
-    func nativeDocumentToolbar(locale: Locale) -> some View {
+    /// Shared by the (now hidden) NSToolbar bridge and the fork's in-editor
+    /// top bar, so item visibility/preset/collapse logic stays single-sourced.
+    var macDocumentToolbarGroups: [MacDocumentToolbar.Group] {
         let custom = toolbarUseCustomMac || toolbarPresetMacRaw == ToolbarPreset.custom.rawValue
         let defaults = ["openFile", "undo", "newTab", "closeAllTabs", "saveFile", "saveFileAs", "newWindow", "codeSnapshot", "markdownPreview", "markdownProjectPreview", "codeMinimap", "toggleSidebar", "toggleProjectSidebar", "brainDump", "findReplace", "findInFiles", "splitEditor", "gitChanges"]
         let primary = custom
@@ -3181,11 +3183,18 @@ extension ContentView {
             if id == "splitEditor", isMacToolbarItemVisible("compare") { return false }
             return ToolbarActionSelection.customizableMacActionIDs.contains(id)
         }
-        let groups: [MacDocumentToolbar.Group] = isToolbarCollapsed
-            ? [.init(id: "primary", items: ["collapse"])]
-            : [.init(id: "primary", items: ["collapse", "settings", "help"] + primary.filter(visible)),
-               .init(id: "secondary", items: secondary.filter(visible))]
-        return MacDocumentToolbar(owner: viewModel, groups: groups, isVisible: !focusModeEnabled, label: { id in
+        // Shell redesign: the collapse toggle is obsolete — overflow handling
+        // in the title row replaces it, so the full set is always returned.
+        return [.init(id: "primary", items: ["settings", "help"] + primary.filter(visible)),
+                .init(id: "secondary", items: secondary.filter(visible))]
+    }
+
+    /// FORK: the window-level NSToolbar is kept bound but permanently hidden
+    /// (isVisible: false) — its items render in forkEditorTopBar inside the
+    /// editor column instead, so the sidebars can own the top of the frame.
+    func nativeDocumentToolbar(locale: Locale) -> some View {
+        let groups = macDocumentToolbarGroups
+        return MacDocumentToolbar(owner: viewModel, groups: groups, isVisible: false, label: { id in
             let key: String
             switch id {
             case "collapse": key = "Toggle Toolbar"
@@ -3206,6 +3215,153 @@ extension ContentView {
             AnyView(nativeToolbarOverflowContent(id).environment(\.locale, locale))
         }, nativeButton: nativeToolbarButton, performNativeAction: performNativeToolbarAction)
         .frame(width: 0, height: 0)
+    }
+
+    /// FORK shell redesign: title row at the top of the editor card — document
+    /// identity on the left, a bounded set of inline actions plus a "⋯"
+    /// overflow menu on the right. Replaces both the NSToolbar and the old
+    /// cramped icon strip, so nothing ever gets clipped.
+    var forkTitleBar: some View {
+        HStack(spacing: 8) {
+            // Persistent: lives here, not inside the panel it hides, so it
+            // stays reachable when the outline is collapsed.
+            forkPaneToggle(symbol: "sidebar.left", help: "Toggle Sidebar (Cmd+Opt+S)",
+                           isOn: shouldUseSplitView) { toggleSidebarFromToolbar() }
+            // App identity only: the file name lives in its tab, nowhere else.
+            HStack(spacing: 7) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 28, height: 28)
+                Text("Neon Vision Editor")
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .layoutPriority(2)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            forkTitleBarActions
+                .layoutPriority(1)
+            forkPaneToggle(symbol: "sidebar.right", help: "Toggle Project Sidebar",
+                           isOn: showProjectStructureSidebar) { toggleProjectSidebarFromToolbar() }
+        }
+        // With the outline collapsed this card is at the window's left edge,
+        // under the traffic lights.
+        .padding(.leading, shouldUseSplitView ? 10 : 78)
+        .padding(.trailing, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 42)
+        .clipped()
+        .background(macToolbarBackgroundStyle)
+    }
+
+    private func forkPaneToggle(symbol: String, help: String, isOn: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 28, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(.primary.opacity(isOn ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityValue(isOn ? "Shown" : "Hidden")
+        .fixedSize()
+    }
+
+    /// The largest number of inline buttons that fits wins; whatever doesn't
+    /// fit moves to the "⋯" menu. The row can shrink but never clip.
+    private var forkTitleBarActions: some View {
+        let groups = macDocumentToolbarGroups
+        // Settings/help go to the overflow menu; the two pane toggles have
+        // their own permanent buttons at either end of the title row.
+        let excluded: Set<String> = ["collapse", "settings", "help", "toggleSidebar", "toggleProjectSidebar"]
+        let primary = (groups.first { $0.id == "primary" }?.items ?? []).filter { !excluded.contains($0) }
+        let secondary = groups.first { $0.id == "secondary" }?.items ?? []
+        return ViewThatFits(in: .horizontal) {
+            forkTitleBarActionRow(primary: primary, inlineCount: 6, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 3, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 0, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 0, secondary: [])
+        }
+    }
+
+    private func forkTitleBarActionRow(primary: [String], inlineCount: Int,
+                                       secondary: [String]) -> some View {
+        let inline = Array(primary.prefix(inlineCount))
+        let overflow = Array(primary.dropFirst(inlineCount)) + ["settings", "help"]
+        return HStack(spacing: 6) {
+            if !inline.isEmpty {
+                HStack(spacing: 1) {
+                    ForEach(inline, id: \.self) { forkTopBarItem($0) }
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(.primary.opacity(0.05))
+                )
+            }
+            Menu {
+                ForEach(overflow, id: \.self) { forkOverflowMenuItem($0) }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+            if !secondary.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(secondary, id: \.self) { forkTopBarItem($0) }
+                }
+                .fixedSize()
+            }
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func forkOverflowMenuItem(_ id: String) -> some View {
+        if let appearance = nativeToolbarButton(id) {
+            Button { performNativeToolbarAction(id) } label: {
+                Label(appearance.title, systemImage: appearance.symbol)
+            }
+            .disabled(!appearance.isEnabled)
+        }
+    }
+
+    @ViewBuilder
+    private func forkTopBarItem(_ id: String) -> some View {
+        if let appearance = nativeToolbarButton(id) {
+            Button { performNativeToolbarAction(id) } label: {
+                Image(systemName: appearance.symbol)
+                    .font(.system(size: max(appearance.pointSize - 3, 12),
+                                  weight: appearance.weight == .semibold ? .semibold : .regular))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color(nsColor: appearance.tint))
+            .disabled(!appearance.isEnabled)
+            .opacity(appearance.isEnabled ? 1 : 0.35)
+            .help(appearance.help)
+            .accessibilityLabel(appearance.title)
+            .accessibilityValue(appearance.accessibilityValue ?? "")
+            .frame(minWidth: 26, minHeight: 24)
+        } else {
+            macToolbarControl(id)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .controlSize(.regular)
+                .padding(.horizontal, 2)
+        }
     }
 
     @ViewBuilder

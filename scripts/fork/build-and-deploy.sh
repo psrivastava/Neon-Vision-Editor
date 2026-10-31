@@ -69,6 +69,22 @@ echo "    source sha256: $SRC_HASH"
 
 echo "==> [3/4] Clean copy to ${INSTALL_DIR}/${DEPLOY_APP_NAME} …"
 DEST_APP="$INSTALL_DIR/$DEPLOY_APP_NAME"
+# Never swap the bundle under a running instance: the old code stays mapped in
+# memory (so the user keeps testing the previous build) and lazily-loaded
+# resources can mismatch and crash it. Ask it to quit gracefully — never kill,
+# the editor may hold unsaved work — and abort if it stays up.
+if pgrep -f "$DEST_APP/Contents/MacOS/" >/dev/null 2>&1; then
+  echo "    nve.app is running — asking it to quit before replacing the bundle…"
+  osascript -e "quit app \"$DEST_APP\"" >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do
+    pgrep -f "$DEST_APP/Contents/MacOS/" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  if pgrep -f "$DEST_APP/Contents/MacOS/" >/dev/null 2>&1; then
+    echo "!! nve.app is still running (unsaved-changes prompt?). Close it and re-run." >&2
+    exit 1
+  fi
+fi
 # Remove any stale copy first (both the fork name AND the old upstream-named bundle) so we never
 # leave two copies behind and cp can't silently merge into an old bundle.
 rm -rf "$DEST_APP" "$INSTALL_DIR/$APP_NAME"

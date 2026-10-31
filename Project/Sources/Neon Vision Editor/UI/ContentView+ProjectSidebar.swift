@@ -14,7 +14,6 @@ extension ContentView {
                 idealWidth: clampedProjectSidebarWidth,
                 maxWidth: clampedProjectSidebarWidth
             )
-            .background(macSidebarColumnBackground)
 #else
         projectStructureSidebarBody
             .frame(
@@ -27,7 +26,9 @@ extension ContentView {
     }
 
     var projectSidebarResizeHandle: some View {
-        let drag = DragGesture(minimumDistance: 0)
+        // Global space: the handle moves as the width changes, so a local
+        // translation feeds back into itself and the layout oscillates.
+        let drag = DragGesture(minimumDistance: 0, coordinateSpace: .global)
             .onChanged { value in
                 let startWidth = projectSidebarResizeStartWidth ?? clampedProjectSidebarWidth
                 if projectSidebarResizeStartWidth == nil {
@@ -59,8 +60,8 @@ extension ContentView {
             cursorOwnerID: "project-sidebar",
             accentWidth: projectSidebarResizeHandleAccentWidth,
             accentColor: projectSidebarHandleAccentColor,
-            surfaceStyle: projectSidebarHandleSurfaceStyle,
-            topSurfaceStyle: macToolbarBackgroundStyle,
+            surfaceStyle: AnyShapeStyle(Color.clear), // backdrop gutter shows through
+            topSurfaceStyle: AnyShapeStyle(Color.clear), // FORK: no NSToolbar band
             isActive: projectSidebarResizeHandleIsActive,
             isDragging: projectSidebarResizeStartWidth != nil,
             isHovered: $isProjectSidebarResizeHandleHovered,
@@ -74,6 +75,19 @@ extension ContentView {
                     maximumProjectSidebarWidth
                 )
                 projectSidebarWidth = Double(adjusted)
+            },
+            hitTargetBias: projectNavigatorPlacement == .trailing ? 1 : -1,
+            onNativeDrag: { dx in
+                let start = projectSidebarResizeStartWidth ?? clampedProjectSidebarWidth
+                if projectSidebarResizeStartWidth == nil { projectSidebarResizeStartWidth = start }
+                // Trailing panel grows as the handle moves left.
+                let proposed = projectNavigatorPlacement == .trailing ? start - dx : start + dx
+                projectSidebarWidth = Double(min(max(proposed, minimumProjectSidebarWidth), maximumProjectSidebarWidth))
+            },
+            onNativeDragEnded: {
+                projectSidebarResizeStartWidth = nil
+                isProjectSidebarResizeHandleHovered = false
+                MacSidebarResizeCursor.reset(ownerID: "project-sidebar")
             }
         )
 #else
@@ -174,6 +188,8 @@ extension ContentView {
                 }
 
                 Spacer(minLength: 8)
+                // macOS: the toggle lives in the editor title row so it
+                // survives collapse.
             }
 
             Picker("Sidebar Content", selection: Binding(
@@ -191,19 +207,19 @@ extension ContentView {
             .frame(maxWidth: .infinity)
         }
         .padding(.horizontal, 16)
-        .padding(.top, 10)
-        .padding(.bottom, integratedIntoProjectCard ? 2 : 10)
+        .padding(.top, 8)
+        .padding(.bottom, integratedIntoProjectCard ? 0 : 8)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Sidebar Content")
         .accessibilityHint("Choose Project or AI Assistant")
     }
 
     var utilitySidebarHeaderTopInset: CGFloat {
-#if os(macOS)
-        8
-#else
+        // The header already carries its own top padding (see
+        // utilitySidebarHeader's .padding(.top, 10)); adding more here
+        // made the Assistant tab sit lower than the Project tab's header,
+        // which doesn't get this extra inset.
         0
-#endif
     }
 
     /// Keeps the AI tab on the same inset card surface as the project browser.
@@ -241,7 +257,10 @@ extension ContentView {
 #endif
         }
 #if os(macOS)
-        return AnyShapeStyle(.ultraThinMaterial)
+        // One elevation step off the editor surface (see panelCardFill).
+        return AnyShapeStyle(ForkSurfaceStyle.panelCardFill(
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background,
+            isDark: colorScheme == .dark))
 #else
         return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
 #endif
@@ -255,18 +274,15 @@ extension ContentView {
 
     private var utilitySidebarCornerRadius: CGFloat {
 #if os(macOS)
-        22
+        12
 #else
         20
 #endif
     }
 
     private var utilitySidebarOuterPadding: EdgeInsets {
-#if os(macOS)
-        EdgeInsets(top: 8, leading: 8, bottom: 8, trailing: 8)
-#else
+        // Shell redesign: the window shell provides the backdrop gutters.
         EdgeInsets()
-#endif
     }
 
     var projectStructureSidebarBody: some View {
@@ -382,9 +398,19 @@ struct MacSidebarResizeDivider<ResizeGesture: Gesture>: View where ResizeGesture
     let accessibilityLabel: String
     let accessibilityHint: String
     let accessibilityAdjust: ((AccessibilityAdjustmentDirection) -> Void)?
+    /// -1 extends the extra hit area leftward, +1 rightward. Point it at the
+    /// SwiftUI sidebar, never at the AppKit editor, which wins hit-testing and
+    /// swallows the drag.
+    var hitTargetBias: CGFloat = 0
+    /// When set, AppKit mouse events drive the resize instead of `drag`.
+    var onNativeDrag: ((CGFloat) -> Void)? = nil
+    var onNativeDragEnded: (() -> Void)? = nil
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         ZStack {
+            // Shell redesign: the divider is a transparent gutter — the themed
+            // shell backdrop shows through as the gap between cards.
             Rectangle()
                 .fill(surfaceStyle)
 
@@ -407,12 +433,16 @@ struct MacSidebarResizeDivider<ResizeGesture: Gesture>: View where ResizeGesture
             MacSidebarResizeCursorTrackingView(
                 isHovered: $isHovered,
                 isDragging: isDragging,
-                cursorOwnerID: cursorOwnerID
+                cursorOwnerID: cursorOwnerID,
+                onNativeDrag: onNativeDrag,
+                onNativeDragEnded: onNativeDragEnded
             )
                 .frame(width: hitTargetWidth)
+                .offset(x: (hitTargetWidth - visibleWidth) / 2 * hitTargetBias)
                 .contentShape(Rectangle())
-                .gesture(drag)
+                .gesture(drag, including: onNativeDrag == nil ? .all : .none)
         }
+        .zIndex(1)
         .onDisappear {
             isHovered = false
             MacSidebarResizeCursor.reset(ownerID: cursorOwnerID)
@@ -430,6 +460,8 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
     @Binding var isHovered: Bool
     let isDragging: Bool
     let cursorOwnerID: String
+    var onNativeDrag: ((CGFloat) -> Void)? = nil
+    var onNativeDragEnded: (() -> Void)? = nil
 
     func makeNSView(context: Context) -> TrackingView {
         let view = TrackingView()
@@ -438,6 +470,8 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         }
         view.isDragging = isDragging
         view.cursorOwnerID = cursorOwnerID
+        view.onNativeDrag = onNativeDrag
+        view.onNativeDragEnded = onNativeDragEnded
         return view
     }
 
@@ -447,6 +481,8 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         }
         nsView.isDragging = isDragging
         nsView.cursorOwnerID = cursorOwnerID
+        nsView.onNativeDrag = onNativeDrag
+        nsView.onNativeDragEnded = onNativeDragEnded
         if isDragging || isHovered {
             MacSidebarResizeCursor.set(ownerID: cursorOwnerID)
         }
@@ -456,7 +492,34 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         var onHoverChanged: ((Bool) -> Void)?
         var isDragging: Bool = false
         var cursorOwnerID: String = "resize-handle"
+        /// Native drag path: (translation in window points) and end. AppKit
+        /// delivers these directly, so neither the window-background drag nor
+        /// a neighbouring AppKit view can steal the gesture.
+        var onNativeDrag: ((CGFloat) -> Void)?
+        var onNativeDragEnded: (() -> Void)?
         private var trackingArea: NSTrackingArea?
+        private var dragStartX: CGFloat?
+
+        // The window is movable by its background; a transparent view would
+        // otherwise turn a resize drag into a window move.
+        override var mouseDownCanMoveWindow: Bool { false }
+
+        override func mouseDown(with event: NSEvent) {
+            guard onNativeDrag != nil else { return super.mouseDown(with: event) }
+            dragStartX = event.locationInWindow.x
+            MacSidebarResizeCursor.set(ownerID: cursorOwnerID)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            guard let start = dragStartX, let onNativeDrag else { return super.mouseDragged(with: event) }
+            onNativeDrag(event.locationInWindow.x - start)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard dragStartX != nil else { return super.mouseUp(with: event) }
+            dragStartX = nil
+            onNativeDragEnded?()
+        }
 
         override func updateTrackingAreas() {
             super.updateTrackingAreas()

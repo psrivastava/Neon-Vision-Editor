@@ -25,11 +25,28 @@ enum MacDocumentTabPolicy {
         model.selectedTab?.name ?? "Untitled"
     }
 
+    /// FORK shell redesign: documents open as in-app tabs inside one window
+    /// (the SwiftUI pill strip in the editor card). Native window tabbing is
+    /// disallowed and file-opens stay in the requesting window's model.
+    /// Flip to false to restore upstream native window tabs.
+    static let forkInAppTabsEnabled = true
+
+    static var preferredTabbingMode: NSWindow.TabbingMode {
+        forkInAppTabsEnabled ? .disallowed : .preferred
+    }
+
     static func configureWindowChrome(_ window: NSWindow) {
         // AppKit is the only chrome owner, for the SwiftUI-created primary
         // window and every AppKit-created tab. Do not add scene-only SwiftUI
         // toolbar/container backgrounds: those affect only the first tab.
-        if window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = false }
+        // FORK: transparent titlebar + fullSizeContentView lets the sidebar
+        // column chrome run to the very top of the window instead of stopping
+        // at an opaque titlebar band.
+        if !window.titlebarAppearsTransparent { window.titlebarAppearsTransparent = true }
+        // FORK: no title text — the titlebar is a transparent strip over the
+        // sidebar/editor chrome; document names live in the native tab bar and
+        // the in-editor top bar instead.
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
         if window.backgroundColor != .windowBackgroundColor { window.backgroundColor = .windowBackgroundColor }
         if window.toolbarStyle != .unified { window.toolbarStyle = .unified }
         if window.titlebarSeparatorStyle != .none { window.titlebarSeparatorStyle = .none }
@@ -40,6 +57,10 @@ enum MacDocumentTabPolicy {
         // transactions even when the metadata is unchanged.
         if window.tab.title != title { window.tab.title = title }
         if window.title != title { window.title = title }
+        // Title updates can re-show the titlebar text; the fork shell draws
+        // its own app-name row, so keep AppKit's copy hidden. window.title
+        // still feeds the Window menu and Mission Control.
+        if window.titleVisibility != .hidden { window.titleVisibility = .hidden }
         if window.representedURL != url { window.representedURL = url }
         if window.isDocumentEdited != edited { window.isDocumentEdited = edited }
     }
@@ -268,7 +289,7 @@ final class MacDocumentWindowTabs {
             window.title = MacDocumentTabPolicy.windowTitle(for: item.model)
             window.isDocumentEdited = item.model.tabs.contains(where: \.isDirty)
             window.tabbingIdentifier = MacDocumentTabPolicy.tabbingIdentifier
-            window.tabbingMode = .preferred
+            window.tabbingMode = MacDocumentTabPolicy.preferredTabbingMode
             // Publish the lightweight tab before constructing its editor. A
             // restored background file must not instantiate WebKit, project
             // indexing, toolbars and editor layout before it is selected.
@@ -326,7 +347,7 @@ final class MacDocumentWindowTabs {
     func attachPendingWindow(_ window: NSWindow, for id: UUID) {
         guard let item = pending[id], let parent = item.parent, parent !== window else { return }
         window.tabbingIdentifier = MacDocumentTabPolicy.tabbingIdentifier
-        window.tabbingMode = .preferred
+        window.tabbingMode = MacDocumentTabPolicy.preferredTabbingMode
         if window.tabGroup !== parent.tabGroup || window.tabGroup == nil {
             if let group = parent.tabGroup, let index = group.windows.firstIndex(where: { $0 === parent }) {
                 // Insert restored/background tabs without selecting and ordering
@@ -379,10 +400,16 @@ final class MacDocumentWindowTabs {
         installTabMouseMonitorIfNeeded()
         if window.isKeyWindow { activeNativeWindow = window }
         window.tabbingIdentifier = MacDocumentTabPolicy.tabbingIdentifier
-        window.tabbingMode = .preferred
-        model.nativeDocumentDestination = { [weak self, weak model] url, reuseBlank in
-            guard let self, let model else { return nil }
-            return self.destination(from: model, url: url, reuseBlank: reuseBlank)
+        window.tabbingMode = MacDocumentTabPolicy.preferredTabbingMode
+        if MacDocumentTabPolicy.forkInAppTabsEnabled {
+            // In-app tabs: no destination hook, so EditorViewModel.openFile
+            // loads files as tabs in this window's own model.
+            model.nativeDocumentDestination = nil
+        } else {
+            model.nativeDocumentDestination = { [weak self, weak model] url, reuseBlank in
+                guard let self, let model else { return nil }
+                return self.destination(from: model, url: url, reuseBlank: reuseBlank)
+            }
         }
         model.nativeFocusFile = { [weak self, weak model] url in
             guard let self, let model else { return false }
@@ -392,7 +419,8 @@ final class MacDocumentWindowTabs {
             guard let model else { return }
             self?.reveal(model)
         }
-        if let parent = parents.removeValue(forKey: identity)?.window, parent !== window {
+        if !MacDocumentTabPolicy.forkInAppTabsEnabled,
+           let parent = parents.removeValue(forKey: identity)?.window, parent !== window {
             if window.tabGroup !== parent.tabGroup || window.tabGroup == nil {
                 parent.addTabbedWindow(window, ordered: .above)
             }

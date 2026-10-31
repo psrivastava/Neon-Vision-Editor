@@ -105,4 +105,26 @@ nonisolated enum ForkSurfaceStyle {
         return nil
 #endif
     }
+
+#if os(macOS)
+    /// FORK shell redesign: the window-filling backdrop behind the three
+    /// rounded cards (left pane / editor / right pane). One clear step darker
+    /// than the editor surface in both light and dark themes.
+    static func shellBackdrop(themeBackground: Color, isDark: Bool) -> Color {
+        let base = NSColor(themeBackground)
+        let blended = base.blended(withFraction: isDark ? 0.40 : 0.10, of: .black)
+        return Color(nsColor: blended ?? base)
+    }
+
+    /// FORK shell redesign: fill for the sidebar cards — one elevation step off
+    /// the editor surface (lighter in dark themes, darker in light themes) so
+    /// the cards read as distinct panes without heavy borders.
+    static func panelCardFill(themeBackground: Color, isDark: Bool) -> Color {
+        let base = NSColor(themeBackground)
+        let blended = isDark
+            ? base.blended(withFraction: 0.07, of: .white)
+            : base.blended(withFraction: 0.045, of: .black)
+        return Color(nsColor: blended ?? base)
+    }
+#endif
 }
