@@ -870,6 +870,14 @@ struct ContentView: View {
 #endif
 #if os(macOS)
     @AppStorage("SettingsOpaqueEditorSurfaceMac") var opaqueEditorSurfaceMac: Bool = true
+    /// FORK: place markdown/web/preview below the editor instead of beside it,
+    /// so each pane keeps its full width. Default off (upstream behavior).
+    @AppStorage("SettingsPreviewPlacementBottom") var previewPlacementBottom: Bool = false
+    /// Persisted height for the bottom-placed preview pane. Drag the handle
+    /// above the preview to resize. Clamped to [120, 1200] at use time.
+    @AppStorage("SettingsPreviewBottomHeight") var previewBottomHeight: Double = 300
+    @State var previewBottomResizeStartHeight: CGFloat? = nil
+    @State var isPreviewBottomResizeHandleHovered: Bool = false
 #endif
 #if os(iOS) || os(visionOS)
     @State private var previousKeyboardAccessoryVisibility: Bool? = nil
@@ -1402,6 +1410,54 @@ struct ContentView: View {
     var clampedTOCSidebarWidth: CGFloat {
         let clamped = min(max(tocSidebarWidth, Double(minimumTOCSidebarWidth)), Double(maximumTOCSidebarWidth))
         return CGFloat(clamped)
+    }
+
+    var minimumPreviewBottomHeight: CGFloat { 120 }
+    var maximumPreviewBottomHeight: CGFloat { 1200 }
+    var clampedPreviewBottomHeight: CGFloat {
+        CGFloat(min(max(previewBottomHeight, Double(minimumPreviewBottomHeight)),
+                    Double(maximumPreviewBottomHeight)))
+    }
+
+    /// Horizontal drag strip above the bottom-placed preview. Drag up to grow
+    /// the preview, down to shrink. Uses the same NSView-backed tracking as
+    /// the side handles so `isMovableByWindowBackground` can't steal the
+    /// gesture.
+    var macPreviewBottomResizeHandle: some View {
+        ZStack {
+            Rectangle().fill(Color.clear)
+            Rectangle()
+                .fill(Color.accentColor.opacity(isPreviewBottomResizeHandleHovered || previewBottomResizeStartHeight != nil ? 0.55 : 0))
+                .frame(width: 36, height: 2)
+                .clipShape(Capsule())
+        }
+        .frame(height: 8)
+        .contentShape(Rectangle())
+        .overlay {
+            MacSidebarResizeCursorTrackingView(
+                isHovered: $isPreviewBottomResizeHandleHovered,
+                isDragging: previewBottomResizeStartHeight != nil,
+                cursorOwnerID: "preview-bottom",
+                onNativeDrag: { dy in
+                    let start = previewBottomResizeStartHeight ?? clampedPreviewBottomHeight
+                    if previewBottomResizeStartHeight == nil { previewBottomResizeStartHeight = start }
+                    // AppKit's window Y origin is at the BOTTOM. Dragging the
+                    // handle UP (toward the top of the screen) raises Y, which
+                    // should grow the preview. Dragging DOWN lowers Y and
+                    // shrinks it. So `dy > 0` ⇒ preview larger.
+                    let proposed = start + dy
+                    previewBottomHeight = Double(min(max(proposed,
+                        minimumPreviewBottomHeight), maximumPreviewBottomHeight))
+                },
+                onNativeDragEnded: {
+                    previewBottomResizeStartHeight = nil
+                    isPreviewBottomResizeHandleHovered = false
+                    MacSidebarResizeCursor.reset(ownerID: "preview-bottom")
+                },
+                direction: .vertical
+            )
+            .frame(height: 14)
+        }
     }
 
 #endif
@@ -5857,33 +5913,38 @@ struct ContentView: View {
             if isPDFPreviewDocument && !isPDFNoteEditorActive {
                 layout.source = nil
                 layout.primary = .init(id: "pdf", content: { macHostedContent(pdfPreviewSplitPane) })
-            } else if isMarkdownPreviewSplitVisible {
-                layout.preview = .init(id: "markdown", content: {
-                    macHostedContent(HStack(spacing: 0) {
-                        previewPaneResizeHandle
-                        markdownPreviewSplitPane.frame(width: clampedPreviewPaneWidth)
+            } else if !previewPlacementBottom {
+                // FORK: side placement (upstream). When bottom placement is on
+                // the preview rides in configuration.bottomContent instead —
+                // see macEditorColumn.
+                if isMarkdownPreviewSplitVisible {
+                    layout.preview = .init(id: "markdown", content: {
+                        macHostedContent(HStack(spacing: 0) {
+                            previewPaneResizeHandle
+                            markdownPreviewSplitPane.frame(width: clampedPreviewPaneWidth)
+                        })
                     })
-                })
-            } else if isJSONPreviewSplitVisible {
-                layout.preview = .init(id: "json", content: {
-                    macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; jsonPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
-                })
-            } else if isYAMLPreviewSplitVisible {
-                layout.preview = .init(id: "yaml", content: {
-                    macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; yamlPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
-                })
-            } else if isWebPreviewSplitVisible {
-                layout.preview = .init(id: "web", content: {
-                    macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; webPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
-                })
-            } else if isImagePreviewSplitVisible {
-                layout.preview = .init(id: "image", content: {
-                    macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; imagePreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
-                })
-            } else if isPDFPreviewSplitVisible && isPDFNoteEditorActive {
-                layout.preview = .init(id: "pdf-note", content: {
-                    macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; pdfPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
-                })
+                } else if isJSONPreviewSplitVisible {
+                    layout.preview = .init(id: "json", content: {
+                        macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; jsonPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
+                    })
+                } else if isYAMLPreviewSplitVisible {
+                    layout.preview = .init(id: "yaml", content: {
+                        macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; yamlPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
+                    })
+                } else if isWebPreviewSplitVisible {
+                    layout.preview = .init(id: "web", content: {
+                        macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; webPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
+                    })
+                } else if isImagePreviewSplitVisible {
+                    layout.preview = .init(id: "image", content: {
+                        macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; imagePreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
+                    })
+                } else if isPDFPreviewSplitVisible && isPDFNoteEditorActive {
+                    layout.preview = .init(id: "pdf-note", content: {
+                        macHostedContent(HStack(spacing: 0) { previewPaneResizeHandle; pdfPreviewSplitPane.frame(width: clampedPreviewPaneWidth) })
+                    })
+                }
             }
         }
         return layout.background(editorSurfaceBackgroundStyle)
@@ -5982,6 +6043,32 @@ struct ContentView: View {
         if shouldOverlayMarkdownFormattingControls && !shouldPlaceMarkdownFormattingBelowTabs {
             configuration.formattingOverlay = {
                 AnyView(markdownFormattingControlBar.padding(.top, markdownFormattingOverlayTopInset).padding(.trailing, 12))
+            }
+        }
+        // FORK: preview below the editor so the editor keeps its full width.
+        // Only activates when bottom placement is on AND there is actually
+        // a side-split-visible preview to show (the `else-if` chain in
+        // macDocumentLayout is suppressed in bottom mode).
+        if previewPlacementBottom, configuration.replacement == nil {
+            let height = clampedPreviewBottomHeight
+            @ViewBuilder func wrap<Content: View>(_ content: Content) -> some View {
+                VStack(spacing: 0) {
+                    macPreviewBottomResizeHandle
+                    content.frame(maxWidth: .infinity).frame(height: height)
+                }
+            }
+            if isMarkdownPreviewSplitVisible {
+                configuration.bottomContent = { AnyView(wrap(markdownPreviewSplitPane)) }
+            } else if isJSONPreviewSplitVisible {
+                configuration.bottomContent = { AnyView(wrap(jsonPreviewSplitPane)) }
+            } else if isYAMLPreviewSplitVisible {
+                configuration.bottomContent = { AnyView(wrap(yamlPreviewSplitPane)) }
+            } else if isWebPreviewSplitVisible {
+                configuration.bottomContent = { AnyView(wrap(webPreviewSplitPane)) }
+            } else if isImagePreviewSplitVisible {
+                configuration.bottomContent = { AnyView(wrap(imagePreviewSplitPane)) }
+            } else if isPDFPreviewSplitVisible && isPDFNoteEditorActive {
+                configuration.bottomContent = { AnyView(wrap(pdfPreviewSplitPane)) }
             }
         }
         return configuration

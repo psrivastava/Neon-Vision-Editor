@@ -2852,6 +2852,25 @@ extension ContentView {
                 Label("Open in Separate Window", systemImage: "rectangle.on.rectangle")
             }
             .disabled(!isPreviewSupportedDocument)
+            Divider()
+            // FORK: side ⇄ bottom placement toggle. Two buttons so each
+            // destination is one click and the current pick is marked.
+            Button {
+                previewPlacementBottom = false
+            } label: {
+                HStack {
+                    Label("Place Preview on Right", systemImage: "rectangle.split.2x1")
+                    if !previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
+            Button {
+                previewPlacementBottom = true
+            } label: {
+                HStack {
+                    Label("Place Preview on Bottom", systemImage: "rectangle.split.1x2")
+                    if previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
             if !isMacToolbarItemVisible("markdownProjectPreview") {
                 Divider()
                 Button(action: {
@@ -2975,6 +2994,21 @@ extension ContentView {
                     : "Preview is unavailable for this document"
             )
             .accessibilityLabel(previewTitle)
+            // FORK: right-click to switch between side and bottom placement.
+            .contextMenu {
+                Button {
+                    previewPlacementBottom = false
+                } label: {
+                    Label("Place Preview on Right", systemImage: "rectangle.split.2x1")
+                    if !previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+                Button {
+                    previewPlacementBottom = true
+                } label: {
+                    Label("Place Preview on Bottom", systemImage: "rectangle.split.1x2")
+                    if previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
         case "markdownProjectPreview":
             Button(action: { toggleMarkdownProjectPreviewFromToolbar() }) {
                 Label(
@@ -3233,7 +3267,7 @@ extension ContentView {
                     .resizable()
                     .interpolation(.high)
                     .frame(width: 28, height: 28)
-                Text("Neon Vision Editor")
+                Text("Neon Editor")
                     .font(.system(size: 16, weight: .semibold))
                     .lineLimit(1)
             }

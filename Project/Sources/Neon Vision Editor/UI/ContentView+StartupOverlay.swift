@@ -88,24 +88,32 @@ extension ContentView {
 
     @ViewBuilder
     var startupOverlay: some View {
-        VStack(spacing: 20) {
-            if shouldShowSafeModeStartupCard {
-                safeModeStartupCard
-            }
-            if shouldShowWelcomeCard {
-                welcomeCard
-            }
-            if shouldShowStartupRecentFilesCard {
-                if !sharedImportItems.isEmpty {
-                    startupSharedImportsCard
+        // ScrollView keeps the welcome stack inside the editor pane. Without
+        // it the content exceeds available height and bleeds over the title
+        // row and the status bar. `.clipped()` on the outer frame also
+        // defends against hosting-view overflow.
+        ScrollView(.vertical, showsIndicators: false) {
+            VStack(spacing: 20) {
+                if shouldShowSafeModeStartupCard {
+                    safeModeStartupCard
                 }
-                if !startupRecentFiles.isEmpty {
-                    startupRecentFilesCard
+                if shouldShowWelcomeCard {
+                    welcomeCard
+                }
+                if shouldShowStartupRecentFilesCard {
+                    if !sharedImportItems.isEmpty {
+                        startupSharedImportsCard
+                    }
+                    if !startupRecentFiles.isEmpty {
+                        startupRecentFilesCard
+                    }
                 }
             }
+            .frame(maxWidth: .infinity)
+            .padding(24)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-        .padding(24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
     }
 
     /// App identity + four quick actions, matching the NotepadMac layout.
@@ -122,7 +130,7 @@ extension ContentView {
                     .font(.system(size: 56, weight: .light))
                     .foregroundStyle(Color.accentColor)
 #endif
-                Text("Neon Vision Editor")
+                Text("Neon Editor")
                     .font(.system(size: 24, weight: .semibold))
                 Text("Lightweight text editor for macOS")
                     .font(.subheadline)

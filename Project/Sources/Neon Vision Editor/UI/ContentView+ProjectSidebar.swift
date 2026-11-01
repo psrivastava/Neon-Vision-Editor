@@ -366,13 +366,17 @@ extension ContentView {
 
 #if os(macOS)
 enum MacSidebarResizeCursor {
+    enum Direction { case horizontal, vertical }
     private(set) static var activeOwnerID: String?
     private static var generation: UInt = 0
 
-    static func set(ownerID: String) {
+    static func set(ownerID: String, direction: Direction = .horizontal) {
         generation &+= 1
         activeOwnerID = ownerID
-        NSCursor.resizeLeftRight.set()
+        switch direction {
+        case .horizontal: NSCursor.resizeLeftRight.set()
+        case .vertical: NSCursor.resizeUpDown.set()
+        }
     }
 
     static func reset(ownerID: String) {
@@ -457,12 +461,14 @@ struct MacSidebarResizeDivider<ResizeGesture: Gesture>: View where ResizeGesture
     }
 }
 
-private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
+struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
     @Binding var isHovered: Bool
     let isDragging: Bool
     let cursorOwnerID: String
     var onNativeDrag: ((CGFloat) -> Void)? = nil
     var onNativeDragEnded: (() -> Void)? = nil
+    /// Horizontal uses x-translation + ↔ cursor; vertical uses y + ↕ cursor.
+    var direction: MacSidebarResizeCursor.Direction = .horizontal
 
     func makeNSView(context: Context) -> TrackingView {
         let view = TrackingView()
@@ -473,6 +479,7 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         view.cursorOwnerID = cursorOwnerID
         view.onNativeDrag = onNativeDrag
         view.onNativeDragEnded = onNativeDragEnded
+        view.direction = direction
         return view
     }
 
@@ -484,8 +491,9 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         nsView.cursorOwnerID = cursorOwnerID
         nsView.onNativeDrag = onNativeDrag
         nsView.onNativeDragEnded = onNativeDragEnded
+        nsView.direction = direction
         if isDragging || isHovered {
-            MacSidebarResizeCursor.set(ownerID: cursorOwnerID)
+            MacSidebarResizeCursor.set(ownerID: cursorOwnerID, direction: direction)
         }
     }
 
@@ -493,13 +501,14 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
         var onHoverChanged: ((Bool) -> Void)?
         var isDragging: Bool = false
         var cursorOwnerID: String = "resize-handle"
+        var direction: MacSidebarResizeCursor.Direction = .horizontal
         /// Native drag path: (translation in window points) and end. AppKit
         /// delivers these directly, so neither the window-background drag nor
         /// a neighbouring AppKit view can steal the gesture.
         var onNativeDrag: ((CGFloat) -> Void)?
         var onNativeDragEnded: (() -> Void)?
         private var trackingArea: NSTrackingArea?
-        private var dragStartX: CGFloat?
+        private var dragStart: CGFloat?
 
         // The window is movable by its background; a transparent view would
         // otherwise turn a resize drag into a window move.
@@ -507,18 +516,19 @@ private struct MacSidebarResizeCursorTrackingView: NSViewRepresentable {
 
         override func mouseDown(with event: NSEvent) {
             guard onNativeDrag != nil else { return super.mouseDown(with: event) }
-            dragStartX = event.locationInWindow.x
-            MacSidebarResizeCursor.set(ownerID: cursorOwnerID)
+            dragStart = direction == .horizontal ? event.locationInWindow.x : event.locationInWindow.y
+            MacSidebarResizeCursor.set(ownerID: cursorOwnerID, direction: direction)
         }
 
         override func mouseDragged(with event: NSEvent) {
-            guard let start = dragStartX, let onNativeDrag else { return super.mouseDragged(with: event) }
-            onNativeDrag(event.locationInWindow.x - start)
+            guard let start = dragStart, let onNativeDrag else { return super.mouseDragged(with: event) }
+            let current = direction == .horizontal ? event.locationInWindow.x : event.locationInWindow.y
+            onNativeDrag(current - start)
         }
 
         override func mouseUp(with event: NSEvent) {
-            guard dragStartX != nil else { return super.mouseUp(with: event) }
-            dragStartX = nil
+            guard dragStart != nil else { return super.mouseUp(with: event) }
+            dragStart = nil
             onNativeDragEnded?()
         }
 

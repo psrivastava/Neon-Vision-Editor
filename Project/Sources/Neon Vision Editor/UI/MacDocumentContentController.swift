@@ -17,6 +17,10 @@ final class MacDocumentContentController: NSViewController {
         var secondary: Pane?
         var replacement: (() -> AnyView)?
         var header: (() -> AnyView)?
+        /// Fork: content stacked below the editor row (above the status bar).
+        /// Used by the bottom-placement markdown preview so the editor keeps
+        /// its full width.
+        var bottomContent: (() -> AnyView)?
         var status: (() -> AnyView)?
         var find: (() -> AnyView)?
         var contentInsets = NSEdgeInsets()
@@ -60,6 +64,9 @@ final class MacDocumentContentController: NSViewController {
         let header = updateAccessory("header", factory: configuration.header)
         let status = updateAccessory("status", factory: configuration.status)
         let find = updateAccessory("find", factory: configuration.find)
+        // Intrinsic height: the SwiftUI content sets its own frame so the
+        // preview occupies a bounded slice and the editor keeps the rest.
+        let bottom = updateAccessory("bottom", factory: configuration.bottomContent, fillsHeight: false)
         let replacement = updateAccessory("replacement", factory: configuration.replacement, fillsHeight: true)
         contentContainer.installOverlay(updateAccessory("startup", factory: configuration.startupOverlay, fillsHeight: true))
         root.installOverlay(updateAccessory("formatting", factory: configuration.formattingOverlay))
@@ -93,7 +100,7 @@ final class MacDocumentContentController: NSViewController {
         contentContainer.install(content, insets: configuration.contentInsets, maximumWidth: configuration.maximumEditorWidth)
         contentContainer.setContentHuggingPriority(.init(1), for: .vertical)
         contentContainer.setContentCompressionResistancePriority(.init(1), for: .vertical)
-        Self.install([header, contentContainer, status, find].compactMap { $0 }, in: column)
+        Self.install([header, contentContainer, bottom, status, find].compactMap { $0 }, in: column)
     }
 
     private func updateAccessory(_ key: String, factory: (() -> AnyView)?, fillsHeight: Bool = false) -> NSView? {
