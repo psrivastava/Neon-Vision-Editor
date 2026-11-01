@@ -183,7 +183,11 @@ extension ContentView {
         }
         return shouldShowMarkdownFormattingControls
 #else
-        return shouldShowMarkdownFormattingControls
+        // Shell redesign: the markdown bar renders in the editor header stack
+        // (below the tab strip, above the editor body) instead of overlaying
+        // the top of the editor column — otherwise it collides with the title
+        // row's language/preview chips.
+        return false
 #endif
     }
 

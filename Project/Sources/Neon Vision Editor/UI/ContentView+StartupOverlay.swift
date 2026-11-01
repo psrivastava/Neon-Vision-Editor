@@ -48,7 +48,8 @@ extension ContentView {
             return !startupRecentFiles.isEmpty || !sharedImportItems.isEmpty
         }
         #endif
-        guard viewModel.tabs.count == 1 else { return false }
+        // Active-tab-only gate: a `+`-opened blank tab (count > 1) still
+        // qualifies, matching the welcome card so the two render together.
         guard let tab = viewModel.selectedTab else { return false }
         guard !tab.isLoadingContent else { return false }
         guard tab.fileURL == nil else { return false }
@@ -65,15 +66,34 @@ extension ContentView {
         return tab.fileURL == nil
     }
 
+    /// NotepadMac-style welcome card for an empty, unsaved document — shown
+    /// whenever the current tab is blank, independent of whether recent files
+    /// exist, so a brand-new install still gets guidance.
+    var shouldShowWelcomeCard: Bool {
+        guard !brainDumpLayoutEnabled else { return false }
+        #if os(macOS)
+        if viewModel.tabs.isEmpty { return true }
+        #endif
+        // The active tab is blank — count of other tabs is irrelevant; the
+        // welcome card shows whenever this specific tab has nothing in it.
+        guard let tab = viewModel.selectedTab else { return false }
+        guard !tab.isLoadingContent else { return false }
+        guard tab.fileURL == nil else { return false }
+        return tab.document.utf16Length == 0
+    }
+
     var shouldShowStartupOverlay: Bool {
-        shouldShowSafeModeStartupCard || shouldShowStartupRecentFilesCard
+        shouldShowSafeModeStartupCard || shouldShowStartupRecentFilesCard || shouldShowWelcomeCard
     }
 
     @ViewBuilder
     var startupOverlay: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(spacing: 20) {
             if shouldShowSafeModeStartupCard {
                 safeModeStartupCard
+            }
+            if shouldShowWelcomeCard {
+                welcomeCard
             }
             if shouldShowStartupRecentFilesCard {
                 if !sharedImportItems.isEmpty {
@@ -84,7 +104,87 @@ extension ContentView {
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
         .padding(24)
+    }
+
+    /// App identity + four quick actions, matching the NotepadMac layout.
+    var welcomeCard: some View {
+        VStack(spacing: 18) {
+            VStack(spacing: 6) {
+#if os(macOS)
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 76, height: 76)
+#else
+                Image(systemName: "doc.text.fill")
+                    .font(.system(size: 56, weight: .light))
+                    .foregroundStyle(Color.accentColor)
+#endif
+                Text("Neon Vision Editor")
+                    .font(.system(size: 24, weight: .semibold))
+                Text("Lightweight text editor for macOS")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+            }
+            VStack(spacing: 2) {
+                welcomeAction(symbol: "doc.badge.plus", title: "New File",
+                              shortcut: "⌘N") { viewModel.addNewTab() }
+                welcomeAction(symbol: "folder", title: "Open File",
+                              shortcut: "⌘O") { openFileFromToolbar() }
+#if os(macOS)
+                welcomeAction(symbol: "folder.badge.plus", title: "Open Folder in Sidebar",
+                              shortcut: "⌘⇧O") { openProjectFolder() }
+                welcomeAction(symbol: "command", title: "Command Palette",
+                              shortcut: "⌘⇧P") {
+                    NotificationCenter.default.post(name: .forkShowCommandPaletteRequested, object: nil)
+                }
+#endif
+            }
+            .frame(maxWidth: .infinity)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 24)
+        .frame(maxWidth: 460)
+        .background(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .fill(.regularMaterial)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+        .shadow(color: Color.black.opacity(0.08), radius: 16, x: 0, y: 6)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Welcome to Neon Vision Editor")
+    }
+
+    private func welcomeAction(symbol: String, title: String, shortcut: String,
+                               action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Image(systemName: symbol)
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 20)
+                Text(title)
+                    .font(.system(size: 14))
+                Spacer(minLength: 8)
+                Text(shortcut)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 9)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(.primary.opacity(0.001)) // hoverable without a visible fill
+        )
+        .accessibilityLabel("\(title), \(shortcut)")
     }
 
     var safeModeStartupCard: some View {

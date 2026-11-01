@@ -82,17 +82,34 @@ nonisolated enum ForkSurfaceStyle {
         rgb.getHue(&hue, saturation: &saturation, brightness: &brightness, alpha: &alpha)
 
         let isDarkTheme = brightness < 0.5
-        let factor: CGFloat
-        switch level {
-        case .panel: factor = isDarkTheme ? 0.55 : 0.90
-        case .statusBar: factor = isDarkTheme ? 0.72 : 0.93
-        case .tabStrip: factor = isDarkTheme ? 0.86 : 0.96
+        // Dark themes: editor is the darkest surface; chrome steps UP in
+        // brightness by small additive offsets, so hue is preserved (a near-
+        // black editor theme would otherwise multiply to pure black and lose
+        // every trace of the theme accent).
+        // Light themes: editor is the lightest; chrome steps DOWN by small
+        // multiplicative factors, matching the original design.
+        let chromeBrightness: CGFloat
+        if isDarkTheme {
+            let bump: CGFloat
+            switch level {
+            case .panel: bump = 0.06
+            case .statusBar: bump = 0.09
+            case .tabStrip: bump = 0.12
+            }
+            chromeBrightness = min(0.55, brightness + bump)
+        } else {
+            let factor: CGFloat
+            switch level {
+            case .panel: factor = 0.90
+            case .statusBar: factor = 0.93
+            case .tabStrip: factor = 0.96
+            }
+            chromeBrightness = max(0.02, brightness * factor)
         }
-        // Slightly raise saturation on chrome so the hue stays legible once the
-        // surface darkens; near-black themes degrade gracefully (steps compress
-        // but preserve ordering, keeping the editor the lightest surface).
+        // Keep hue legible once we move away from the base brightness. Light
+        // themes get a stronger bump than dark ones because their chrome has
+        // more absolute brightness to spare.
         let chromeSaturation = min(1, saturation * (isDarkTheme ? 1.1 : 1.25) + (isDarkTheme ? 0.04 : 0.02))
-        let chromeBrightness = max(0.02, brightness * factor)
         return Color(
             NSColor(
                 hue: hue,
@@ -108,21 +125,23 @@ nonisolated enum ForkSurfaceStyle {
 
 #if os(macOS)
     /// FORK shell redesign: the window-filling backdrop behind the three
-    /// rounded cards (left pane / editor / right pane). One clear step darker
-    /// than the editor surface in both light and dark themes.
+    /// rounded cards. Dark themes: still darker than the editor, but only
+    /// slightly, so the backdrop stays theme-tinted and doesn't collapse to
+    /// pure black. Light themes: a clear step darker.
     static func shellBackdrop(themeBackground: Color, isDark: Bool) -> Color {
         let base = NSColor(themeBackground)
-        let blended = base.blended(withFraction: isDark ? 0.40 : 0.10, of: .black)
+        let blended = base.blended(withFraction: isDark ? 0.18 : 0.10, of: .black)
         return Color(nsColor: blended ?? base)
     }
 
     /// FORK shell redesign: fill for the sidebar cards — one elevation step off
-    /// the editor surface (lighter in dark themes, darker in light themes) so
-    /// the cards read as distinct panes without heavy borders.
+    /// the editor surface. Dark themes blend WHITE so the card stays lighter
+    /// than the backdrop (and still carries the theme hue); light themes blend
+    /// BLACK so the card sits darker than the backdrop.
     static func panelCardFill(themeBackground: Color, isDark: Bool) -> Color {
         let base = NSColor(themeBackground)
         let blended = isDark
-            ? base.blended(withFraction: 0.07, of: .white)
+            ? base.blended(withFraction: 0.14, of: .white)
             : base.blended(withFraction: 0.045, of: .black)
         return Color(nsColor: blended ?? base)
     }
