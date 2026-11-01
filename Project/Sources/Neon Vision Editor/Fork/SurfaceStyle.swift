@@ -134,11 +134,19 @@ nonisolated enum ForkSurfaceStyle {
         return Color(nsColor: blended ?? base)
     }
 
-    /// FORK shell redesign: fill for the sidebar cards — one elevation step off
-    /// the editor surface. Dark themes blend WHITE so the card stays lighter
-    /// than the backdrop (and still carries the theme hue); light themes blend
-    /// BLACK so the card sits darker than the backdrop.
+    /// FORK shell redesign: fill for the sidebar cards. Shares the editor's
+    /// chrome pipeline (same HSB bump as the title row's tab-strip level) so
+    /// the sidebar card and the editor title row are visibly identical and
+    /// shift together when the editor theme changes.
     static func panelCardFill(themeBackground: Color, isDark: Bool) -> Color {
+        // Route through the chromeColor() pipeline with preset `.theme` so the
+        // sidebar colour tracks the editor title row (which uses `.tabStrip`).
+        // Falls back to a simple blend if HSB conversion is unavailable.
+        if let themed = chromeColor(presetRaw: ForkSurfacePreset.theme.rawValue,
+                                    level: .tabStrip,
+                                    themeBackground: themeBackground) {
+            return themed
+        }
         let base = NSColor(themeBackground)
         let blended = isDark
             ? base.blended(withFraction: 0.14, of: .white)

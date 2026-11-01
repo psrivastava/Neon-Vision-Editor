@@ -2094,6 +2094,29 @@ extension ContentView {
         }
     }
 
+    /// Sync-to-current-file for the project sidebar.
+    /// - If the active file is inside the current project root, reveal it in
+    ///   the tree (expand ancestor folders, trigger scroll via revealURL).
+    /// - If outside the root (or no root yet), open the file's containing
+    ///   folder as the new root, then reveal it after the tree loads.
+    func syncProjectSidebarToCurrentFile() {
+        guard let fileURL = viewModel.selectedTab?.fileURL?.standardizedFileURL else { return }
+        showProjectStructureSidebar = true
+        utilitySidebarMode = .project
+        let parentFolder = fileURL.deletingLastPathComponent()
+        if let root = projectRootFolderURL?.standardizedFileURL,
+           fileURL.path.hasPrefix(root.path + "/") || fileURL.path == root.path {
+            revealProjectItem(fileURL)
+        } else {
+            setProjectFolder(parentFolder)
+            // The tree needs one tick to load before reveal can match a path.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak viewModel] in
+                guard let viewModel, viewModel.selectedTab?.fileURL?.standardizedFileURL == fileURL else { return }
+                self.revealProjectItem(fileURL)
+            }
+        }
+    }
+
     func revealProjectItem(_ revealURL: URL) {
         projectTreeRevealURL = revealURL.standardizedFileURL
         refreshProjectBrowserState(affectedDirectory: projectTreeRefreshDirectory(for: revealURL))

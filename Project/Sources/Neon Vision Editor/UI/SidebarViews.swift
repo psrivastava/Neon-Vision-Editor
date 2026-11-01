@@ -1009,6 +1009,10 @@ struct ProjectStructureSidebarView: View {
     let embeddedHeader: AnyView?
     var onLoadDirectory: ((URL, @escaping @MainActor @Sendable () -> Void) -> Void)? = nil
     var onExpandAllDirectories: ((@escaping @MainActor @Sendable () -> Void) -> Void)? = nil
+    /// Sync-to-current-file. If the active file is already inside the project
+    /// root, the parent reveals it. If not, the parent opens the file's
+    /// containing folder as the project root and reveals the file.
+    var onSyncToCurrentFile: (() -> Void)? = nil
     @State private var expandedDirectories: Set<String> = []
     @EditorWindowStorage("ProjectSidebarExpandedDirectories.v1") private var persistedExpansionState: String = ""
     @State private var persistedExpansionByRoot: [String: [String]] = [:]
@@ -1345,17 +1349,19 @@ struct ProjectStructureSidebarView: View {
                         .accessibilityLabel(NSLocalizedString("Open file", comment: "Project sidebar open file accessibility label"))
                         .accessibilityHint(NSLocalizedString("Opens a file from disk", comment: "Project sidebar open file accessibility hint"))
 
-                        // Sync-to-current-file: expands the tree so the active
-                        // tab's file is in view. Disabled when there's no
-                        // active document or no project folder.
-                        Button(action: { revealTargetIfNeeded() }) {
-                            sidebarActionIcon("arrow.left.arrow.right")
+                        // Sync-to-current-file: if the file is inside the project
+                        // root, reveal it; otherwise the parent opens the file's
+                        // containing folder as the new root, then reveals the file.
+                        if onSyncToCurrentFile != nil {
+                            Button(action: { onSyncToCurrentFile?() }) {
+                                sidebarActionIcon("arrow.left.arrow.right")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(selectedFileURL == nil)
+                            .opacity(selectedFileURL == nil ? 0.35 : 1)
+                            .help(NSLocalizedString("Sync with Current File", comment: "Project sidebar sync to current file"))
+                            .accessibilityLabel(NSLocalizedString("Sync with current file", comment: "Project sidebar sync accessibility label"))
                         }
-                        .buttonStyle(.borderless)
-                        .disabled(selectedFileURL == nil || rootFolderURL == nil)
-                        .opacity((selectedFileURL == nil || rootFolderURL == nil) ? 0.35 : 1)
-                        .help(NSLocalizedString("Sync with Current File", comment: "Project sidebar sync to current file"))
-                        .accessibilityLabel(NSLocalizedString("Sync with current file", comment: "Project sidebar sync accessibility label"))
 
                         Menu {
                             Button {

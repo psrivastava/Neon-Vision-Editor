@@ -348,7 +348,8 @@ extension ContentView {
                     },
                     onExpandAllDirectories: { completion in
                         expandAllProjectDirectories(completion: completion)
-                    }
+                    },
+                    onSyncToCurrentFile: { syncProjectSidebarToCurrentFile() }
                 )
             }
         }

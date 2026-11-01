@@ -4256,7 +4256,8 @@ struct ContentView: View {
                                      },
                                      onExpandAllDirectories: { completion in
                                          contentView.expandAllProjectDirectories(completion: completion)
-                                     }
+                                     },
+                                     onSyncToCurrentFile: { contentView.syncProjectSidebarToCurrentFile() }
                                 )
                             }
                             }
