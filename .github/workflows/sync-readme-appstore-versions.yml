@@ -14,20 +14,38 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
+
+concurrency:
+  group: public-documentation-writer
+  queue: max
+  cancel-in-progress: false
 
 jobs:
   sync:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Wait for App Store propagation
-        if: github.event_name == 'release'
-        run: sleep 3600
-
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # Keep signed documentation sync commits attributable to the
+          # repository automation identity that may bypass protected main.
+          token: ${{ secrets.METRIC_TOKEN }}
+
+      - name: Prepare automation branch
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG:-manual}"
+          tag="${tag#v}"
+          branch="automation/appstore-version-${tag}"
+          git fetch origin main
+          git fetch origin "${branch}" || true
+          git checkout -B "${branch}" origin/main
+          echo "SYNC_BRANCH=${branch}" >> "$GITHUB_ENV"
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -82,31 +100,34 @@ jobs:
           git config user.signingkey "$SIGNING_PUB_KEY_PATH"
           git config commit.gpgsign true
 
-      - name: Commit and push if changed
+      - name: Commit and update pull request if changed
+        env:
+          GH_TOKEN: ${{ secrets.METRIC_TOKEN }}
         run: |
           set -euo pipefail
 
-          if git diff --quiet README.md; then
-            echo "No README App Store version changes."
+          if git diff --quiet README.md site/index.html; then
+            echo "No README or website App Store version changes."
             exit 0
           fi
 
-          git add README.md
-          git commit -S -m "docs: sync README App Store versions"
+          git add README.md site/index.html
+          git commit -S -m "docs: sync App Store versions"
 
-          branch="${GITHUB_REF_NAME:-main}"
-          for attempt in 1 2 3; do
-            git fetch origin "$branch"
-            git rebase "origin/$branch"
-            if git push origin "HEAD:$branch"; then
-              exit 0
-            fi
-
-            if [ "$attempt" -eq 3 ]; then
-              echo "README version sync could not push after $attempt attempts."
-              exit 1
-            fi
-
-            # A concurrent release or documentation update moved main after rebase.
-            sleep "$attempt"
-          done
+          git push --force-with-lease origin "HEAD:${SYNC_BRANCH}"
+          sync_sha="$(git rev-parse HEAD)"
+          sync_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${SYNC_BRANCH}" \
+            --json number,headRefOid --jq ".[] | select(.headRefOid == \"${sync_sha}\") | .number" | head -n1)"
+          if [[ -z "${sync_pr}" ]]; then
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${SYNC_BRANCH}" \
+              --title "docs: sync App Store versions" \
+              --body "Automated App Store version synchronization after release."
+            sync_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${SYNC_BRANCH}" \
+              --json number,headRefOid --jq ".[] | select(.headRefOid == \"${sync_sha}\") | .number" | head -n1)"
+          fi
+          if [[ -z "${sync_pr}" ]]; then
+            echo "Could not resolve the open App Store synchronization PR for ${sync_sha}." >&2
+            exit 1
+          fi
+          gh pr merge "${sync_pr}" --repo "${GITHUB_REPOSITORY}" --auto --merge --delete-branch || \
+            echo "Auto-merge is unavailable; leaving the App Store synchronization PR open."

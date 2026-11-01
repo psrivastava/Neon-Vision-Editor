@@ -1,0 +1,81 @@
+import Foundation
+
+/// Backend-neutral document contract shared by the editor state and persistence.
+///
+/// The compatibility `string()` API exists for small-document/TextKit features.
+/// Large-document code must use a bounded window provider instead of requesting
+/// the entire string.
+nonisolated enum EditorDocumentStorageKind: Sendable {
+    case inMemory
+    case fileBacked
+}
+
+nonisolated struct EditorDocumentViewport: Equatable, Sendable {
+    let text: String
+    let startByteOffset: Int
+    let startUTF16Offset: Int
+    let lineRange: ClosedRange<Int>
+    let generation: UInt64
+    let startColumnUTF16: Int
+
+    init(text: String, startByteOffset: Int, startUTF16Offset: Int, lineRange: ClosedRange<Int>,
+         generation: UInt64, startColumnUTF16: Int = 0) {
+        self.text = text
+        self.startByteOffset = startByteOffset
+        self.startUTF16Offset = startUTF16Offset
+        self.lineRange = lineRange
+        self.generation = generation
+        self.startColumnUTF16 = startColumnUTF16
+    }
+}
+
+/// An immutable read request. A backend must not capture its live mutable
+/// storage or a shared seekable handle in the worker closure.
+nonisolated struct EditorDocumentViewportReader: Sendable {
+    let read: @Sendable (Int, Int, Int) throws -> EditorDocumentViewport
+}
+
+/// Operations run on the backend's exclusive owner, which may be a loader,
+/// snapshot worker, or the main actor. The live existential is not Sendable.
+nonisolated protocol EditorDocument: AnyObject {
+    func makeViewportReader() -> EditorDocumentViewportReader?
+    var storageKind: EditorDocumentStorageKind { get }
+    var utf16Length: Int { get }
+    var isDirty: Bool { get }
+    var supportsBoundedWindows: Bool { get }
+    var lineCount: Int { get }
+    /// Zero-based logical line and UTF-16 column, independent of visible windows.
+    func position(atUTF16Offset offset: Int) throws -> (line: Int, column: Int)
+
+    /// Decode a bounded byte chunk, ending on a complete character.
+    func textChunk(startByteOffset: Int, maximumByteCount: Int) throws -> (text: String, byteCount: Int)
+    /// Decode only the requested UTF-16 range. Interactive editor commands must
+    /// use this instead of promoting a file-backed document to a full String.
+    func text(inUTF16Range range: NSRange) throws -> String
+
+    func string() -> String
+    func replace(range: NSRange, with replacement: String) throws
+    /// Applies a native UTF-16 edit without exposing the document's storage.
+    /// Large live editors use the viewport overload below; this is the
+    /// backend-neutral fallback for non-viewport commands.
+    func replace(utf16Range: NSRange, with replacement: String) throws
+    func replaceAll(with text: String) throws
+    func markClean()
+    func viewport(aroundLine line: Int, maximumByteCount: Int, maximumLineCount: Int) throws -> EditorDocumentViewport
+    func viewport(containingUTF16Offset offset: Int, maximumByteCount: Int, maximumLineCount: Int) throws -> EditorDocumentViewport
+    func replace(in viewport: EditorDocumentViewport, utf16Range: NSRange, with replacement: String) throws
+}
+
+extension EditorDocument {
+    nonisolated func makeViewportReader() -> EditorDocumentViewportReader? { nil }
+    nonisolated func viewport(containingUTF16Offset offset: Int, maximumByteCount: Int, maximumLineCount: Int) throws -> EditorDocumentViewport {
+        try viewport(aroundLine: position(atUTF16Offset: offset).line,
+                     maximumByteCount: maximumByteCount, maximumLineCount: maximumLineCount)
+    }
+    nonisolated func viewport(aroundLine line: Int, maximumByteCount: Int) throws -> EditorDocumentViewport {
+        try viewport(aroundLine: line, maximumByteCount: maximumByteCount, maximumLineCount: .max)
+    }
+
+    nonisolated var supportsBoundedWindows: Bool { true }
+    nonisolated var lineCount: Int { 1 }
+}

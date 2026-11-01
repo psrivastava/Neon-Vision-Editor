@@ -14,8 +14,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-PREVIEW_EXPORT = ROOT / "Neon Vision Editor" / "UI" / "ContentView+MarkdownPreviewExport.swift"
-PREVIEW_UI = ROOT / "Neon Vision Editor" / "UI" / "ContentView+MarkdownPreviewUI.swift"
+SOURCE_ROOT = ROOT / "Project" / "Sources" / "Neon Vision Editor"
+PREVIEW_EXPORT = SOURCE_ROOT / "UI" / "ContentView+MarkdownPreviewExport.swift"
+PREVIEW_UI = SOURCE_ROOT / "UI" / "ContentView+MarkdownPreviewUI.swift"
 CLIPPING_FIXTURE = ROOT / "samples" / "markdown-fixtures" / "compact-preview-clipping-regression.md"
 
 REQUIRED_SOURCE_FRAGMENTS = {
@@ -40,8 +41,12 @@ REQUIRED_SOURCE_FRAGMENTS = {
     "code block language picker": "code-block-language-picker",
     "code block syntax highlighter": "highlightBlock",
     "server-rendered syntax highlighter": "markdownPreviewHighlightedCodeHTML",
-    "vibrant markdown syntax keyword": ".syntax-kw { color: #ff4fd8;",
-    "vibrant markdown syntax string": ".syntax-str { color: #14d990;",
+    # Syntax colors are resolved per theme at runtime. Keep this audit tied to
+    # the semantic CSS contract rather than one hard-coded theme's hex values.
+    "markdown syntax keyword variable": "--md-syntax-keyword:",
+    "markdown syntax string variable": "--md-syntax-string:",
+    "markdown syntax keyword rule": ".syntax-kw { color: var(--md-syntax-keyword);",
+    "markdown syntax string rule": ".syntax-str { color: var(--md-syntax-string);",
     "code block language inference": "inferredMarkdownPreviewCodeLanguage",
     "code block picker persistence": "localStorage",
     "large code highlight guard": "maxHighlightedCodeUnits",
@@ -90,7 +95,12 @@ def main() -> None:
         fail("invalid iPhone preview clamp: .content max-width must use 100%, not 100vw")
     if "max(19px, 1.18em)" in source or "112%" in source or "108%" in source:
         fail("invalid runtime font scaling: Markdown preview must stay anchored to the editor font size")
-    if "-webkit-text-size-adjust: 100%" not in source or "font-size: 1em !important" not in source:
+    exact_runtime_size_contract = 'let resolvedRuntimeFontSize = runtimeFontSize.map { "\\(Int($0.rounded()))px" } ?? "1em"'
+    if (
+        "-webkit-text-size-adjust: 100%" not in source
+        or exact_runtime_size_contract not in source
+        or "font-size: \\(resolvedRuntimeFontSize) !important" not in source
+    ):
         fail("missing editor-size parity guardrail for iOS Markdown preview runtime CSS")
 
     fixture = CLIPPING_FIXTURE.read_text(encoding="utf-8")

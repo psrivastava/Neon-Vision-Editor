@@ -8,23 +8,16 @@ on:
         description: "Existing Git tag to release (e.g. v0.4.5)"
         required: true
         type: string
-      cask_only:
-        description: "Create only the Homebrew Cask update pull request"
-        required: false
-        default: false
-        type: boolean
-
 permissions:
   contents: write
   issues: write
 
 jobs:
   release:
-    if: ${{ !(inputs.cask_only || false) }}
     timeout-minutes: 180
     concurrency:
       group: release-${{ inputs.tag }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     # Use Tahoe-capable image; AppIcon image renditions are required, iconstack is optional.
     runs-on: macos-26
 
@@ -42,6 +35,12 @@ jobs:
           git remote add origin "https://x-access-token:${GH_TOKEN}@${SERVER_HOST}/${REPO}.git"
           git fetch --depth=1 origin "refs/tags/${TAG_NAME}"
           git checkout FETCH_HEAD
+
+      - name: Validate release input
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/ci/release_notes_quality_gate.sh "$TAG_NAME"
 
       - name: Select Xcode 17+
         id: xcode_mode
@@ -154,6 +153,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$EXPORT_PATH"
+          bash scripts/prepare_apple_silicon_archive.sh "$ARCHIVE_PATH"
 
           /usr/libexec/PlistBuddy -c "Clear dict" export.plist
           /usr/libexec/PlistBuddy -c "Add :method string developer-id" export.plist
@@ -255,6 +255,8 @@ jobs:
           TAG_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          scripts/prepare_release_docs.py "$TAG_NAME" --check
+          scripts/ci/validate_release_metadata.sh "$TAG_NAME"
           if grep -nE "^- TODO\r?$" release-notes.md >/dev/null; then
             echo "CHANGELOG section for ${TAG_NAME} still contains TODO entries." >&2
             exit 1
@@ -282,6 +284,7 @@ jobs:
           fi
 
       - name: Verify published release asset payload
+        id: verify_published_assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ inputs.tag }}
@@ -311,8 +314,14 @@ jobs:
           /usr/bin/codesign --verify --deep --strict "$MOUNT_POINT/Neon Vision Editor.app"
           scripts/ci/verify_icon_payload.sh "$MOUNT_POINT/Neon Vision Editor.app"
 
+      - name: Trigger delayed documentation self-heal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ inputs.tag }}
+        run: gh workflow run post-release-documentation-sync.yml --ref main -f tag="$TAG_NAME"
+
       - name: Roll back broken published release asset
-        if: ${{ failure() && steps.publish_release.outcome == 'success' }}
+        if: ${{ failure() && steps.publish_release.outcome == 'success' && steps.verify_published_assets.outcome != 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG_NAME: ${{ inputs.tag }}
@@ -421,25 +430,6 @@ jobs:
           echo "Failed to complete homebrew-tap update after retries." >&2
           exit 1
 
-      - name: Create Homebrew Cask App token
-        id: homebrew_cask_app_token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.HOMEBREW_CASK_APP_CLIENT_ID }}
-          private-key: ${{ secrets.HOMEBREW_CASK_APP_PRIVATE_KEY }}
-          owner: h3pdesign
-          repositories: homebrew-cask
-
-      - name: Prepare Homebrew Cask update branch
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ steps.homebrew_cask_app_token.outputs.token }}
-          TAG_NAME: ${{ inputs.tag }}
-          HOMEBREW_CASK_PREPARE_ONLY: true
-        run: |
-          set -euo pipefail
-          bash scripts/create_homebrew_cask_pr.sh
-
       - name: Restore user keychain state
         if: ${{ always() }}
         run: |
@@ -475,27 +465,3 @@ jobs:
 
           security delete-keychain "$KEYCHAIN" || true
           rm -f cert.p12
-
-  update-homebrew-cask:
-    if: ${{ inputs.cask_only || false }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Create Homebrew Cask App token
-        id: homebrew_cask_app_token
-        uses: actions/create-github-app-token@v3
-        with:
-          client-id: ${{ vars.HOMEBREW_CASK_APP_CLIENT_ID }}
-          private-key: ${{ secrets.HOMEBREW_CASK_APP_PRIVATE_KEY }}
-          owner: h3pdesign
-          repositories: homebrew-cask
-
-      - name: Prepare Homebrew Cask update branch
-        env:
-          GH_TOKEN: ${{ steps.homebrew_cask_app_token.outputs.token }}
-          TAG_NAME: ${{ inputs.tag }}
-          HOMEBREW_CASK_PREPARE_ONLY: true
-        run: |
-          set -euo pipefail
-          bash scripts/create_homebrew_cask_pr.sh

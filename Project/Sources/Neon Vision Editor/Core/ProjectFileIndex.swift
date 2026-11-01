@@ -1,0 +1,189 @@
+import Foundation
+
+struct ProjectFileIndex {
+    struct Entry: Sendable, Hashable {
+        let url: URL
+        let standardizedPath: String
+        let relativePath: String
+        let displayName: String
+        let contentModificationDate: Date?
+        let fileSize: Int64?
+    }
+
+    struct Snapshot: Sendable {
+        let entries: [Entry]
+
+        nonisolated static let empty = Snapshot(entries: [])
+
+        var fileURLs: [URL] {
+            entries.map(\.url)
+        }
+    }
+
+    nonisolated static func buildSnapshot(
+        at root: URL,
+        supportedOnly: Bool,
+        ignoredFolderNames: Set<String> = ProjectIgnoredFolders.names(from: ProjectIgnoredFolders.defaultRawValue),
+        isSupportedFile: @escaping @Sendable (URL) -> Bool
+    ) async -> Snapshot {
+        let worker = Task.detached(priority: .utility) {
+            buildSnapshotSync(
+                at: root,
+                supportedOnly: supportedOnly,
+                ignoredFolderNames: ignoredFolderNames,
+                isSupportedFile: isSupportedFile
+            )
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    nonisolated static func refreshSnapshot(
+        _ previous: Snapshot,
+        at root: URL,
+        supportedOnly: Bool,
+        ignoredFolderNames: Set<String> = ProjectIgnoredFolders.names(from: ProjectIgnoredFolders.defaultRawValue),
+        isSupportedFile: @escaping @Sendable (URL) -> Bool
+    ) async -> Snapshot {
+        let worker = Task.detached(priority: .utility) {
+            refreshSnapshotSync(
+                previous,
+                at: root,
+                supportedOnly: supportedOnly,
+                ignoredFolderNames: ignoredFolderNames,
+                isSupportedFile: isSupportedFile
+            )
+        }
+        return await withTaskCancellationHandler {
+            await worker.value
+        } onCancel: {
+            worker.cancel()
+        }
+    }
+
+    private nonisolated static func buildSnapshotSync(
+        at root: URL,
+        supportedOnly: Bool,
+        ignoredFolderNames: Set<String>,
+        isSupportedFile: @escaping @Sendable (URL) -> Bool
+    ) -> Snapshot {
+        let previous = Snapshot.empty
+        return refreshSnapshotSync(
+            previous,
+            at: root,
+            supportedOnly: supportedOnly,
+            ignoredFolderNames: ignoredFolderNames,
+            isSupportedFile: isSupportedFile
+        )
+    }
+
+    private nonisolated static func refreshSnapshotSync(
+        _ previous: Snapshot,
+        at root: URL,
+        supportedOnly: Bool,
+        ignoredFolderNames: Set<String>,
+        isSupportedFile: @escaping @Sendable (URL) -> Bool
+    ) -> Snapshot {
+        guard !Task.isCancelled else { return previous }
+        let resourceKeys: Set<URLResourceKey> = [
+            .isRegularFileKey,
+            .isDirectoryKey,
+            .isHiddenKey,
+            .nameKey,
+            .contentModificationDateKey,
+            .fileSizeKey
+        ]
+        let options: FileManager.DirectoryEnumerationOptions = [
+            .skipsHiddenFiles,
+            .skipsPackageDescendants
+        ]
+        // Keep the scan on Foundation's native URL path and normalize the root
+        // once. OS 27 supplies the faster URL/CFURL implementation at runtime;
+        // avoiding redundant normalization keeps the hot path small.
+        let standardizedRoot = root.standardizedFileURL
+        let rootPath = standardizedRoot.path
+        guard let enumerator = FileManager.default.enumerator(
+            at: standardizedRoot,
+            includingPropertiesForKeys: Array(resourceKeys),
+            options: options
+        ) else {
+            return .empty
+        }
+
+        let previousByPath = Dictionary(uniqueKeysWithValues: previous.entries.map { ($0.standardizedPath, $0) })
+        var refreshedEntries: [Entry] = []
+        refreshedEntries.reserveCapacity(max(previous.entries.count, 512))
+
+        while let fileURL = enumerator.nextObject() as? URL {
+            if Task.isCancelled {
+                return previous
+            }
+            guard let values = try? fileURL.resourceValues(forKeys: resourceKeys) else {
+                continue
+            }
+            if values.isDirectory == true, ignoredFolderNames.contains(fileURL.lastPathComponent) {
+                enumerator.skipDescendants()
+                continue
+            }
+            if values.isHidden == true {
+                if values.isDirectory == true {
+                    enumerator.skipDescendants()
+                }
+                continue
+            }
+            guard values.isRegularFile == true else { continue }
+            if supportedOnly && !isSupportedFile(fileURL) {
+                continue
+            }
+
+            let standardizedURL = fileURL.standardizedFileURL
+            let standardizedPath = standardizedURL.path
+            let modificationDate = values.contentModificationDate
+            let fileSize = values.fileSize.map(Int64.init)
+            let displayName = values.name ?? standardizedURL.lastPathComponent
+
+            if let previousEntry = previousByPath[standardizedPath],
+               previousEntry.contentModificationDate == modificationDate,
+               previousEntry.fileSize == fileSize {
+                refreshedEntries.append(previousEntry)
+                continue
+            }
+
+            let relativePath = relativePathForFile(
+                standardizedPath,
+                displayName: displayName,
+                rootPath: rootPath
+            )
+            refreshedEntries.append(
+                Entry(
+                    url: standardizedURL,
+                    standardizedPath: standardizedPath,
+                    relativePath: relativePath,
+                    displayName: displayName,
+                    contentModificationDate: modificationDate,
+                    fileSize: fileSize
+                )
+            )
+        }
+
+        guard !Task.isCancelled else { return previous }
+        refreshedEntries.sort {
+            $0.standardizedPath.localizedCaseInsensitiveCompare($1.standardizedPath) == .orderedAscending
+        }
+        return Snapshot(entries: refreshedEntries)
+    }
+
+    private nonisolated static func relativePathForFile(
+        _ filePath: String,
+        displayName: String,
+        rootPath: String
+    ) -> String {
+        let rootPrefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+        guard filePath.hasPrefix(rootPrefix) else { return displayName }
+        let trimmed = String(filePath.dropFirst(rootPath.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return trimmed.isEmpty ? displayName : trimmed
+    }
+}

@@ -1,4 +1,4 @@
-name: Release macOS app (unsigned dry-run)
+name: Release fallback (unsigned archive dry-run)
 
 on:
   workflow_dispatch:
@@ -17,7 +17,7 @@ jobs:
     concurrency:
       group: unsigned-dry-run-${{ inputs.tag }}
       cancel-in-progress: true
-    runs-on: macos-15
+    runs-on: xcode-27
     steps:
       - name: Checkout (no external actions)
         env:
@@ -33,10 +33,20 @@ jobs:
           git fetch --depth=1 origin "refs/tags/${TAG_NAME}"
           git checkout -b "release-${TAG_NAME}" FETCH_HEAD
 
-      - name: Show Xcode Version
+      - name: Show Xcode 27 Version
+        env:
+          NVE_ALLOW_BETA_XCODE: 1
         run: |
           set -euo pipefail
           source scripts/ci/select_xcode17.sh
+          require_xcode_major 27
+          require_sdk_major 27 macosx
+
+      - name: Validate release input
+        env:
+          TAG_NAME: ${{ inputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/ci/release_notes_quality_gate.sh "$TAG_NAME"
 
       - name: Build macOS archive
         env:
@@ -88,6 +98,8 @@ jobs:
           TAG_NAME: ${{ inputs.tag }}
         run: |
           set -euo pipefail
+          scripts/prepare_release_docs.py "$TAG_NAME" --check
+          scripts/ci/validate_release_metadata.sh "$TAG_NAME"
           if grep -nE "^- TODO$" release-notes.md >/dev/null; then
             echo "CHANGELOG section for ${TAG_NAME} still contains TODO entries." >&2
             exit 1

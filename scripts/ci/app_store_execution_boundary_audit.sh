@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cd "$ROOT_DIR"
+
+require_pattern() {
+  local pattern="$1"
+  local file="$2"
+  local description="$3"
+  if ! rg -q "$pattern" "$file"; then
+    echo "[app-store-execution-boundary-audit] missing guardrail: $description" >&2
+    exit 1
+  fi
+}
+
+echo "[app-store-execution-boundary-audit] checking executable-code boundaries"
+
+require_pattern '#if os\(macOS\) && !APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/UI/IntegratedTerminalContent.swift" \
+  "integrated PTY terminal excluded from App Store builds"
+require_pattern '#if os\(macOS\) && !APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/UI/ContentView+Actions.swift" \
+  "Python project creation excluded from App Store builds"
+require_pattern '#if os\(macOS\) && !APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/UI/ContentView.swift" \
+  "Python project sheet excluded from App Store builds"
+require_pattern '#if os\(macOS\) && !APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/UI/SidebarViews.swift" \
+  "Python project action excluded from App Store builds"
+require_pattern '#if os\(macOS\) && !APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/UI/NeonSettingsView.swift" \
+  "Python interpreter settings excluded from App Store builds"
+require_pattern '#if !os\(macOS\) \|\| APP_STORE_BUILD' \
+  "Project/Sources/Neon Vision Editor/Core/EditorAgentVerificationRunner.swift" \
+  "agent verification process execution excluded from App Store builds"
+require_pattern 'SWIFT_ACTIVE_COMPILATION_CONDITIONS\[sdk=macosx27\.\*\].*MACOS_27_AGENTIC_EDITOR' \
+  "Neon Vision Editor.xcodeproj/project.pbxproj" \
+  "macOS 27 Agent Mode enabled only for the macOS 27 SDK"
+
+echo "[app-store-execution-boundary-audit] OK"

@@ -6,7 +6,7 @@ usage() {
 Run end-to-end release flow in one command.
 
 Usage:
-  scripts/release_all.sh <tag> [notarized] [--date YYYY-MM-DD] [--skip-notarized] [--self-hosted] [--github-hosted] [--enterprise-selfhosted] [--autostash] [--dry-run] [--from <step>] [--to <step>] [--retag] [--resume-auto] [--skip-homebrew-wait] [--replace-assets-from-app <path>]
+  scripts/release_all.sh <tag> [notarized] [--date YYYY-MM-DD] [--skip-notarized] [--self-hosted] [--github-hosted] [--enterprise-selfhosted] [--autostash] [--dry-run [--full-gate]] [--from <step>] [--to <step>] [--retag] [--resume-auto] [--no-auto-approve-environment] [--replace-assets-from-app <path>]
 
 Examples:
   scripts/release_all.sh v0.8.9
@@ -21,20 +21,25 @@ Examples:
   scripts/release_all.sh v0.8.9 --to preflight
   scripts/release_all.sh v0.8.9 --retag
   scripts/release_all.sh v0.8.9 --resume-auto
-  scripts/release_all.sh v0.8.9 --skip-homebrew-wait
+  scripts/release_all.sh v0.8.9 --no-auto-approve-environment
   scripts/release_all.sh v0.8.9 --replace-assets-from-app "/Users/h3p/Downloads/Neon Vision Editor.app"
   scripts/release_all.sh v0.8.9 notarized --retag
 
 What it does:
-  1) Synchronize local main with origin/main before release checks and again before prep/tagging
-     so separately generated download-metrics commits are included
-  2) Run release preflight checks (docs + build + icon payload + tests)
-  3) Prepare README/CHANGELOG docs
-  4) Commit docs changes
-  5) Create annotated tag
-  6) Push main and tag to origin
-  7) Trigger notarized release workflow (GitHub-hosted by default)
+  1) Require clean develop aligned with origin/develop; prepare release/<version>
+     in an isolated sibling worktree without switching the source checkout
+  2) Promote reviewed Unreleased notes, allocate a reusable build and generate docs
+  3) Create the signed release metadata commit
+  4) Run release preflight checks (docs + build + icon payload + tests)
+  5) Push the signed release-preparation commit to release/<version> and merge its PR into main
+  6) Trigger the primary GitHub-hosted release workflow from the merged main commit
+  7) Optionally use an explicit fallback workflow for an existing tag and approve its
+     protected release environment when the current user is an authorized reviewer
   8) Wait for notarized workflow and verify uploaded release asset payload
+
+Dry run:
+  --dry-run rehearses metadata preparation and publication-state transitions offline
+  in a disposable directory. --full-gate adds local Xcode validation; neither publishes.
 
 Asset replacement mode:
   --replace-assets-from-app packages an existing notarized Neon Vision Editor.app as
@@ -63,13 +68,14 @@ USE_SELF_HOSTED=0
 ENTERPRISE_SELF_HOSTED=0
 AUTOSTASH=0
 DRY_RUN=0
+FULL_GATE=0
 START_FROM="docs"
 STOP_AFTER="notarize"
 STOP_AFTER_SET=0
 START_FROM_SET=0
 RETAG=0
 RESUME_AUTO=0
-WAIT_FOR_HOMEBREW_TAP=1
+AUTO_APPROVE_RELEASE_ENVIRONMENT=1
 REPLACE_ASSETS_APP=""
 
 step_index() {
@@ -95,8 +101,8 @@ step_enabled() {
 }
 
 gh_retry() {
-  local attempts="${GH_RETRY_ATTEMPTS:-5}"
-  local base_sleep="${GH_RETRY_BASE_SLEEP:-2}"
+  local attempts="${GH_RETRY_ATTEMPTS:-8}"
+  local base_sleep="${GH_RETRY_BASE_SLEEP:-3}"
   local n=1
 
   while true; do
@@ -106,6 +112,7 @@ gh_retry() {
     if (( n >= attempts )); then
       return 1
     fi
+    echo "GitHub command failed; retrying in $((base_sleep * n))s (${n}/${attempts})..." >&2
     sleep $((base_sleep * n))
     n=$((n + 1))
   done
@@ -131,7 +138,7 @@ retry_cmd() {
 
 sync_main_with_origin() {
   local reason="${1:-release prep}"
-  local current_branch local_main_sha origin_main_sha
+  local current_branch local_main_sha origin_main_sha has_release_metadata_changes=0
 
   current_branch="$(git branch --show-current)"
   if [[ "$current_branch" != "main" ]]; then
@@ -140,7 +147,7 @@ sync_main_with_origin() {
   fi
 
   echo "Synchronizing main with origin/main before ${reason}..."
-  git fetch origin main >/dev/null
+  retry_cmd git fetch origin main >/dev/null
   local_main_sha="$(git rev-parse HEAD)"
   origin_main_sha="$(git rev-parse origin/main)"
 
@@ -150,17 +157,24 @@ sync_main_with_origin() {
   fi
 
   if [[ -n "$(git status --porcelain)" ]]; then
-    echo "Local main is not aligned with origin/main, but the working tree is dirty." >&2
-    echo "origin/main can move during release when download metrics are updated separately." >&2
-    echo "Commit/stash changes first, or rerun with --autostash so release_all can sync safely." >&2
-    echo "  local main:  ${local_main_sha}" >&2
-    echo "  origin/main: ${origin_main_sha}" >&2
-    exit 1
+    if working_tree_has_only_release_metadata_changes; then
+      has_release_metadata_changes=1
+    else
+      echo "Local main is not aligned with origin/main, and the working tree contains non-release changes." >&2
+      echo "  local main:  ${local_main_sha}" >&2
+      echo "  origin/main: ${origin_main_sha}" >&2
+      exit 1
+    fi
   fi
 
   if git merge-base --is-ancestor HEAD origin/main; then
-    echo "Local main is behind origin/main. Fast-forwarding..."
-    git merge --ff-only origin/main
+    if [[ "$has_release_metadata_changes" -eq 1 ]]; then
+      echo "Local main is behind origin/main. Fast-forwarding while preserving release metadata changes..."
+      git rebase --autostash origin/main
+    else
+      echo "Local main is behind origin/main. Fast-forwarding..."
+      git merge --ff-only origin/main
+    fi
     return 0
   fi
 
@@ -169,15 +183,44 @@ sync_main_with_origin() {
     return 0
   fi
 
-  echo "Local main and origin/main both moved. Merging origin/main before continuing..."
-  git merge --no-edit origin/main
+  echo "Local main and origin/main both moved. Refusing to create an implicit release merge." >&2
+  echo "Rebase the local commits onto origin/main, then rerun the release." >&2
+  echo "  local main:  ${local_main_sha}" >&2
+  echo "  origin/main: ${origin_main_sha}" >&2
+  exit 1
+}
+
+sync_develop_with_origin() {
+  local current_branch local_sha origin_sha
+  current_branch="$(git branch --show-current)"
+  if [[ "$current_branch" != "develop" ]]; then
+    echo "Release preparation must run from develop (current: ${current_branch})." >&2
+    exit 1
+  fi
+
+  echo "Synchronizing develop with origin/develop before release checks..."
+  retry_cmd git fetch origin develop >/dev/null
+  local_sha="$(git rev-parse HEAD)"
+  origin_sha="$(git rev-parse origin/develop)"
+  if [[ "$local_sha" == "$origin_sha" ]]; then
+    echo "Local develop is aligned with origin/develop."
+  elif git merge-base --is-ancestor HEAD origin/develop; then
+    git merge --ff-only origin/develop
+  elif git merge-base --is-ancestor origin/develop HEAD; then
+    echo "Local develop already contains origin/develop; continuing."
+  else
+    echo "Local develop and origin/develop both moved. Rebase before release preparation." >&2
+    exit 1
+  fi
 }
 
 is_allowed_release_dirty_path() {
   local path="$1"
   case "$path" in
-    CHANGELOG.md|README.md|\
-    "Neon Vision Editor/UI/PanelsAndHelpers.swift"|\
+    CHANGELOG.md|README.md|docs/ARCHITECTURE.md|site/index.html|site/changelog.html|\
+    site/de/index.html|site/da/index.html|site/fr/index.html|\
+    site/es/index.html|site/ja/index.html|site/zh-Hans/index.html|\
+    "Project/Sources/Neon Vision Editor/UI/PanelsAndHelpers.swift"|\
     "Neon Vision Editor.xcodeproj/project.pbxproj"|\
     docs/images/neon-vision-release-history-0.1-to-0.5.svg|\
     docs/images/neon-vision-release-history-0.1-to-0.5-light.svg|\
@@ -221,11 +264,11 @@ release_exists_and_is_published() {
   local tag_name="$1"
   local is_draft
 
-  if ! gh release view "$tag_name" >/dev/null 2>&1; then
+  if ! gh_retry gh release view "$tag_name" >/dev/null 2>&1; then
     return 1
   fi
 
-  is_draft="$(gh release view "$tag_name" --json isDraft --jq '.isDraft' 2>/dev/null || echo "false")"
+  is_draft="$(gh_retry gh release view "$tag_name" --json isDraft --jq '.isDraft')"
   [[ "$is_draft" != "true" ]]
 }
 
@@ -241,7 +284,7 @@ print_release_state_summary() {
   else
     local_tag_state="missing"
   fi
-  if git ls-remote --tags origin "refs/tags/${TAG}" 2>/dev/null | grep -q "refs/tags/${TAG}"; then
+  if retry_cmd git ls-remote --tags origin "refs/tags/${TAG}" 2>/dev/null | grep -q "refs/tags/${TAG}"; then
     remote_tag_state="present"
   else
     remote_tag_state="missing"
@@ -292,6 +335,9 @@ while [[ "${1:-}" != "" ]]; do
     --dry-run)
       DRY_RUN=1
       ;;
+    --full-gate)
+      FULL_GATE=1
+      ;;
     --from)
       shift
       if [[ -z "${1:-}" ]]; then
@@ -318,8 +364,8 @@ while [[ "${1:-}" != "" ]]; do
     --resume-auto)
       RESUME_AUTO=1
       ;;
-    --skip-homebrew-wait)
-      WAIT_FOR_HOMEBREW_TAP=0
+    --no-auto-approve-environment)
+      AUTO_APPROVE_RELEASE_ENVIRONMENT=0
       ;;
     --replace-assets-from-app)
       shift
@@ -337,6 +383,17 @@ while [[ "${1:-}" != "" ]]; do
   esac
   shift || true
 done
+
+if [[ "$DRY_RUN" -eq 1 ]]; then
+  if [[ -n "$REPLACE_ASSETS_APP" || "$RETAG" -eq 1 || "$AUTOSTASH" -eq 1 ]]; then
+    echo "Dry run cannot be combined with asset replacement, retagging or autostash." >&2
+    exit 1
+  fi
+  dry_cmd=(bash "$(dirname "${BASH_SOURCE[0]}")/release_prep.sh" "$TAG" --dry-run)
+  if [[ ${#DATE_ARG[@]} -gt 0 ]]; then dry_cmd+=("${DATE_ARG[@]}"); fi
+  if [[ "$FULL_GATE" -eq 1 ]]; then dry_cmd+=(--full-gate); fi
+  exec "${dry_cmd[@]}"
+fi
 
 if [[ -n "$REPLACE_ASSETS_APP" ]]; then
   scripts/replace_release_assets.sh "$TAG" --app "$REPLACE_ASSETS_APP"
@@ -357,7 +414,7 @@ if [[ "$RESUME_AUTO" -eq 1 ]]; then
   if git rev-parse "$TAG" >/dev/null 2>&1; then
     local_tag_exists=1
   fi
-  if git ls-remote --tags origin "refs/tags/${TAG}" 2>/dev/null | grep -q "refs/tags/${TAG}$"; then
+  if retry_cmd git ls-remote --tags origin "refs/tags/${TAG}" 2>/dev/null | grep -q "refs/tags/${TAG}$"; then
     remote_tag_exists=1
   fi
   if [[ "$local_tag_exists" -eq 0 && "$remote_tag_exists" -eq 1 ]]; then
@@ -410,7 +467,7 @@ fi
 ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
-REPO_SLUG="$(gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
+REPO_SLUG="$(gh_retry gh repo view --json nameWithOwner --jq '.nameWithOwner' 2>/dev/null || true)"
 if [[ -z "$REPO_SLUG" ]]; then
   echo "Could not resolve repository slug from gh." >&2
   exit 1
@@ -484,45 +541,71 @@ wait_for_pre_release_ci() {
   return 1
 }
 
-wait_for_homebrew_tap_update() {
-  local since="$1"
-  local timeout_seconds=1800
-  local interval_seconds=15
+approve_pending_release_environment() {
+  local run_id="$1"
+  local environment_ids environment_id
+
+  if [[ "$AUTO_APPROVE_RELEASE_ENVIRONMENT" -eq 0 ]]; then
+    return 0
+  fi
+
+  environment_ids="$(
+    gh_retry gh api "repos/${REPO_SLUG}/actions/runs/${run_id}/pending_deployments" \
+      --jq '.[] | select(.current_user_can_approve == true) | .environment.id'
+  )" || return 1
+
+  [[ -n "$environment_ids" ]] || return 0
+
+  while IFS= read -r environment_id; do
+    [[ -n "$environment_id" ]] || continue
+    echo "Approving protected release environment ${environment_id} for workflow run ${run_id}..."
+    gh_retry gh api -X POST "repos/${REPO_SLUG}/actions/runs/${run_id}/pending_deployments" \
+      --input - <<EOF
+{"environment_ids":[${environment_id}],"state":"approved","comment":"Release environment approved after local release validation."}
+EOF
+  done <<< "$environment_ids"
+}
+
+wait_for_workflow_run() {
+  local run_id="$1"
+  local timeout_seconds="${GH_WORKFLOW_TIMEOUT_SECONDS:-14400}"
+  local interval_seconds="${GH_WORKFLOW_POLL_SECONDS:-15}"
   local elapsed=0
+  local last_state=""
 
-  echo "Waiting for homebrew-tap run (since ${since})..."
   while (( elapsed <= timeout_seconds )); do
-    local tap_line
-    tap_line="$(gh_retry gh run list -R h3pdesign/homebrew-tap \
-      --workflow update-cask.yml \
-      --event repository_dispatch \
-      --limit 30 \
-      --json databaseId,status,conclusion,displayTitle,createdAt \
-      --jq ".[] | select(.displayTitle == \"notarized_release\" and .createdAt >= \"${since}\") | \"\(.databaseId)\t\(.status)\t\(.conclusion // \"\")\"" | head -n1 || true)"
+    approve_pending_release_environment "$run_id" || \
+      echo "Could not review pending release environments yet; continuing to monitor." >&2
 
-    if [[ -n "$tap_line" ]]; then
-      local run_id run_status run_conclusion
-      run_id="$(echo "$tap_line" | awk -F '\t' '{print $1}')"
-      run_status="$(echo "$tap_line" | awk -F '\t' '{print $2}')"
-      run_conclusion="$(echo "$tap_line" | awk -F '\t' '{print $3}')"
-      echo "homebrew-tap run ${run_id}: status=${run_status} conclusion=${run_conclusion:-pending}"
-      if [[ "$run_status" == "completed" ]]; then
-        if [[ "$run_conclusion" == "success" ]]; then
-          echo "homebrew-tap update passed."
-          return 0
-        fi
-        echo "homebrew-tap update failed (${run_id})." >&2
-        return 1
-      fi
-    else
-      echo "homebrew-tap run not visible yet; retrying..."
+    local run_state status conclusion
+    if ! run_state="$(
+      gh_retry gh run view "$run_id" \
+        --json status,conclusion \
+        --jq '[.status, (.conclusion // "")] | join("|")'
+    )"; then
+      echo "Could not read workflow run ${run_id}; retrying without redispatching." >&2
+      sleep "$interval_seconds"
+      elapsed=$((elapsed + interval_seconds))
+      continue
+    fi
+
+    status="${run_state%%|*}"
+    conclusion="${run_state#*|}"
+    if [[ "$run_state" != "$last_state" ]]; then
+      echo "Workflow run ${run_id}: status=${status} conclusion=${conclusion:-pending}"
+      last_state="$run_state"
+    fi
+
+    if [[ "$status" == "completed" ]]; then
+      [[ "$conclusion" == "success" ]]
+      return
     fi
 
     sleep "$interval_seconds"
     elapsed=$((elapsed + interval_seconds))
   done
 
-  echo "Timed out waiting for homebrew-tap update run." >&2
+  echo "Timed out waiting for workflow run ${run_id}." >&2
   return 1
 }
 
@@ -561,11 +644,10 @@ assert_required_actions_secrets() {
     APPLE_TEAM_ID
     APPLE_ID
     APPLE_APP_SPECIFIC_PASSWORD
+    NVE_SPARKLE_PRIVATE_KEY
+    METRIC_TOKEN
+    METRICS_SIGNING_SSH_KEY
   )
-
-  if [[ "$WAIT_FOR_HOMEBREW_TAP" -eq 1 ]]; then
-    required+=(TAP_BOT_TOKEN)
-  fi
 
   if ! required_secrets_available "${required[@]}"; then
     echo "Required release secrets are missing or could not be verified. Not starting notarized release." >&2
@@ -599,12 +681,17 @@ if [[ "$REQUIRES_CLEAN_TREE" -eq 1 && "$AUTOSTASH" -eq 0 && -n "$(git status --p
   fi
 fi
 
-if step_enabled prep; then
-  sync_main_with_origin "release checks"
+VALIDATION_ROOT="$ROOT"
+if step_enabled prep && ! git rev-parse --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+  preparation=(bash scripts/release_prep.sh "$TAG")
+  if [[ ${#DATE_ARG[@]} -gt 0 ]]; then preparation+=("${DATE_ARG[@]}"); fi
+  if [[ "$RESUME_AUTO" -eq 1 ]]; then preparation+=(--resume); fi
+  "${preparation[@]}"
+  VALIDATION_ROOT="$(dirname "$ROOT")/$(basename "$ROOT")-release-${TAG#v}"
 fi
 print_release_state_summary "before docs/preflight"
 
-echo "README download metrics are maintained separately; release_all will re-sync main before tagging to include any new metrics commits."
+echo "README metrics are maintained separately. The release workflow builds the pinned release SHA."
 
 if step_enabled docs; then
   echo "Verifying release docs are up to date for ${TAG}..."
@@ -612,12 +699,12 @@ if step_enabled docs; then
   if [[ ${#DATE_ARG[@]} -gt 0 ]]; then
     docs_check_cmd+=("${DATE_ARG[@]}")
   fi
-  "${docs_check_cmd[@]}"
+  (cd "$VALIDATION_ROOT"; "${docs_check_cmd[@]}")
 fi
 
 if step_enabled preflight; then
   echo "Running release preflight for ${TAG}..."
-  scripts/ci/release_gate.sh "$TAG"
+  (cd "$VALIDATION_ROOT"; scripts/ci/release_gate.sh "$TAG")
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
@@ -642,9 +729,9 @@ assert_tag_matches_head() {
 assert_remote_tag_matches_head() {
   local tag_name="$1"
   local remote_sha head_sha
-  remote_sha="$(git ls-remote --tags origin "refs/tags/${tag_name}^{}" | awk '{print $1}' | head -n1)"
+  remote_sha="$(retry_cmd git ls-remote --tags origin "refs/tags/${tag_name}^{}" | awk '{print $1}' | head -n1)"
   if [[ -z "$remote_sha" ]]; then
-    remote_sha="$(git ls-remote --tags origin "refs/tags/${tag_name}" | awk '{print $1}' | head -n1)"
+    remote_sha="$(retry_cmd git ls-remote --tags origin "refs/tags/${tag_name}" | awk '{print $1}' | head -n1)"
   fi
   if [[ -z "$remote_sha" ]]; then
     return 0
@@ -660,8 +747,7 @@ assert_remote_tag_matches_head() {
 }
 
 if step_enabled prep; then
-  sync_main_with_origin "release prep commit and tag (including external download-metrics commits)"
-  print_release_state_summary "before release prep/tag"
+  print_release_state_summary "before release branch preparation"
 
   if git rev-parse "$TAG" >/dev/null 2>&1; then
     if [[ "$RETAG" -eq 1 ]]; then
@@ -673,45 +759,100 @@ if step_enabled prep; then
       assert_remote_tag_matches_head "$TAG"
       echo "Tag ${TAG} already exists. Skipping release prep. Use --retag to recreate it."
       if [[ "$(git branch --show-current)" == "main" ]]; then
-        git push origin main
         git push origin "$TAG"
       fi
     fi
   fi
 
   if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "Running release prep for ${TAG}..."
+    echo "Running release preparation for ${TAG}..."
     prep_cmd=(scripts/release_prep.sh "$TAG")
     if [[ ${#DATE_ARG[@]} -gt 0 ]]; then
       prep_cmd+=("${DATE_ARG[@]}")
     fi
+    if [[ "$RESUME_AUTO" -eq 1 ]]; then
+      prep_cmd+=(--resume)
+    fi
     prep_cmd+=(--push)
     "${prep_cmd[@]}"
-    echo "Tag push completed."
+    RELEASE_BRANCH="release/${TAG#v}"
+    echo "Release-preparation branch pushed; waiting for ${RELEASE_BRANCH} to merge into main..."
+    release_pr_number="$(
+      gh_retry gh pr list \
+        --repo "${REPO_SLUG}" \
+        --state all \
+        --base main \
+        --head "${RELEASE_BRANCH}" \
+        --limit 20 \
+        --json number \
+        --jq 'max_by(.number).number // empty'
+    )"
+    if [[ -z "${release_pr_number}" ]]; then
+      echo "Could not resolve the newly created release PR for ${RELEASE_BRANCH}." >&2
+      exit 1
+    fi
+    release_head_sha="$(
+      gh_retry gh pr view "${release_pr_number}" \
+        --repo "${REPO_SLUG}" \
+        --json headRefOid \
+        --jq '.headRefOid'
+    )"
+    merged=0
+    for _ in {1..120}; do
+      pr_state="$(
+        gh_retry gh pr view "${release_pr_number}" \
+          --repo "${REPO_SLUG}" \
+          --json state,mergeCommit \
+          --jq '[.state, (.mergeCommit.oid // "")] | join("|")' || true
+      )"
+      if [[ "${pr_state%%|*}" == "MERGED" ]]; then
+        merged=1
+        break
+      fi
+      sleep 15
+    done
+    if [[ "$merged" -ne 1 ]]; then
+      echo "Release PR ${RELEASE_BRANCH} did not merge into main; release workflow was not dispatched." >&2
+      exit 1
+    fi
+    retry_cmd git fetch origin main >/dev/null
+    RELEASE_SHA="${pr_state#*|}"
+    if [[ ! "$RELEASE_SHA" =~ ^[a-f0-9]{40}$ ]] || ! git merge-base --is-ancestor "$RELEASE_SHA" origin/main; then
+      echo "Release PR #${release_pr_number} is marked merged, but origin/main does not contain ${release_head_sha}." >&2
+      echo "Release workflow was not dispatched." >&2
+      exit 1
+    fi
+    echo "Release PR merged; main is ready for ${TAG}."
   fi
 fi
 
 if [[ "$TRIGGER_NOTARIZED" -eq 1 ]] && step_enabled notarize; then
   print_release_state_summary "before notarized workflow"
 
-  if ! git rev-parse "$TAG" >/dev/null 2>&1; then
-    echo "Tag ${TAG} does not exist. Run prep first or use --from prep." >&2
-    exit 1
-  fi
-  RELEASE_SHA="$(git rev-parse "${TAG}^{commit}")"
-  REMOTE_TAG_SHA="$(git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | head -n1)"
-  if [[ -z "$REMOTE_TAG_SHA" ]]; then
-    REMOTE_TAG_SHA="$(git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | head -n1)"
-  fi
-  if [[ -z "$REMOTE_TAG_SHA" ]]; then
-    echo "Remote tag ${TAG} is missing on origin. Not starting notarized release." >&2
-    exit 1
-  fi
-  if [[ "$REMOTE_TAG_SHA" != "$RELEASE_SHA" ]]; then
-    echo "Remote tag ${TAG} does not match the local release tag. Not starting GitHub release." >&2
-    echo "  local:  ${RELEASE_SHA}" >&2
-    echo "  remote: ${REMOTE_TAG_SHA}" >&2
-    exit 1
+  if [[ "$USE_SELF_HOSTED" -eq 1 ]]; then
+    if ! git rev-parse "$TAG" >/dev/null 2>&1; then
+      echo "Fallback self-hosted release requires existing tag ${TAG}." >&2
+      exit 1
+    fi
+    RELEASE_SHA="$(git rev-parse "${TAG}^{commit}")"
+    if ! git verify-commit "$RELEASE_SHA"; then
+      echo "Release tag ${TAG} does not point to a locally verifiable signed commit." >&2
+      exit 1
+    fi
+    REMOTE_TAG_SHA="$(retry_cmd git ls-remote --tags origin "refs/tags/${TAG}^{}" | awk '{print $1}' | head -n1)"
+    if [[ -z "$REMOTE_TAG_SHA" ]]; then
+      REMOTE_TAG_SHA="$(retry_cmd git ls-remote --tags origin "refs/tags/${TAG}" | awk '{print $1}' | head -n1)"
+    fi
+    if [[ "$REMOTE_TAG_SHA" != "$RELEASE_SHA" ]]; then
+      echo "Remote tag ${TAG} does not match the local release tag. Not starting fallback release." >&2
+      exit 1
+    fi
+  else
+    if [[ -z "${RELEASE_SHA:-}" ]]; then
+      retry_cmd git fetch origin main >/dev/null
+      RELEASE_SHA="$(git rev-parse origin/main)"
+    fi
+    echo "Primary GitHub-hosted release will create ${TAG} only after remote gates pass."
   fi
 
   if release_exists_and_is_published "$TAG" && retry_cmd scripts/ci/verify_release_asset.sh "$TAG"; then
@@ -733,34 +874,69 @@ if [[ "$TRIGGER_NOTARIZED" -eq 1 ]] && step_enabled notarize; then
     assert_workflow_exists "release-notarized-selfhosted.yml"
     assert_online_self_hosted_macos_runner
     assert_required_actions_secrets
-    DISPATCHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    gh_retry gh workflow run release-notarized-selfhosted.yml -f tag="$TAG" -f use_self_hosted=true
     WORKFLOW_NAME="release-notarized-selfhosted.yml"
-    echo "Triggered: ${WORKFLOW_NAME} (tag=${TAG}, use_self_hosted=true)"
+    WORKFLOW_DISPATCH_CMD=(gh workflow run "$WORKFLOW_NAME" -f tag="$TAG" -f use_self_hosted=true)
   else
     assert_workflow_exists "release-github-only.yml"
     assert_required_actions_secrets
-    DISPATCHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-    gh_retry gh workflow run release-github-only.yml -f tag="$TAG" -f ref=main
     WORKFLOW_NAME="release-github-only.yml"
-    echo "Triggered: ${WORKFLOW_NAME} (tag=${TAG})"
+    WORKFLOW_DISPATCH_CMD=(gh workflow run "$WORKFLOW_NAME" --ref main -f tag="$TAG" -f ref="$RELEASE_SHA")
   fi
 
-  echo "Waiting for ${WORKFLOW_NAME} run..."
-  sleep 6
-  RUN_ID=""
-  for _ in {1..20}; do
-    RUN_ID="$(gh_retry gh run list --workflow "$WORKFLOW_NAME" --limit 30 --json databaseId,displayTitle,createdAt --jq ".[] | select((.displayTitle | contains(\"${TAG}\")) and .createdAt >= \"${DISPATCHED_AT}\") | .databaseId" | head -n1 || true)"
-    if [[ -n "$RUN_ID" ]]; then
-      break
+  # Reuse an active same-tag run instead of creating a duplicate that will sit
+  # behind the release concurrency group. This makes reruns idempotent when a
+  # terminal command is interrupted while GitHub continues the workflow.
+  RUN_ID="$(
+    gh_retry gh run list \
+      --workflow "$WORKFLOW_NAME" \
+      --limit 30 \
+      --json databaseId,displayTitle,status,createdAt \
+      --jq "[.[] | select((.displayTitle | contains(\"${TAG}\")) and .status != \"completed\")][0].databaseId // empty" || true
+  )"
+  if [[ -n "$RUN_ID" ]]; then
+    echo "Reusing active ${WORKFLOW_NAME} run ${RUN_ID} for ${TAG}."
+  else
+    echo "Dispatching ${WORKFLOW_NAME} for ${TAG}..."
+    DISPATCHED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    DISPATCH_UNCERTAIN=0
+    if ! "${WORKFLOW_DISPATCH_CMD[@]}"; then
+      DISPATCH_UNCERTAIN=1
+      echo "Workflow dispatch response failed; checking for a created run before retrying." >&2
+    else
+      echo "Workflow dispatch request accepted."
     fi
-    sleep 6
-  done
+
+    echo "Waiting for ${WORKFLOW_NAME} run..."
+    for dispatch_attempt in 1 2; do
+      if [[ "$dispatch_attempt" -eq 2 ]]; then
+        if [[ "$DISPATCH_UNCERTAIN" -eq 0 ]]; then
+          break
+        fi
+        echo "No run appeared after the failed response; retrying the dispatch once."
+        "${WORKFLOW_DISPATCH_CMD[@]}"
+      fi
+
+      for _ in {1..20}; do
+        sleep 6
+        RUN_ID="$(
+          gh_retry gh run list \
+            --workflow "$WORKFLOW_NAME" \
+            --limit 30 \
+            --json databaseId,displayTitle,createdAt \
+            --jq "[.[] | select((.displayTitle | contains(\"${TAG}\")) and .createdAt >= \"${DISPATCHED_AT}\")][0].databaseId // empty" || true
+        )"
+        if [[ -n "$RUN_ID" ]]; then
+          break
+        fi
+      done
+      [[ -n "$RUN_ID" ]] && break
+    done
+  fi
   if [[ -z "$RUN_ID" ]]; then
     echo "Could not find workflow run for ${TAG}." >&2
     exit 1
   fi
-  if ! gh_retry gh run watch "$RUN_ID" --exit-status; then
+  if ! wait_for_workflow_run "$RUN_ID"; then
     echo "Workflow run ${RUN_ID} failed. Showing failed job logs..." >&2
     gh_retry gh run view "$RUN_ID" --log-failed || true
     exit 1
@@ -768,11 +944,6 @@ if [[ "$TRIGGER_NOTARIZED" -eq 1 ]] && step_enabled notarize; then
   if ! retry_cmd scripts/ci/verify_release_asset.sh "$TAG"; then
     echo "Release asset verification failed for ${TAG} after retries." >&2
     exit 1
-  fi
-  if [[ "$WAIT_FOR_HOMEBREW_TAP" -eq 1 ]]; then
-    wait_for_homebrew_tap_update "$DISPATCHED_AT"
-  else
-    echo "Skipping homebrew-tap wait (--skip-homebrew-wait)."
   fi
 fi
 

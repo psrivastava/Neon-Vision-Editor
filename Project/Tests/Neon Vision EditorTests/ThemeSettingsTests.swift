@@ -1,0 +1,460 @@
+import XCTest
+import SwiftUI
+@testable import Neon_Vision_Editor
+
+#if os(macOS)
+import AppKit
+private typealias TestPlatformColor = NSColor
+#else
+import UIKit
+private typealias TestPlatformColor = UIColor
+#endif
+
+private struct TestColorComponents: Hashable {
+    let red: Int
+    let green: Int
+    let blue: Int
+}
+
+private func testColorComponents(_ color: Color) -> TestColorComponents? {
+#if os(macOS)
+    let platform = TestPlatformColor(color)
+    guard let srgb = platform.usingColorSpace(.sRGB) else { return nil }
+    return TestColorComponents(
+        red: Int(round(srgb.redComponent * 100)),
+        green: Int(round(srgb.greenComponent * 100)),
+        blue: Int(round(srgb.blueComponent * 100))
+    )
+#else
+    let platform = TestPlatformColor(color)
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 0
+    guard platform.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+    return TestColorComponents(
+        red: Int(round(red * 100)),
+        green: Int(round(green * 100)),
+        blue: Int(round(blue * 100))
+    )
+#endif
+}
+
+private func testRelativeLuminance(_ color: Color) -> Double {
+    guard let components = testColorComponents(color) else { return 0 }
+    return (0.2126 * Double(components.red) / 100.0)
+        + (0.7152 * Double(components.green) / 100.0)
+        + (0.0722 * Double(components.blue) / 100.0)
+}
+
+@MainActor
+final class ThemeSettingsTests: XCTestCase {
+    func testMergedThemeColorValuesPreservesCustomPaletteAndPrefersOverrides() {
+        let colors = mergedThemeColorValues(
+            for: "Ocean Custom",
+            customThemes: [
+                "Ocean Custom": [
+                    "text": "#F5F7FF",
+                    "backgroundDark": "#102030",
+                    "cursor": "#55AAFF"
+                ]
+            ],
+            overrides: [
+                "Ocean Custom": [
+                    "cursor": "#ABCDEF",
+                    "keyword": "#FF3366"
+                ]
+            ]
+        )
+
+        XCTAssertEqual(colors["text"], "#F5F7FF")
+        XCTAssertEqual(colors["backgroundDark"], "#102030")
+        XCTAssertEqual(colors["cursor"], "#ABCDEF")
+        XCTAssertEqual(colors["keyword"], "#FF3366")
+    }
+
+    func testIncludesAtLeastThirtyBuiltInThemeChoices() {
+        XCTAssertGreaterThanOrEqual(editorThemeNames.filter { $0 != "Custom" }.count, 30)
+        XCTAssertTrue(editorThemeNames.contains("Monokai"))
+        XCTAssertTrue(editorThemeNames.contains("GitHub Dark"))
+        XCTAssertTrue(editorThemeNames.contains("Material"))
+    }
+
+    func testCustomThemeArchiveRoundTripsValidatedColors() throws {
+        let themes = [
+            "Ocean Custom": [
+                "text": "#F5F7FF",
+                "backgroundDark": "#102030",
+                "cursor": "#55AAFF"
+            ]
+        ]
+
+        let encoded = try EditorThemeArchiveCodec.encode(themes: themes)
+        let decoded = try EditorThemeArchiveCodec.decode(
+            encoded,
+            builtInThemeNames: Set(editorThemeNames)
+        )
+
+        XCTAssertEqual(decoded, themes)
+    }
+
+    func testCustomThemeArchiveRejectsBuiltInNamesAndInvalidColors() throws {
+        let builtInData = try EditorThemeArchiveCodec.encode(
+            themes: ["Dracula": ["text": "#FFFFFF"]]
+        )
+        XCTAssertThrowsError(
+            try EditorThemeArchiveCodec.decode(
+                builtInData,
+                builtInThemeNames: Set(editorThemeNames)
+            )
+        )
+
+        let invalidColorData = try JSONEncoder().encode(
+            EditorThemeArchive(
+                version: 1,
+                themes: ["Unsafe": ["text": "not-a-color"]]
+            )
+        )
+        XCTAssertThrowsError(
+            try EditorThemeArchiveCodec.decode(
+                invalidColorData,
+                builtInThemeNames: Set(editorThemeNames)
+            )
+        )
+    }
+
+    func testCustomThemeRemainsSelectedAndResolvesSavedPalette() throws {
+        let defaults = UserDefaults.standard
+        let keys = [
+            "SettingsThemeName",
+            "SettingsThemeOverridesVersion",
+            "SavedCustomThemesData",
+            "SettingsThemeHexOverrides"
+        ]
+        var previousValues: [String: Any] = [:]
+        for key in keys {
+            if let value = defaults.object(forKey: key) {
+                previousValues[key] = value
+            }
+        }
+        defer {
+            for key in keys {
+                if let value = previousValues[key] {
+                    defaults.set(value, forKey: key)
+                } else {
+                    defaults.removeObject(forKey: key)
+                }
+            }
+        }
+
+        let customName = "Paper Custom"
+        let customThemes = [
+            customName: [
+                "text": "#F2E9D8",
+                "backgroundDark": "#102030",
+                "cursor": "#8A2BE2",
+                "selection": "#345678",
+                "keyword": "#FF3366",
+                "string": "#33CC99",
+                "number": "#FFAA00",
+                "comment": "#778899",
+                "type": "#66AAFF",
+                "builtin": "#CC66FF"
+            ]
+        ]
+
+        defaults.set("v2", forKey: "SettingsThemeOverridesVersion")
+        defaults.set(customName, forKey: "SettingsThemeName")
+        defaults.set(try JSONEncoder().encode(customThemes), forKey: "SavedCustomThemesData")
+        defaults.removeObject(forKey: "SettingsThemeHexOverrides")
+
+        XCTAssertEqual(canonicalThemeName("paper custom"), customName)
+        XCTAssertEqual(
+            testColorComponents(themePaletteColors(for: customName).cursor),
+            TestColorComponents(red: 54, green: 17, blue: 89)
+        )
+
+        let theme = currentEditorTheme(colorScheme: .dark)
+        XCTAssertEqual(testColorComponents(theme.background), TestColorComponents(red: 6, green: 13, blue: 19))
+        XCTAssertEqual(testColorComponents(theme.cursor), TestColorComponents(red: 54, green: 17, blue: 89))
+    }
+
+    func testAmoledThemeUsesDeepBlackAndVibrantSyntaxColors() {
+        XCTAssertEqual(canonicalThemeName("amoled neon"), "AMOLED Neon")
+        XCTAssertTrue(editorThemeNames.contains("AMOLED Neon"))
+
+        let palette = themePaletteColors(for: "AMOLED Neon")
+        let background = testColorComponents(palette.background)
+        let string = testColorComponents(palette.string)
+        let keyword = testColorComponents(palette.keyword)
+        let cursor = testColorComponents(palette.cursor)
+        let selection = testColorComponents(palette.selection)
+
+        XCTAssertEqual(background, TestColorComponents(red: 0, green: 0, blue: 0))
+        XCTAssertEqual(string, TestColorComponents(red: 0, green: 84, blue: 0))
+        XCTAssertEqual(cursor, TestColorComponents(red: 0, green: 82, blue: 50))
+        XCTAssertEqual(selection, TestColorComponents(red: 0, green: 75, blue: 95))
+        XCTAssertGreaterThanOrEqual(keyword?.red ?? 0, 100)
+        XCTAssertGreaterThanOrEqual(keyword?.blue ?? 0, 85)
+    }
+
+    func testNeonGlowBuiltinUsesYellowByAppearance() {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        let previousOverrides = UserDefaults.standard.data(forKey: "SettingsThemeHexOverrides")
+        let previousOverridesVersion = UserDefaults.standard.string(forKey: "SettingsThemeOverridesVersion")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+            if let previousOverrides {
+                UserDefaults.standard.set(previousOverrides, forKey: "SettingsThemeHexOverrides")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+            }
+            if let previousOverridesVersion {
+                UserDefaults.standard.set(previousOverridesVersion, forKey: "SettingsThemeOverridesVersion")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeOverridesVersion")
+            }
+        }
+
+        UserDefaults.standard.set("v2", forKey: "SettingsThemeOverridesVersion")
+        UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+        UserDefaults.standard.set("Neon Glow", forKey: "SettingsThemeName")
+
+        let darkBuiltin = currentEditorTheme(colorScheme: .dark).syntax.builtin
+        let lightBuiltin = currentEditorTheme(colorScheme: .light).syntax.builtin
+        let darkComponents = testColorComponents(darkBuiltin)
+        let lightComponents = testColorComponents(lightBuiltin)
+
+        XCTAssertGreaterThanOrEqual(darkComponents?.red ?? 0, 98)
+        XCTAssertGreaterThanOrEqual(darkComponents?.green ?? 0, 86)
+        XCTAssertLessThanOrEqual(darkComponents?.blue ?? 100, 15)
+        XCTAssertGreaterThanOrEqual(lightComponents?.red ?? 0, 75)
+        XCTAssertGreaterThanOrEqual(lightComponents?.green ?? 0, 65)
+        XCTAssertLessThanOrEqual(lightComponents?.blue ?? 100, 10)
+        XCTAssertGreaterThan(testRelativeLuminance(darkBuiltin), testRelativeLuminance(lightBuiltin))
+    }
+
+    func testNeonFlowUsesDistinctVibrantPaletteFromNeonGlow() {
+        let glow = themePaletteColors(for: "Neon Glow")
+        let flow = themePaletteColors(for: "Neon Flow")
+
+        XCTAssertNotEqual(testColorComponents(flow.keyword), testColorComponents(glow.keyword))
+        XCTAssertNotEqual(testColorComponents(flow.string), testColorComponents(glow.string))
+        XCTAssertNotEqual(testColorComponents(flow.number), testColorComponents(glow.number))
+        XCTAssertNotEqual(testColorComponents(flow.builtin), testColorComponents(glow.builtin))
+
+        let keyword = testColorComponents(flow.keyword)
+        let string = testColorComponents(flow.string)
+        let number = testColorComponents(flow.number)
+        let property = testColorComponents(flow.property)
+        let builtin = testColorComponents(flow.builtin)
+
+        XCTAssertLessThanOrEqual(keyword?.green ?? 100, 35)
+        XCTAssertGreaterThanOrEqual(keyword?.blue ?? 0, 95)
+        XCTAssertGreaterThanOrEqual(string?.red ?? 0, 75)
+        XCTAssertGreaterThanOrEqual(string?.blue ?? 0, 95)
+        XCTAssertGreaterThanOrEqual(number?.red ?? 0, 95)
+        XCTAssertGreaterThanOrEqual(property?.green ?? 0, 60)
+        XCTAssertGreaterThanOrEqual(property?.blue ?? 0, 90)
+        XCTAssertGreaterThanOrEqual(builtin?.red ?? 0, 90)
+        XCTAssertLessThanOrEqual(builtin?.green ?? 100, 5)
+    }
+
+    func testLaserwaveStringColorRemainsReadableInLightMode() {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+        }
+
+        UserDefaults.standard.set("Laserwave", forKey: "SettingsThemeName")
+        let theme = currentEditorTheme(colorScheme: .light)
+
+        XCTAssertLessThan(
+            testRelativeLuminance(theme.syntax.string),
+            0.55,
+            "Laserwave strings should darken enough to remain readable on light editor backgrounds."
+        )
+    }
+
+    func testDefaultThemesFollowSystemLightAndDarkContrast() {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        let previousOverrides = UserDefaults.standard.data(forKey: "SettingsThemeHexOverrides")
+        let previousOverridesVersion = UserDefaults.standard.string(forKey: "SettingsThemeOverridesVersion")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+            if let previousOverrides {
+                UserDefaults.standard.set(previousOverrides, forKey: "SettingsThemeHexOverrides")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+            }
+            if let previousOverridesVersion {
+                UserDefaults.standard.set(previousOverridesVersion, forKey: "SettingsThemeOverridesVersion")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeOverridesVersion")
+            }
+        }
+
+        UserDefaults.standard.set("v2", forKey: "SettingsThemeOverridesVersion")
+        UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+
+        for themeName in editorThemeNames {
+            UserDefaults.standard.set(themeName, forKey: "SettingsThemeName")
+
+            let lightTheme = currentEditorTheme(colorScheme: .light)
+            XCTAssertGreaterThanOrEqual(testRelativeLuminance(lightTheme.background), 0.72, "\(themeName) should use a light default background in light mode.")
+            XCTAssertLessThanOrEqual(testRelativeLuminance(lightTheme.text), 0.35, "\(themeName) should use dark default text in light mode.")
+
+            let darkTheme = currentEditorTheme(colorScheme: .dark)
+            XCTAssertLessThanOrEqual(testRelativeLuminance(darkTheme.background), 0.34, "\(themeName) should use a dark default background in dark mode.")
+            XCTAssertGreaterThanOrEqual(testRelativeLuminance(darkTheme.text), 0.68, "\(themeName) should use light default text in dark mode.")
+        }
+    }
+
+    func testTextOverrideDoesNotCreateDarkLightModeBackground() throws {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        let previousOverrides = UserDefaults.standard.data(forKey: "SettingsThemeHexOverrides")
+        let previousOverridesVersion = UserDefaults.standard.string(forKey: "SettingsThemeOverridesVersion")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+            if let previousOverrides {
+                UserDefaults.standard.set(previousOverrides, forKey: "SettingsThemeHexOverrides")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+            }
+            if let previousOverridesVersion {
+                UserDefaults.standard.set(previousOverridesVersion, forKey: "SettingsThemeOverridesVersion")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeOverridesVersion")
+            }
+        }
+
+        UserDefaults.standard.set("v2", forKey: "SettingsThemeOverridesVersion")
+        UserDefaults.standard.set("Laserwave", forKey: "SettingsThemeName")
+        let overrides = ["Laserwave": ["text": "#FF0000"]]
+        UserDefaults.standard.set(try JSONEncoder().encode(overrides), forKey: "SettingsThemeHexOverrides")
+
+        let theme = currentEditorTheme(colorScheme: .light)
+
+        XCTAssertGreaterThanOrEqual(
+            testRelativeLuminance(theme.background),
+            0.72,
+            "Changing only text color must not turn the light-mode background into a dark explicit override."
+        )
+    }
+
+    func testAccidentalDefaultTextOverridesFollowAppearanceContrast() throws {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        let previousOverrides = UserDefaults.standard.data(forKey: "SettingsThemeHexOverrides")
+        let previousOverridesVersion = UserDefaults.standard.string(forKey: "SettingsThemeOverridesVersion")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+            if let previousOverrides {
+                UserDefaults.standard.set(previousOverrides, forKey: "SettingsThemeHexOverrides")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+            }
+            if let previousOverridesVersion {
+                UserDefaults.standard.set(previousOverridesVersion, forKey: "SettingsThemeOverridesVersion")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeOverridesVersion")
+            }
+        }
+
+        UserDefaults.standard.set("v2", forKey: "SettingsThemeOverridesVersion")
+
+        UserDefaults.standard.set("Neon Glow", forKey: "SettingsThemeName")
+        UserDefaults.standard.set(try JSONEncoder().encode(["Neon Glow": ["text": "#F0F0F0"]]), forKey: "SettingsThemeHexOverrides")
+        XCTAssertLessThanOrEqual(
+            testRelativeLuminance(currentEditorTheme(colorScheme: .light).text),
+            0.35,
+            "Legacy raw default text overrides must not force white text in light mode."
+        )
+
+        UserDefaults.standard.set("Neon Flow", forKey: "SettingsThemeName")
+        UserDefaults.standard.set(try JSONEncoder().encode(["Neon Flow": ["text": "#000000"]]), forKey: "SettingsThemeHexOverrides")
+        XCTAssertGreaterThanOrEqual(
+            testRelativeLuminance(currentEditorTheme(colorScheme: .dark).text),
+            0.68,
+            "Legacy raw default text overrides must not force dark text in dark mode."
+        )
+    }
+
+    func testExplicitUnsafeTextOverridesAreCorrectedForAppearance() throws {
+        let previousTheme = UserDefaults.standard.string(forKey: "SettingsThemeName")
+        let previousOverrides = UserDefaults.standard.data(forKey: "SettingsThemeHexOverrides")
+        let previousOverridesVersion = UserDefaults.standard.string(forKey: "SettingsThemeOverridesVersion")
+        defer {
+            if let previousTheme {
+                UserDefaults.standard.set(previousTheme, forKey: "SettingsThemeName")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeName")
+            }
+            if let previousOverrides {
+                UserDefaults.standard.set(previousOverrides, forKey: "SettingsThemeHexOverrides")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeHexOverrides")
+            }
+            if let previousOverridesVersion {
+                UserDefaults.standard.set(previousOverridesVersion, forKey: "SettingsThemeOverridesVersion")
+            } else {
+                UserDefaults.standard.removeObject(forKey: "SettingsThemeOverridesVersion")
+            }
+        }
+
+        UserDefaults.standard.set("v2", forKey: "SettingsThemeOverridesVersion")
+        UserDefaults.standard.set("Neon Flow", forKey: "SettingsThemeName")
+
+        UserDefaults.standard.set(try JSONEncoder().encode(["Neon Flow": ["text": "#000000", "textExplicit": "true"]]), forKey: "SettingsThemeHexOverrides")
+        XCTAssertGreaterThanOrEqual(
+            testRelativeLuminance(currentEditorTheme(colorScheme: .dark).text),
+            0.68,
+            "Explicit black text must be lifted in dark mode so normal editor text remains readable."
+        )
+
+        UserDefaults.standard.set(try JSONEncoder().encode(["Neon Flow": ["text": "#FFFFFF", "textExplicit": "true"]]), forKey: "SettingsThemeHexOverrides")
+        XCTAssertLessThanOrEqual(
+            testRelativeLuminance(currentEditorTheme(colorScheme: .light).text),
+            0.35,
+            "Explicit white text must be lowered in light mode so normal editor text remains readable."
+        )
+    }
+
+    func testNeonStringPalettesAreDistinctAcrossNearbyThemes() {
+        let themeNames = [
+            "Laserwave",
+            "Plasma Storm",
+            "Ultraviolet Flux",
+            "Midnight",
+            "Pulse",
+            "AMOLED Neon"
+        ]
+        let stringColors = themeNames.compactMap { testColorComponents(themePaletteColors(for: $0).string) }
+
+        XCTAssertEqual(stringColors.count, themeNames.count)
+        XCTAssertEqual(
+            Set(stringColors).count,
+            themeNames.count,
+            "Nearby neon themes should not collapse onto the same string token color."
+        )
+    }
+}

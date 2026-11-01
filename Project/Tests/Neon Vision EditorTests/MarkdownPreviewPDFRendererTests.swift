@@ -1,0 +1,564 @@
+import XCTest
+import SwiftUI
+import PDFKit
+import WebKit
+@testable import Neon_Vision_Editor
+
+@MainActor
+final class MarkdownPreviewPDFRendererTests: XCTestCase {
+    // Use the production Markdown converter and export CSS without invoking
+    // ContentView's document environment (these fixtures have no local images).
+    private func exportFixtureHTML(_ markdown: String, mode: ContentView.MarkdownPDFExportMode) -> String {
+        let css = ContentView().markdownPreviewCSS(template: "default", preferDarkMode: false, backgroundStyle: .template, translucentBackgroundEnabled: false)
+        let body = ContentView.markdownPreviewBodyHTML(from: markdown, dialect: .gfm, useRenderLimits: false)
+        let onePage = mode == .onePageFit ? " pdf-one-page" : ""
+        return "<!doctype html><html><head><meta charset=\"utf-8\"><style>\(css)</style></head><body class=\"default pdf-export\(onePage)\"><main class=\"content\">\(body)</main></body></html>"
+    }
+    func testPaginationUsesPreferredBlockBottomInsteadOfCuttingThroughNextBlock() {
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(
+            sourceHeight: 2_000, preferredBlockBottoms: [800, 1_600], sliceHeight: 1_000
+        )
+        XCTAssertEqual(ranges.first?.bottom, 800, "The eligible block boundary must win over the fixed slice height.")
+        XCTAssertEqual(ranges.last?.bottom, 2_000)
+        for (previous, next) in zip(ranges, ranges.dropFirst()) {
+            XCTAssertEqual(previous.bottom, next.top)
+        }
+    }
+
+    func testPaginationRejectsInvalidDimensionsAndKeepsFinalBlockOnLastPage() {
+        for height in [CGFloat.zero, -1, .infinity, .nan] {
+            XCTAssertTrue(MarkdownPreviewPDFRenderer.paginatedSourceRanges(sourceHeight: height, preferredBlockBottoms: [], sliceHeight: 100).isEmpty)
+            XCTAssertTrue(MarkdownPreviewPDFRenderer.paginatedSourceRanges(sourceHeight: 100, preferredBlockBottoms: [], sliceHeight: height).isEmpty)
+        }
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(sourceHeight: 900, preferredBlockBottoms: [600, 850], sliceHeight: 1_000)
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.last?.bottom, 900)
+    }
+
+    func testShortPDFDoesNotPadToBlankPages() async throws {
+        for markdown in ["", "# Short document\n\nENDMARKER"] {
+            let data = try await MarkdownPreviewPDFRenderer.render(html: exportFixtureHTML(markdown, mode: .paginatedFit), mode: .paginatedFit)
+            let document = try XCTUnwrap(PDFDocument(data: data))
+            XCTAssertEqual(document.pageCount, 1)
+            if !markdown.isEmpty { XCTAssertTrue(document.string?.contains("ENDMARKER") == true) }
+        }
+    }
+
+    func testExportCodeBlocksFitWithoutHorizontalScrollingOrInteractiveControls() async throws {
+        let markdown = "# Export fixture\n\n```text\n" + String(repeating: "long-token-", count: 30) + "END_OF_LINE\n```"
+        for mode in [ContentView.MarkdownPDFExportMode.paginatedFit, .onePageFit] {
+            let html = exportFixtureHTML(markdown, mode: mode)
+            let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 595, height: 1800))
+            let loaded = expectation(description: "Export HTML loaded")
+            let waiter = PDFExportNavigationWaiter(loaded: loaded)
+            webView.navigationDelegate = waiter
+            webView.loadHTMLString(html, baseURL: nil)
+            await fulfillment(of: [loaded], timeout: 30)
+            defer { webView.navigationDelegate = nil; webView.stopLoading() }
+            let measurements = try await webView.evaluateJavaScript("""
+            (() => {
+              const pre = document.querySelector('pre');
+              const code = pre.querySelector('code');
+              const controls = Array.from(document.querySelectorAll('.code-block-copy, .code-block-language-picker'));
+              return { overflow: Math.max(pre.scrollWidth - pre.clientWidth, code.scrollWidth - code.clientWidth),
+                       visibleControls: controls.filter(node => node.getClientRects().length > 0).length };
+            })()
+            """) as? [String: NSNumber]
+            let values = try XCTUnwrap(measurements)
+            XCTAssertLessThanOrEqual(try XCTUnwrap(values["overflow"]).doubleValue, 1, "PDF code cannot rely on an interactive horizontal scrollbar (\(mode)).")
+            XCTAssertEqual(values["visibleControls"]?.intValue, 0, "Copy buttons and language pickers must not be captured in the PDF (\(mode)).")
+            withExtendedLifetime(waiter) {}
+        }
+    }
+
+    func testExportedPDFContainsLastCodeLineAndNoCopyButton() async throws {
+        let lines = (0..<90).map { "ROW_\($0) " + String(repeating: "sample ", count: 20) + "TAIL_\($0)" }.joined(separator: "\n")
+        let markdown = "# PDF regression\n\n```text\n\(lines)\n```\n\nFINALDOCUMENTMARKER"
+        for mode in [ContentView.MarkdownPDFExportMode.paginatedFit, .onePageFit] {
+            let data = try await MarkdownPreviewPDFRenderer.render(
+                html: exportFixtureHTML(markdown, mode: mode),
+                mode: mode == .paginatedFit ? .paginatedFit : .onePageFit
+            )
+            let attachment = XCTAttachment(data: data, uniformTypeIdentifier: "com.adobe.pdf")
+            attachment.name = "pdf-export-\(mode.rawValue)"
+            attachment.lifetime = .keepAlways
+            add(attachment)
+            let document = try XCTUnwrap(PDFDocument(data: data))
+            let text = document.string ?? ""
+            XCTAssertTrue(text.contains("FINALDOCUMENTMARKER"))
+            XCTAssertTrue(text.contains("TAIL_89"), "The right edge of the final code line must survive export.")
+            XCTAssertFalse(text.contains("Copy"), "Interactive preview buttons do not belong in a PDF.")
+            if mode == .onePageFit {
+                XCTAssertEqual(document.pageCount, 1)
+            } else {
+                XCTAssertGreaterThan(document.pageCount, 1)
+                for index in 0..<document.pageCount {
+                    let page = try XCTUnwrap(document.page(at: index))
+                    XCTAssertFalse((page.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, "This flowing-text fixture must not produce blank trailing pages.")
+                    XCTAssertEqual(page.bounds(for: .mediaBox).width, 595, accuracy: 1)
+                    XCTAssertEqual(page.bounds(for: .mediaBox).height, 842, accuracy: 1)
+                }
+            }
+        }
+    }
+#if os(macOS)
+    func testDetachedPreviewUsesEditorBackgroundInsteadOfPreviewWhite() {
+        let html = "<html><head><style>body { background: white; }</style></head><body><main class=\"content\">Preview</main></body></html>"
+
+        let result = DetachedPreviewWindowView.applyingEditorBackground(to: html, color: "#101820")
+
+        XCTAssertTrue(result.contains("nve-detached-preview-background"))
+        XCTAssertTrue(result.contains("html, body, .content { background: #101820 !important; }"))
+        XCTAssertTrue(result.contains("</style></head>"))
+    }
+
+    func testDetachedPreviewKeepsItsBackgroundTransparentForTranslucentWindows() {
+        let result = DetachedPreviewWindowView.applyingEditorBackground(
+            to: "<html><head></head><body><main class=\"content\">Preview</main></body></html>",
+            color: "transparent"
+        )
+
+        XCTAssertTrue(result.contains("html, body, .content { background: transparent !important; }"))
+    }
+
+    func testDetachedPreviewQuickLookGlassUsesOnlyALightTint() {
+        XCTAssertGreaterThan(DetachedPreviewWindowView.quickLookGlassTintOpacity, 0)
+        XCTAssertLessThanOrEqual(DetachedPreviewWindowView.quickLookGlassTintOpacity, 0.10)
+    }
+#endif
+
+    func testPaginatedSourceRangesCoverLongMarkdownWithoutGaps() {
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(
+            sourceHeight: 4_850,
+            preferredBlockBottoms: [220, 715, 1_412, 1_998, 2_704, 3_390, 4_100, 4_742],
+            sliceHeight: 1_120
+        )
+
+        XCTAssertGreaterThan(ranges.count, 2)
+        XCTAssertEqual(ranges.first?.top, 0)
+        XCTAssertEqual(ranges.last?.bottom, 4_850)
+
+        for (previous, current) in zip(ranges, ranges.dropFirst()) {
+            XCTAssertEqual(previous.bottom, current.top)
+            XCTAssertGreaterThan(current.bottom, current.top)
+        }
+    }
+
+    func testPaginatedSourceRangesIgnoreInvalidBlockMeasurements() {
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(
+            sourceHeight: 2_400,
+            preferredBlockBottoms: [-24, 0, 640, 1_200, 2_400, 9_999],
+            sliceHeight: 900
+        )
+
+        XCTAssertEqual(ranges.first?.top, 0)
+        XCTAssertEqual(ranges.last?.bottom, 2_400)
+        XCTAssertTrue(ranges.allSatisfy { $0.top >= 0 && $0.bottom <= 2_400 })
+    }
+
+    func testPaginatedSourceRangesKeepSinglePageForShortContent() {
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(
+            sourceHeight: 680,
+            preferredBlockBottoms: [120, 320, 640],
+            sliceHeight: 1_120
+        )
+
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual(ranges.first?.top, 0)
+        XCTAssertEqual(ranges.first?.bottom, 680)
+    }
+
+    func testPaginatedSourceRangesRemainStrictlyAscendingWithDenseBlocks() {
+        let ranges = MarkdownPreviewPDFRenderer.paginatedSourceRanges(
+            sourceHeight: 5_600,
+            preferredBlockBottoms: stride(from: 80, through: 5_520, by: 80).map(CGFloat.init),
+            sliceHeight: 1_120
+        )
+
+        XCTAssertFalse(ranges.isEmpty)
+        XCTAssertEqual(ranges.first?.top, 0)
+        XCTAssertEqual(ranges.last?.bottom, 5_600)
+
+        for range in ranges {
+            XCTAssertGreaterThan(range.bottom, range.top)
+        }
+        for (previous, current) in zip(ranges, ranges.dropFirst()) {
+            XCTAssertEqual(previous.bottom, current.top)
+        }
+    }
+
+    func testPaginatedRendererExportsLongHTMLBeyondTwoPages() async throws {
+        let paragraphs = (0..<180)
+            .map { "<p>Paragraph \($0): This export regression test requires enough flowing text to span several A4 pages.</p>" }
+            .joined(separator: "\n")
+        let html = """
+        <!doctype html>
+        <html><head><meta charset="utf-8"><style>
+        body { font: 16px -apple-system; line-height: 1.5; margin: 28px; }
+        p { margin: 0 0 16px; }
+        </style></head><body>\(paragraphs)</body></html>
+        """
+
+        let data = try await MarkdownPreviewPDFRenderer.render(html: html, mode: .paginatedFit)
+        let provider = try XCTUnwrap(CGDataProvider(data: data as CFData))
+        let document = try XCTUnwrap(CGPDFDocument(provider))
+        XCTAssertGreaterThan(document.numberOfPages, 2)
+
+        let pdfDocument = try XCTUnwrap(PDFDocument(data: data))
+        let exportedText = (0..<pdfDocument.pageCount)
+            .compactMap { pdfDocument.page(at: $0)?.string }
+            .joined(separator: "\n")
+        XCTAssertTrue(exportedText.contains("Paragraph 179"))
+    }
+
+    func testAllMarkdownPreviewThemesKeepCompactViewportGuardrails() {
+        let contentView = ContentView()
+        let requiredCSSFragments = [
+            "box-sizing: border-box",
+            "min-width: 0",
+            "max-width: 100%",
+            "overflow-x: hidden",
+            "overflow-wrap: break-word",
+            "overflow-wrap: anywhere",
+            "display: block",
+            "white-space: pre"
+        ]
+
+        for option in ContentView.markdownPreviewTemplateOptions {
+            for preferDarkMode in [false, true] {
+                let css = contentView.markdownPreviewCSS(
+                    template: option.id,
+                    preferDarkMode: preferDarkMode,
+                    backgroundStyle: .template,
+                    translucentBackgroundEnabled: false
+                )
+
+                for fragment in requiredCSSFragments {
+                    XCTAssertTrue(
+                        css.contains(fragment),
+                        "\(option.id) missing compact viewport guardrail: \(fragment)"
+                    )
+                }
+                XCTAssertFalse(
+                    css.contains("width: 100vw"),
+                    "\(option.id) must not use viewport-width content sizing because it can clip inside iOS WKWebView sheets."
+                )
+                XCTAssertFalse(
+                    css.contains("max-width: 100vw"),
+                    "\(option.id) must not use viewport-width max sizing because it can exceed the visible iOS WKWebView width."
+                )
+            }
+        }
+    }
+
+    func testMarkdownPreviewRuntimeFontSizeUsesEditorValue() {
+        let contentView = ContentView()
+        let css = contentView.markdownPreviewCSS(
+            template: "default",
+            preferDarkMode: false,
+            backgroundStyle: .template,
+            translucentBackgroundEnabled: false,
+            runtimeFontSize: 18
+        )
+
+        XCTAssertTrue(css.contains("font-size: 18px;"))
+        XCTAssertFalse(css.contains("font-size: 19px;"))
+        XCTAssertFalse(css.contains("max(19px, 1.18em)"))
+    }
+
+    func testLivePreviewScalePreservesRuntimeFontSize() {
+        let contentView = ContentView()
+        let css = contentView.markdownPreviewRuntimePreviewScaleCSS(runtimeFontSize: 18)
+
+        XCTAssertTrue(css.contains("font-size: 18px !important;"))
+        XCTAssertFalse(css.contains("0.96"))
+    }
+
+    func testDistinctMarkdownPreviewThemesIncludeTheirLayoutTreatment() {
+        let contentView = ContentView()
+
+        let notebook = contentView.markdownPreviewCSS(template: "notebook")
+        XCTAssertTrue(notebook.contains("repeating-linear-gradient"))
+        XCTAssertTrue(notebook.contains("border-left-width: 5px"))
+
+        let blueprint = contentView.markdownPreviewCSS(template: "blueprint")
+        XCTAssertTrue(blueprint.contains("background-size: 20px 20px"))
+        XCTAssertTrue(blueprint.contains("border-bottom-style: dashed"))
+
+        let highContrast = contentView.markdownPreviewCSS(template: "high-contrast")
+        XCTAssertTrue(highContrast.contains("2px solid #000000"))
+        XCTAssertTrue(highContrast.contains("border-bottom-width: 2px"))
+
+        let denseCompact = contentView.markdownPreviewCSS(template: "dense-compact")
+        XCTAssertTrue(denseCompact.contains("font-size: 12px"))
+        XCTAssertTrue(denseCompact.contains("padding: 0.28em 0.38em"))
+    }
+
+    func testGFMPreviewRendersGitHubExtensionsByDefault() {
+        let markdown = """
+        - [x] Done
+        - [ ] Todo
+
+        | Area | Status |
+        | --- | :---: |
+        | Markdown | ~~Draft~~ Done |
+
+        Visit https://example.com
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown)
+
+        XCTAssertTrue(html.contains("task-list-item"))
+        XCTAssertTrue(html.contains("<input type=\"checkbox\" disabled checked/>"))
+        XCTAssertTrue(html.contains("<div class=\"table-scroll\">"))
+        XCTAssertTrue(html.contains("<table>"))
+        XCTAssertTrue(html.contains("<del>Draft</del>"))
+        XCTAssertTrue(html.contains("<a href=\"https://example.com\">https://example.com</a>"))
+    }
+
+    func testMarkdownPreviewEmbedsLocalRelativeImages() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let imagesDirectory = directory.appendingPathComponent("docs/images", isDirectory: true)
+        try FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let svgURL = imagesDirectory.appendingPathComponent("logo.svg")
+        try Data("<svg xmlns=\"http://www.w3.org/2000/svg\"/>".utf8).write(to: svgURL)
+        let pngURL = imagesDirectory.appendingPathComponent("hero.png")
+        try Data([0x89, 0x50, 0x4E, 0x47]).write(to: pngURL)
+        let documentURL = directory.appendingPathComponent("README.md")
+        let html = #"<picture><source srcset="docs/images/logo.svg" media="(prefers-color-scheme: dark)"><img src="docs/images/logo.svg" alt="Logo"></picture><img src="docs/images/hero.png?v=1" alt="Hero">"#
+
+        let rendered = ContentView.embeddingLocalImages(in: html, relativeTo: documentURL)
+
+        XCTAssertTrue(rendered.contains("data:image/svg+xml;base64,"))
+        XCTAssertTrue(rendered.contains("data:image/png;base64,"))
+        XCTAssertFalse(rendered.contains("srcset=\"docs/images/logo.svg\""))
+        XCTAssertFalse(rendered.contains("src=\"docs/images/logo.svg\""))
+        XCTAssertFalse(rendered.contains("src=\"docs/images/hero.png?v=1\""))
+    }
+
+    func testMarkdownPreviewReloadsLocalImageReferencesWithoutReusingCachedHTML() {
+        XCTAssertTrue(ContentView.markdownMayReferenceLocalImage(#"<img src="docs/images/logo.svg">"#))
+        XCTAssertTrue(ContentView.markdownMayReferenceLocalImage(#"![Hero](docs/images/hero.png#preview)"#))
+        XCTAssertFalse(ContentView.markdownMayReferenceLocalImage(#"<img src="https://example.com/logo.svg">"#))
+        XCTAssertFalse(ContentView.markdownMayReferenceLocalImage(#"<img src="/assets/hero.png">"#))
+    }
+
+    func testRawHTMLRendersRemoteBadgeImages() {
+        let markdown = "<p align=\"center\"><a href=\"https://example.com\"><img alt=\"Badge\" src=\"https://img.shields.io/badge/status-active-0A84FF\"></a></p>"
+
+        let html = ContentView.simpleMarkdownToHTML(markdown)
+
+        XCTAssertTrue(html.contains("<p align=\"center\">"))
+        XCTAssertTrue(html.contains("<img alt=\"Badge\" src=\"https://img.shields.io/badge/status-active-0A84FF\">"))
+        XCTAssertFalse(html.contains("&lt;p align="))
+    }
+
+    func testRawHTMLStillEscapesRemoteNonImageSources() {
+        let markdown = "<video src=\"https://example.com/demo.mp4\"></video>"
+
+        let html = ContentView.simpleMarkdownToHTML(markdown)
+
+        XCTAssertTrue(html.contains("&lt;video"))
+    }
+
+    func testCommonMarkPreviewDoesNotApplyGFMExtensions() {
+        let markdown = """
+        - [x] Done
+
+        | Area | Status |
+        | --- | :---: |
+        | Markdown | ~~Draft~~ Done |
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .commonMark)
+
+        XCTAssertFalse(html.contains("task-list-item"))
+        XCTAssertFalse(html.contains("<table>"))
+        XCTAssertFalse(html.contains("<del>Draft</del>"))
+        XCTAssertTrue(html.contains("[x] Done"))
+    }
+
+    func testGFMMermaidFenceRendersStaticDiagram() {
+        let markdown = """
+        ```mermaid
+        graph TD
+          A[Start] --> B[Review]
+          B --> C[Ship]
+        ```
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .gfm)
+
+        XCTAssertTrue(html.contains("class=\"mermaid-diagram\""))
+        XCTAssertTrue(html.contains("class=\"mermaid-diagram-scroll\""))
+        XCTAssertTrue(html.contains("aria-label=\"Scrollable Mermaid diagram\""))
+        XCTAssertTrue(html.contains("<svg class=\"mermaid-svg\""))
+        XCTAssertTrue(html.contains("Start"))
+        XCTAssertFalse(html.contains("<script"))
+    }
+
+    func testMermaidDiagramCSSKeepsLargeDiagramsScrollable() {
+        let css = ContentView().markdownPreviewCSS(
+            template: "default",
+            preferDarkMode: false,
+            backgroundStyle: .template,
+            translucentBackgroundEnabled: false
+        )
+
+        XCTAssertTrue(css.contains(".mermaid-diagram-scroll"))
+        XCTAssertTrue(css.contains("max-height: min(68vh, 760px)"))
+        XCTAssertTrue(css.contains("overflow: auto"))
+        XCTAssertTrue(css.contains("width: max(100%, 620px)"))
+    }
+
+    func testCommonMarkMermaidFenceStaysCodeBlock() {
+        let markdown = """
+        ```mermaid
+        graph TD
+          A --> B
+        ```
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .commonMark)
+
+        XCTAssertTrue(html.contains("language-mermaid"))
+        XCTAssertFalse(html.contains("mermaid-svg"))
+    }
+
+    func testCodeFenceKeepsExplicitLanguageAndPicker() {
+        let markdown = """
+        ```swift
+        import SwiftUI
+
+        struct Demo: View {
+            var body: some View { Text("Hi") }
+        }
+        ```
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .gfm)
+
+        XCTAssertTrue(html.contains("class=\"code-block\""))
+        XCTAssertTrue(html.contains("data-code-language=\"swift\""))
+        XCTAssertTrue(html.contains("class=\"language-swift\""))
+        XCTAssertTrue(html.contains("code-block-language-picker"))
+        XCTAssertTrue(html.contains("<option value=\"swift\" selected>Swift</option>"))
+        XCTAssertTrue(html.contains("<span class=\"syntax-kw\">import</span> SwiftUI"))
+        XCTAssertTrue(html.contains("<span class=\"syntax-kw\">struct</span> Demo"))
+    }
+
+    func testCodeFenceInfersLanguageWhenFenceInfoIsMissing() {
+        let markdown = """
+        ```
+        {
+          "name": "Neon",
+          "enabled": true
+        }
+        ```
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .gfm)
+
+        XCTAssertTrue(html.contains("data-code-language=\"json\""))
+        XCTAssertTrue(html.contains("class=\"language-json\""))
+        XCTAssertTrue(html.contains("<option value=\"json\" selected>JSON</option>"))
+        XCTAssertTrue(html.contains("<span class=\"syntax-key\">&quot;name&quot;</span>"))
+        XCTAssertTrue(html.contains("<span class=\"syntax-kw\">true</span>"))
+    }
+
+    func testCodeBlockRuntimeIncludesLocalSyntaxHighlighter() {
+        let html = ContentView.markdownPreviewCodeBlockScript()
+
+        XCTAssertTrue(html.contains("highlightBlock"))
+        XCTAssertTrue(html.contains("syntax-${token}"))
+        XCTAssertTrue(html.contains("code-block-language-picker"))
+        XCTAssertTrue(html.contains("localStorage"))
+        XCTAssertTrue(html.contains("maxHighlightedCodeUnits"))
+        XCTAssertTrue(html.contains("unhandledrejection"))
+        XCTAssertTrue(html.contains("enhanceCodeBlocks"))
+        XCTAssertFalse(html.contains("https://"))
+    }
+
+    func testMarkdownPreviewSyntaxColorsStayVibrantAndThemeIndependent() {
+        let css = ContentView().markdownPreviewCSS(
+            template: "default",
+            preferDarkMode: true,
+            backgroundStyle: .template,
+            translucentBackgroundEnabled: false,
+            runtimeFontSize: 14
+        )
+
+        XCTAssertTrue(css.contains(".syntax-kw { color: #ff4fd8;"))
+        XCTAssertTrue(css.contains(".syntax-str { color: #14d990;"))
+        XCTAssertTrue(css.contains(".syntax-key { color: #7c5cff;"))
+        XCTAssertTrue(css.contains(".syntax-num { color: #ff9f1c;"))
+        XCTAssertFalse(css.contains(".syntax-kw { color: color-mix"))
+    }
+
+    func testHeadingLineDoesNotCreateCodeLanguagePicker() {
+        let markdown = """
+        # Release Notes
+
+        Regular paragraph.
+        """
+
+        let html = ContentView.simpleMarkdownToHTML(markdown, dialect: .gfm)
+
+        XCTAssertTrue(html.contains("<h1>Release Notes</h1>"))
+        XCTAssertFalse(html.contains("code-block-language-picker"))
+        XCTAssertFalse(html.contains("data-code-language=\"swift\""))
+    }
+
+    func testLargeMarkdownPreviewRendersEntireDocument() {
+        let markdown = String(repeating: "- [A linked item](https://example.com) with **formatting**.\n", count: 12_000)
+            + "\n## Final heading after 12000 lines\n"
+        let html = ContentView.markdownPreviewBodyHTML(from: markdown, useRenderLimits: true)
+
+        XCTAssertGreaterThan(markdown.utf8.count, 557_861)
+        XCTAssertTrue(html.contains("<a href=\"https://example.com\""))
+        XCTAssertTrue(html.contains("<h2>Final heading after 12000 lines</h2>"))
+        XCTAssertFalse(html.contains("truncated preview"))
+    }
+
+    func testLargeMarkdownPreviewDisplaysFinalHeadingInWebView() async throws {
+        let markdown = String(repeating: "- [A linked item](https://example.com) with **formatting**.\n", count: 12_000)
+            + "\n## Final heading after 12000 lines\n"
+        let started = CFAbsoluteTimeGetCurrent()
+        let body = ContentView.markdownPreviewBodyHTML(from: markdown, useRenderLimits: true)
+        let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 800, height: 600))
+        let loaded = expectation(description: "Large Markdown preview loaded")
+        let waiter = PDFExportNavigationWaiter(loaded: loaded)
+        webView.navigationDelegate = waiter
+        webView.loadHTMLString("<html><body>\(body)</body></html>", baseURL: nil)
+        await fulfillment(of: [loaded], timeout: 30)
+        let result = try await webView.evaluateJavaScript("document.querySelector('h2:last-of-type')?.textContent") as? String
+        XCTAssertEqual(result, "Final heading after 12000 lines")
+        print("Large Markdown preview rendered and loaded in \(CFAbsoluteTimeGetCurrent() - started) seconds")
+        webView.navigationDelegate = nil
+        webView.stopLoading()
+        withExtendedLifetime(waiter) {}
+    }
+
+    func testExtremeMarkdownPreviewUsesBoundedFallback() {
+        let markdown = String(repeating: "# Heading\nA paragraph with **formatting**.\n", count: 240_000)
+        let html = ContentView.markdownPreviewBodyHTML(from: markdown, useRenderLimits: true)
+
+        XCTAssertTrue(html.contains("Large Markdown file"))
+        XCTAssertTrue(html.contains("truncated preview"))
+        XCTAssertLessThan(html.utf8.count, 150_000)
+    }
+}
+
+@MainActor
+private final class PDFExportNavigationWaiter: NSObject, WKNavigationDelegate {
+    let loaded: XCTestExpectation
+    init(loaded: XCTestExpectation) { self.loaded = loaded }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { loaded.fulfill() }
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        XCTFail(error.localizedDescription)
+        loaded.fulfill()
+    }
+}

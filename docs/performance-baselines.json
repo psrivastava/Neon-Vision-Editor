@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 3,
+  "fixture": {
+    "markdownCards": 500,
+    "pdfCards": 500,
+    "largeFileLines": 100000,
+    "syntaxLanguages": ["swift", "json", "ndjson", "csv", "typescript", "html", "minified-javascript", "markdown"]
+  },
+  "enforcedLimits": {
+    "gitCommitDiffFileCount": 40,
+    "gitCommitDiffBlobBytes": 400000,
+    "gitRetainedOutputBytes": 8388608,
+    "draftTabCount": 20,
+    "draftTabUTF16Length": 1000000,
+    "draftTotalUTF16Length": 4000000
+  },
+  "interactionBenchmarks": {
+    "largeFileLines": 100000,
+    "iterations": 5,
+    "maximumMedianSeconds": {
+      "typing": 5.0,
+      "scrolling": 2.0,
+      "selection": 2.0,
+      "viewportReload": 1.5
+    },
+    "tests": [
+      "testLargeDocumentTypingLatencyBenchmark",
+      "testLargeDocumentScrollingLatencyBenchmark",
+      "testLargeDocumentSelectionLatencyBenchmark",
+      "testLargeDocumentViewportReloadLatencyBenchmark"
+    ]
+  },
+  "capturePolicy": {
+    "runsPerPlatform": 3,
+    "timeRegressionPercent": 20,
+    "platforms": ["macos", "iphone", "ipad"],
+    "instruments": ["Allocations", "Time Profiler", "Animation Hitches"]
+  }
+}

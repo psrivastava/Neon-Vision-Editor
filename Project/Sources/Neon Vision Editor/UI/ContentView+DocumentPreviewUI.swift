@@ -1,0 +1,185 @@
+import SwiftUI
+import Foundation
+import PDFKit
+
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
+// MARK: - Image and PDF Preview UI
+
+extension ContentView {
+    @ViewBuilder
+    var imagePreviewPane: some View {
+        documentPreviewContainer(title: "PNG Preview", iconName: "photo", metadata: previewFileSizeText(for: viewModel.selectedTab?.fileURL)) {
+            if let url = viewModel.selectedTab?.fileURL {
+                ImagePreviewDocumentView(url: url)
+            } else {
+                documentPreviewUnavailableView("No PNG file is open.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    var pdfPreviewPane: some View {
+        documentPreviewContainer(title: "PDF Preview", iconName: "doc.richtext", metadata: previewFileSizeText(for: pdfPreviewURL)) {
+            if let url = pdfPreviewURL {
+                PDFAnnotationWorkspaceView(
+                    url: url,
+                    hasAttachedNoteEditor: pdfNoteTabID != nil,
+                    showsNotePreview: isPDFNoteMarkdownPreviewVisible,
+                    onOpenNotes: openPDFNotesEditor,
+                    onToggleNotePreview: { isPDFNoteMarkdownPreviewVisible.toggle() },
+                    onHighlightSaved: appendPDFHighlightToNote
+                )
+            } else {
+                documentPreviewUnavailableView("No PDF file is open.")
+            }
+        }
+    }
+
+    private func documentPreviewContainer<Content: View>(
+        title: String,
+        iconName: String,
+        metadata: String?,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            previewPaneHeader(
+                title: title,
+                iconName: iconName,
+                metadata: metadata,
+                onClose: closeCurrentPreview
+            ) {
+                EmptyView()
+            }
+
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(editorSurfaceBackgroundStyle)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(title)
+    }
+
+    private func documentPreviewUnavailableView(_ message: String) -> some View {
+        Text(message)
+            .font(.footnote)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    func previewFileSizeText(for url: URL?) -> String? {
+        let byteCount: Int?
+        if let url, url != viewModel.selectedTab?.fileURL {
+            // PDF notes keep the PDF visible while selecting a different tab.
+            byteCount = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        } else {
+            byteCount = viewModel.selectedTab?.fileByteCount ?? url.flatMap {
+                try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize
+            }
+        }
+        guard let byteCount else { return nil }
+        return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+}
+
+private struct ImagePreviewDocumentView: View {
+    let url: URL
+    @State private var imageData: Data?
+
+    var body: some View {
+        Group {
+            if let imageData, let image = platformImage(data: imageData) {
+                image
+                    .resizable()
+                    .scaledToFit()
+                    .padding(16)
+                    .accessibilityLabel("PNG image")
+            } else if imageData != nil {
+                Text("Unable to decode this PNG file.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            } else {
+                ProgressView("Loading PNG…")
+            }
+        }
+        .task(id: url) {
+            imageData = try? await Task.detached(priority: .userInitiated) {
+                try Data(contentsOf: url)
+            }.value
+        }
+    }
+}
+
+private struct PDFPreviewDocumentView: View {
+    let url: URL
+
+    var body: some View {
+        NativePDFView(url: url)
+            .accessibilityLabel("PDF document")
+    }
+}
+
+#if os(macOS)
+private func platformImage(data: Data) -> Image? {
+    guard let image = NSImage(data: data) else { return nil }
+    return Image(nsImage: image)
+}
+
+private struct NativePDFView: NSViewRepresentable {
+    let url: URL
+
+    func makeNSView(context: Context) -> PDFView {
+        let view = PDFView()
+        configure(view)
+        return view
+    }
+
+    func updateNSView(_ view: PDFView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: PDFView) {
+        if view.document?.documentURL != url {
+            view.document = PDFDocument(url: url)
+        }
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = NSColor.windowBackgroundColor
+    }
+}
+#elseif canImport(UIKit)
+private func platformImage(data: Data) -> Image? {
+    guard let image = UIImage(data: data) else { return nil }
+    return Image(uiImage: image)
+}
+
+private struct NativePDFView: UIViewRepresentable {
+    let url: URL
+
+    func makeUIView(context: Context) -> PDFView {
+        let view = PDFView()
+        configure(view)
+        return view
+    }
+
+    func updateUIView(_ view: PDFView, context: Context) {
+        configure(view)
+    }
+
+    private func configure(_ view: PDFView) {
+        if view.document?.documentURL != url {
+            view.document = PDFDocument(url: url)
+        }
+        view.autoScales = true
+        view.displayMode = .singlePageContinuous
+        view.displayDirection = .vertical
+        view.backgroundColor = UIColor.systemBackground
+    }
+}
+#endif

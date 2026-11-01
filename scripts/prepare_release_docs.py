@@ -6,23 +6,51 @@ Usage:
   scripts/prepare_release_docs.py v0.4.6 --date 2026-02-12
   scripts/prepare_release_docs.py 0.4.6 --date 2026-02-12
   scripts/prepare_release_docs.py v0.4.6 --check
+  scripts/prepare_release_docs.py v0.4.6 --preflight
 """
 
 from __future__ import annotations
 
 import argparse
 import datetime as dt
+import html
+import json
 import pathlib
 import re
 import sys
+
+sys.dont_write_bytecode = True
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
 CHANGELOG = ROOT / "CHANGELOG.md"
-WELCOME_TOUR_SWIFT = ROOT / "Neon Vision Editor" / "UI" / "PanelsAndHelpers.swift"
-WELCOME_TOUR_MAX_BULLETS = 8
+RELEASE_STATE = ROOT / "release" / "prepared-release.json"
+ARCHITECTURE = ROOT / "docs" / "ARCHITECTURE.md"
+WEBSITE = ROOT / "site" / "index.html"
+CHANGELOG_PAGE = ROOT / "site" / "changelog.html"
+LOCALIZED_WEBSITES = {
+    "de": ROOT / "site" / "de" / "index.html",
+    "da": ROOT / "site" / "da" / "index.html",
+    "fr": ROOT / "site" / "fr" / "index.html",
+    "es": ROOT / "site" / "es" / "index.html",
+    "ja": ROOT / "site" / "ja" / "index.html",
+    "zh-Hans": ROOT / "site" / "zh-Hans" / "index.html",
+}
+WELCOME_TOUR_SWIFT = ROOT / "Project" / "Sources" / "Neon Vision Editor" / "UI" / "PanelsAndHelpers.swift"
+WELCOME_TOUR_CARD_COUNT = 6
 WELCOME_TOUR_CARD_TEXT_BUDGET = 126
+RELEASE_TIMELINE_COUNT = 5
+
+README_FEATURE_COVERAGE = """<!-- FEATURE_COVERAGE:START -->
+### Current Feature Coverage
+
+- **Editing utilities:** configurable iPhone/iPad keyboard actions, Copy Current Editor Reference, and Sort & Deduplicate Lines complement the regular save, find, undo, redo, and formatting commands.
+- **Languages and structured documents:** Swift 6-ready highlighting includes TeX/LaTeX and Typst/CeTZ-aware editing; CSV/TSV, property lists, Apple crash reports, and recognized logs can switch between structured and raw-text views, and plain text can be transformed into validated JSON through an explicit AI-assisted action.
+- **Project and preview workflows:** project-level Markdown/PDF cards reuse the project index for bounded excerpts and thumbnails, while Markdown, HTML, SVG, PDF, and PNG previews remain integrated with the editor.
+- **macOS integration:** the embedded Quick Look extension previews supported Markdown and source files in Finder, and detached Markdown previews can use the same glass treatment without changing editor content.
+{latest_additions}
+<!-- FEATURE_COVERAGE:END -->"""
 
 
 def normalize_tag(raw: str) -> str:
@@ -42,8 +70,120 @@ def write_text(path: pathlib.Path, content: str) -> None:
     path.write_text(content, encoding="utf-8")
 
 
+def replace_or_insert_managed_block(
+    content: str,
+    *,
+    start_marker: str,
+    end_marker: str,
+    replacement: str,
+    insert_before: str,
+) -> str:
+    start_count = content.count(start_marker)
+    end_count = content.count(end_marker)
+    if start_count != end_count or start_count > 1:
+        raise ValueError(f"Managed documentation markers are unbalanced: {start_marker} / {end_marker}")
+    if start_count == 1:
+        pattern = re.compile(
+            rf"{re.escape(start_marker)}.*?{re.escape(end_marker)}",
+            flags=re.S,
+        )
+        return pattern.sub(lambda _: replacement, content, count=1)
+    anchor = content.find(insert_before)
+    if anchor < 0:
+        raise ValueError(f"Could not insert managed documentation block before: {insert_before.strip()}")
+    return content[:anchor] + replacement + "\n\n" + content[anchor:]
+
+
+def readme_feature_coverage(changelog: str, tag: str) -> str:
+    _, section = extract_changelog_section_meta(changelog, tag)
+    highlights = extract_heading_bullets(section, "Highlights", limit=6)
+    if highlights:
+        latest = "; ".join(item.rstrip(".") for item in highlights) + "."
+    else:
+        latest = "See the current release entry in `CHANGELOG.md`."
+    return README_FEATURE_COVERAGE.format(
+        latest_additions=f"- **Latest stable additions ({tag}):** {latest}"
+    )
+
+
+def update_readme_durable_documentation(readme: str, changelog: str, tag: str) -> str:
+    readme = readme.replace("```bash\n```bash\n", "```bash\n")
+    architecture_row = "| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Current cross-platform architecture, ownership boundaries, performance rules, and verification model |"
+    if architecture_row not in readme:
+        changelog_row = "| [`CHANGELOG.md`](CHANGELOG.md) | Full release history and milestone issue coverage |"
+        if changelog_row not in readme:
+            raise ValueError("README project-documentation table anchor is missing")
+        readme = readme.replace(changelog_row, changelog_row + "\n" + architecture_row, 1)
+    return replace_or_insert_managed_block(
+        readme,
+        start_marker="<!-- FEATURE_COVERAGE:START -->",
+        end_marker="<!-- FEATURE_COVERAGE:END -->",
+        replacement=readme_feature_coverage(changelog, tag),
+        insert_before="### Editing Core\n",
+    )
+
+
+def architecture_release_alignment(changelog: str, tag: str) -> str:
+    tags = [tag, *prior_release_tags(changelog, tag, limit=1)]
+    lines = ["<!-- RELEASE_ARCHITECTURE_ALIGNMENT:START -->", "## Current Release Alignment", ""]
+    for release_tag in tags:
+        release_date, section = extract_changelog_section_meta(changelog, release_tag)
+        lines.append(f"### {release_tag} ({release_date})")
+        lines.append("")
+        bullets = []
+        for heading in ("Highlights", "Fixes"):
+            bullets.extend(extract_heading_bullets(section, heading, limit=4))
+        lines.extend([f"- {item}" for item in bullets[:6]] or ["- See `CHANGELOG.md` for release details."])
+        lines.append("")
+    lines.append("This block is regenerated from `CHANGELOG.md` after each stable release. The sections below remain the authoritative description of ownership and runtime boundaries.")
+    lines.append("<!-- RELEASE_ARCHITECTURE_ALIGNMENT:END -->")
+    return "\n".join(lines)
+
+
+def update_architecture_release_alignment(architecture: str, changelog: str, tag: str) -> str:
+    release_date, _ = extract_changelog_section_meta(changelog, tag)
+    architecture = re.sub(
+        r"(?m)^Last updated: .*$",
+        f"Last updated: {release_date} ({tag} release-aligned architecture)",
+        architecture,
+        count=1,
+    )
+    return replace_or_insert_managed_block(
+        architecture,
+        start_marker="<!-- RELEASE_ARCHITECTURE_ALIGNMENT:START -->",
+        end_marker="<!-- RELEASE_ARCHITECTURE_ALIGNMENT:END -->",
+        replacement=architecture_release_alignment(changelog, tag),
+        insert_before="## Platform and Product Targets\n",
+    )
+
+
 def has_changelog_section(changelog: str, tag: str) -> bool:
     return re.search(rf"^## \[{re.escape(tag)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, flags=re.M) is not None
+
+
+def public_changelog(changelog: str, tag: str) -> str:
+    """Exclude future candidates from public release tables and download links."""
+    pattern = r"^## \[(v[^\]]+)\] - [^\n]+\n.*?(?=^## \[|\Z)"
+    return re.sub(pattern, lambda m: m[0] if parse_version_key(m[1]) <= parse_version_key(tag) else "",
+                  changelog, flags=re.M | re.S)
+
+
+def promote_unreleased_section(changelog: str, tag: str, date: str) -> str | None:
+    """Move substantive Unreleased notes into the requested immutable release section."""
+    pattern = re.compile(
+        r"^## \[Unreleased\](?: - \d{4}-\d{2}-\d{2})?\n(?P<body>.*?)(?=^## \[|\Z)",
+        flags=re.M | re.S,
+    )
+    match = pattern.search(changelog)
+    if not match:
+        return None
+    body = match.group("body").strip()
+    meaningful = [line for line in body.splitlines() if line.strip() and not line.lstrip().startswith("<!--")]
+    if not meaningful:
+        return None
+    heading = f"## [{tag}] - {date}"
+    replacement = f"## [Unreleased]\n\n{heading}\n\n{body}\n\n"
+    return changelog[: match.start()] + replacement + changelog[match.end() :]
 
 
 def add_changelog_section(changelog: str, tag: str, date: str) -> str:
@@ -102,18 +242,51 @@ def prefixed_heading_bullets(tag: str, section_body: str, heading: str, limit: i
     return [f"- {tag}: {bullet}" for bullet in bullets]
 
 
-def welcome_release_bullets(changelog: str, tag: str, section: str, prev_tag: str | None) -> list[str]:
-    if not adjacent_patch_release(prev_tag, tag):
-        return summarize_section(section, limit=5)
-
-    assert prev_tag is not None
-    previous_section = extract_changelog_section(changelog, prev_tag)
+def release_card_bullets(tag: str, section: str, limit: int) -> list[str]:
     bullets: list[str] = []
-    bullets.extend(prefixed_heading_bullets(tag, section, "Why Upgrade", limit=3))
-    bullets.extend(prefixed_heading_bullets(prev_tag, previous_section, "Why Upgrade", limit=3))
-    bullets.extend(prefixed_heading_bullets(tag, section, "Highlights", limit=1))
-    bullets.extend(prefixed_heading_bullets(prev_tag, previous_section, "Highlights", limit=1))
-    return bullets or summarize_section(section, limit=5)
+    for heading in ("Why Upgrade", "Highlights", "Fixes"):
+        remaining = limit - len(bullets)
+        if remaining <= 0:
+            break
+        bullets.extend(prefixed_heading_bullets(tag, section, heading, limit=remaining))
+    if not bullets:
+        bullets = [f"- {tag}: {bullet[2:]}" for bullet in summarize_section(section, limit=limit)]
+    return bullets[:limit]
+
+
+def prior_release_tags(changelog: str, tag: str, limit: int = 3) -> list[str]:
+    headings = extract_release_headings(changelog)
+    if tag not in headings:
+        return []
+    stable_current = not is_prerelease_tag(tag)
+    return [
+        candidate
+        for candidate in headings[headings.index(tag) + 1 :]
+        if not (stable_current and is_prerelease_tag(candidate))
+    ][:limit]
+
+
+def welcome_release_bullets(changelog: str, tag: str, section: str) -> list[str]:
+    if tag == "v1.7.1":
+        return [
+            "- Native Tabs: Keeps document tabs and editor surfaces consistent across supported Apple platforms.",
+            "- Theme Consistency: Applies the selected Light, Dark, or System appearance across the editor and its supporting windows.",
+            "- Responsive Workflows: Makes tab switching and Settings navigation feel immediate while preserving native controls.",
+            "- Stable Window Surfaces: Preserves complete tab borders, spacing, and translucent surfaces during hover and appearance changes.",
+            "- Reliable Tab Chrome: Replaces legacy tab-bar paths with native platform implementations and aligns mobile editor surfaces.",
+            "- 1.7.1 Fixes: Restores macOS dragging, cursor selection on iPhone/iPad/visionOS, themed Welcome Tour, and iOS exports.",
+        ]
+    bullets = release_card_bullets(tag, section, limit=WELCOME_TOUR_CARD_COUNT)
+    if len(bullets) >= WELCOME_TOUR_CARD_COUNT:
+        return bullets
+
+    for prior_tag in prior_release_tags(changelog, tag):
+        prior_section = extract_changelog_section(changelog, prior_tag)
+        remaining = WELCOME_TOUR_CARD_COUNT - len(bullets)
+        bullets.extend(release_card_bullets(prior_tag, prior_section, limit=remaining))
+        if len(bullets) >= WELCOME_TOUR_CARD_COUNT:
+            break
+    return bullets[:WELCOME_TOUR_CARD_COUNT]
 
 
 def shorten_for_welcome_tour_card(text: str, limit: int = WELCOME_TOUR_CARD_TEXT_BUDGET) -> str:
@@ -126,13 +299,48 @@ def shorten_for_welcome_tour_card(text: str, limit: int = WELCOME_TOUR_CARD_TEXT
     return clipped.rstrip(".,;:") + "…"
 
 
+def welcome_feature_title(description: str, index: int) -> str:
+    lowered = description.lower()
+    rules = (
+        (("side by side",), "Side by Side"),
+        (("compare",), "Tab Comparison"),
+        (("own window", "new window"), "Window Tabs"),
+        (("minimap",), "Minimap Scrolling"),
+        (("formatting bar",), "Markdown Formatting"),
+        (("unwrapped line", "selection"), "Text Selection"),
+        (("switch between open mac documents",), "Tab Switching"),
+        (("cursor", "caret"), "Cursor Placement"),
+        (("overflowing mac tabs",), "Tab Navigation"),
+        (("compatible markdown previews",), "Markdown Preview"),
+        (("project indexing",), "Project Indexing"),
+        (("phone toolbar",), "Adaptive Toolbar"),
+        (("navigation",), "Editor Navigation"),
+        (("csv", "tsv"), "CSV/TSV Editing"),
+        (("font name",), "Font Selection"),
+        (("settings sections",), "Settings Sections"),
+        (("markdown preview options",), "Markdown Preview Settings"),
+        (("ai settings", "custom-provider"), "AI Settings"),
+        (("unnecessary work", "larger document", "performance", "responsive"), "Editor Performance"),
+        (("assistive", "accessibility", "toolbar controls"), "Accessible Controls"),
+        (("timeout",), "AI Timeouts"),
+        (("ai provider",), "AI Providers"),
+        (("table of contents", "toc", "heading"), "iPhone TOC"),
+        (("syntax highlighting", "syntax coloring"), "Large-file Highlighting"),
+        (("save", "trailing whitespace", "line ending"), "Reliable Saves"),
+    )
+    for keywords, title in rules:
+        if any(keyword in lowered for keyword in keywords):
+            return title
+    return ["Editor Improvements", "Workflow Refinements", "Performance Updates", "Usability Updates"][index % 4]
+
+
 def normalize_welcome_tour_bullets(bullets: list[str]) -> list[str]:
     normalized: list[str] = []
-    for bullet in bullets[:WELCOME_TOUR_MAX_BULLETS]:
+    for index, bullet in enumerate(bullets[:WELCOME_TOUR_CARD_COUNT]):
         body = bullet[2:] if bullet.startswith("- ") else bullet
         if ": " in body:
-            prefix, description = body.split(": ", 1)
-            body = f"{prefix}: {shorten_for_welcome_tour_card(description)}"
+            _, description = body.split(": ", 1)
+            body = f"{welcome_feature_title(description, index)}: {shorten_for_welcome_tour_card(description)}"
         else:
             body = shorten_for_welcome_tour_card(body)
         normalized.append(f"- {body}")
@@ -179,29 +387,25 @@ def whats_new_heading(previous_tag: str | None, current_tag: str) -> str:
     return f"## What's New in {current_tag}"
 
 
-def welcome_release_subtitle(previous_tag: str | None, current_tag: str) -> str:
-    if adjacent_patch_release(previous_tag, current_tag):
-        return f"Highlights from {previous_tag} and {current_tag}:"
-    if previous_tag:
-        return f"Major changes since {previous_tag}:"
-    return f"Highlights for {current_tag}:"
+def welcome_release_subtitle(current_tag: str) -> str:
+    return f"Release highlights for {current_tag}."
 
 
 def swift_string(value: str) -> str:
     return value.replace("\\", "\\\\").replace('"', '\\"')
 
 
-def update_welcome_tour_release_page(swift_source: str, tag: str, bullets: list[str], prev_tag: str | None) -> str:
+def update_welcome_tour_release_page(swift_source: str, tag: str, bullets: list[str]) -> str:
     if not bullets:
         bullet_lines = ['                "See CHANGELOG.md for details"']
     else:
         bullet_lines = [f'                "{swift_string(bullet[2:])}"' for bullet in bullets]
 
-    subtitle = welcome_release_subtitle(prev_tag, tag)
+    subtitle = welcome_release_subtitle(tag)
 
     new_block = (
         "        TourPage(\n"
-        '            title: "What\u2019s New in This Release",\n'
+        f'            title: "What\u2019s New in {swift_string(tag)}",\n'
         f'            subtitle: "{swift_string(subtitle)}",\n'
         "            bullets: [\n"
         + ",\n".join(bullet_lines)
@@ -215,7 +419,7 @@ def update_welcome_tour_release_page(swift_source: str, tag: str, bullets: list[
 
     pattern = re.compile(
         r'        TourPage\(\n'
-        r'            title: "What[^\n]*This Release",\n'
+        r'            title: "What[^\n]*(?:This Release|in [^"]+)",\n'
         r"            subtitle: [^\n]*\n"
         r"            bullets: \[\n"
         r".*?"
@@ -229,7 +433,33 @@ def update_welcome_tour_release_page(swift_source: str, tag: str, bullets: list[
 
     if not pattern.search(swift_source):
         raise ValueError("Could not find Welcome Tour 'What's New' page block to update.")
-    return pattern.sub(new_block, swift_source, count=1)
+    return pattern.sub(lambda _: new_block, swift_source, count=1)
+
+
+def update_in_app_changelog(swift_source: str, changelog: str, tag: str) -> str:
+    """Refresh the app's separate Help sheet without removing older release cards."""
+    date, section = extract_changelog_section_meta(changelog, tag)
+    version = tag.removeprefix("v")
+    highlights = [bullet.removeprefix(f"- {tag}: ")
+                  for bullet in release_card_bullets(tag, section, limit=3)]
+    entry = (
+        f'        Release(id: "{swift_string(version)}", version: "{swift_string(version)}", '
+        f'date: "{date}", highlights: [\n'
+        + ",\n".join(f'            "{swift_string(item)}"' for item in highlights)
+        + "\n        ]),\n"
+    )
+    pattern = re.compile(
+        r"(struct InAppChangelogView: View \{.*?    private let releases: \[Release\] = \[\n)"
+        r"(.*?)(\n    \])", re.S)
+    match = pattern.search(swift_source)
+    if not match:
+        raise ValueError("Could not find in-app changelog release list to update.")
+    existing = re.compile(
+        rf'        Release\(id: "{re.escape(version)}", version: "[^"]+", date: "[^"]+", highlights: \[\n'
+        r".*?        \]\),?\n?", re.S)
+    history = existing.sub("", match.group(2)).lstrip("\n")
+    return pattern.sub(lambda found: found.group(1) + entry + history + found.group(3),
+                       swift_source, count=1)
 
 
 def extract_heading_bullets(section_body: str, heading: str, limit: int = 5) -> list[str]:
@@ -258,6 +488,574 @@ def clean_release_cell_item(item: str) -> str:
     text = item.strip()
     text = re.sub(r"^(Added|Improved|Fixed|Fixes)\s+", "", text, flags=re.I)
     return text.rstrip(".")
+
+
+def shorten_text(text: str, limit: int) -> str:
+    text = " ".join(text.split())
+    if len(text) <= limit:
+        return text
+    clipped = text[: max(0, limit - 1)].rstrip()
+    if " " in clipped:
+        clipped = clipped.rsplit(" ", 1)[0]
+    return clipped.rstrip(".,;:") + "…"
+
+
+def release_timeline_title(section_body: str) -> str:
+    title_items = extract_heading_bullets(section_body, "Why Upgrade", limit=2) + extract_heading_bullets(
+        section_body, "Highlights", limit=2
+    )
+    text = " ".join(title_items or summarize_section(section_body, limit=2)).lower()
+    if "markdown" in text:
+        return "A more deliberate workflow"
+    if any(token in text for token in ("shared-file sync", "external change", "icloud drive", "network folder")):
+        return "Shared work, safely"
+    if "window" in text and any(token in text for token in ("restore", "frame", "position")):
+        return "Windows that remember"
+    if any(token in text for token in ("appkit", "layout", "document transition")):
+        return "Safer document transitions"
+    return "Release highlights"
+
+
+def release_timeline_description(section_body: str, limit: int = 235) -> str:
+    for heading in ("Why Upgrade", "Highlights", "Fixes", "Added", "Improved"):
+        items = extract_heading_bullets(section_body, heading, limit=1)
+        if items:
+            return shorten_text(items[0], limit)
+    return "See CHANGELOG.md for details."
+
+
+def release_timeline_impact(section_body: str, limit: int = 170) -> str:
+    for heading in ("Fixes", "Fixed", "Highlights", "Why Upgrade", "Added", "Improved"):
+        items = extract_heading_bullets(section_body, heading, limit=1)
+        if items:
+            return shorten_text(items[0], limit)
+    return "See CHANGELOG.md for details."
+
+
+def release_timeline_tags(section_body: str, limit: int = 3) -> list[str]:
+    text = " ".join(summarize_section(section_body, limit=12)).lower()
+    keyword_tags = (
+        ("shared-file sync", "Shared-file sync"),
+        ("external change", "External updates"),
+        ("markdown", "Markdown"),
+        ("code snapshot", "Code Snapshot"),
+        ("welcome tour", "Welcome Tour"),
+        ("window", "Windows"),
+        ("preview", "Preview"),
+        ("appkit", "AppKit stability"),
+        ("layout", "Layout stability"),
+        ("html", "HTML"),
+        ("theme", "Themes"),
+    )
+    tags = [label for keyword, label in keyword_tags if keyword in text]
+    return tags[:limit] or ["Release highlights"]
+
+
+def release_timeline_entries(changelog: str, current_tag: str, limit: int = RELEASE_TIMELINE_COUNT) -> list[tuple[str, str, str, str, list[str]]]:
+    tags = sorted_latest_tags(extract_release_headings(changelog), limit=limit, ensure_tag=current_tag)
+    entries: list[tuple[str, str, str, str, list[str]]] = []
+    for tag in reversed(tags):
+        date, section = extract_changelog_section_meta(changelog, tag)
+        entries.append((tag, date, release_timeline_title(section), release_timeline_description(section), release_timeline_tags(section)))
+    return entries
+
+
+def display_release_date(date: str) -> str:
+    parsed = dt.date.fromisoformat(date)
+    return f"{parsed.day} {parsed.strftime('%B %Y')}"
+
+
+def mermaid_safe(value: str) -> str:
+    return value.replace(":", " —").replace("\n", " ")
+
+
+def rebuild_readme_release_timeline(readme: str, changelog: str, current_tag: str) -> str:
+    lines = ["<!-- RELEASE_TIMELINE:START -->", "```mermaid", "timeline", "    title Neon Vision Editor — recent release story"]
+    for tag, date, title, description, _ in release_timeline_entries(changelog, current_tag):
+        lines.append(f"    {display_release_date(date)} : {tag} · {mermaid_safe(title)}")
+        lines.append(f"                : {mermaid_safe(description)}")
+    lines.extend(["```", "<!-- RELEASE_TIMELINE:END -->"])
+    replacement = "\n".join(lines)
+    pattern = re.compile(r"<!-- RELEASE_TIMELINE:START -->.*?<!-- RELEASE_TIMELINE:END -->", flags=re.S)
+    if not pattern.search(readme):
+        raise ValueError("README missing release timeline markers")
+    return pattern.sub(lambda _: replacement, readme, count=1)
+
+
+def rebuild_website_release_timeline(website: str, changelog: str, current_tag: str) -> str:
+    entries: list[str] = []
+    for tag, date, title, description, tags in release_timeline_entries(changelog, current_tag):
+        current_class = " current" if tag == current_tag else ""
+        tag_html = "".join(f"<span>{html.escape(item)}</span>" for item in tags)
+        entries.extend(
+            [
+                f'        <article class="release-entry{current_class}">',
+                f'          <div class="release-marker" aria-hidden="true">{html.escape(tag.removeprefix("v"))}</div>',
+                '          <div class="release-card">',
+                '            <div class="release-card-header">',
+                f'              <h3><a href="https://github.com/h3pdesign/Neon-Vision-Editor/releases/tag/{html.escape(tag)}">{html.escape(tag)} — {html.escape(title)}</a></h3>',
+                f'              <span class="release-date">{html.escape(display_release_date(date))}</span>',
+                "            </div>",
+                f"            <p>{html.escape(description)}</p>",
+                f'            <div class="release-tags">{tag_html}</div>',
+                "          </div>",
+                "        </article>",
+            ]
+        )
+    replacement = "\n".join(["        <!-- RELEASE_TIMELINE:START -->", *entries, "        <!-- RELEASE_TIMELINE:END -->"])
+    pattern = re.compile(r"        <!-- RELEASE_TIMELINE:START -->.*?        <!-- RELEASE_TIMELINE:END -->", flags=re.S)
+    if not pattern.search(website):
+        raise ValueError("Website missing release timeline markers")
+    return pattern.sub(lambda _: replacement, website, count=1)
+
+
+def changelog_badge_class(heading: str) -> str:
+    return {"Highlights": "new", "Improvements": "improved", "Fixes": "fixed", "Breaking changes": "breaking"}.get(heading, "improved")
+
+
+def changelog_badge_label(heading: str) -> str:
+    return {"Highlights": "New", "Improvements": "Improved", "Fixes": "Fixed", "Breaking changes": "Breaking"}.get(heading, heading)
+
+
+def full_changelog_tags(changelog: str, minimum_tag: str = "v0.5.0") -> list[str]:
+    minimum_key = parse_version_key(minimum_tag)
+    return [tag for tag in sorted_latest_tags(extract_release_headings(changelog), limit=len(extract_release_headings(changelog))) if parse_version_key(tag) >= minimum_key]
+
+
+def render_changelog_bullet(bullet: str) -> str:
+    issue_link = re.compile(r"\[([^\]\n]+)\]\((https://github\.com/h3pdesign/Neon-Vision-Editor/issues/\d+)\)")
+    parts: list[str] = []
+    start = 0
+    for match in issue_link.finditer(bullet):
+        parts.append(html.escape(bullet[start:match.start()]))
+        parts.append(f'<a href="{html.escape(match.group(2), quote=True)}">{html.escape(match.group(1))}</a>')
+        start = match.end()
+    parts.append(html.escape(bullet[start:]))
+    return "".join(parts)
+
+
+def rebuild_changelog_page(page: str, changelog: str, current_tag: str) -> str:
+    entries: list[str] = []
+    for tag in full_changelog_tags(changelog):
+        date, _ = extract_changelog_section_meta(changelog, tag)
+        _, section = extract_changelog_section_meta(changelog, tag)
+        groups = [(heading, extract_heading_bullets(section, heading, limit=20)) for heading in ("Highlights", "Improvements", "Fixes", "Breaking changes")]
+        current_class = " current" if tag == current_tag else ""
+        latest = '<span class="latest">Latest</span>' if tag == current_tag else ""
+        items = [f'          <div class="item"><span class="badge {changelog_badge_class(heading)}">{html.escape(changelog_badge_label(heading))}</span><p>{render_changelog_bullet(bullet.removeprefix("- "))}</p></div>' for heading, bullets in groups for bullet in bullets]
+        entries.append("\n".join([f'      <article class="release{current_class}">', f'        <div class="release-header"><h2>{html.escape(tag)}</h2><span class="date">{html.escape(display_release_date(date))}</span>{latest}</div>', '        <div class="items">', *items, '        </div>', '      </article>']))
+    replacement = "\n".join(["    <!-- CHANGELOG_ENTRIES:START -->", *entries, "    <!-- CHANGELOG_ENTRIES:END -->"])
+    pattern = re.compile(r"    <!-- CHANGELOG_ENTRIES:START -->.*?    <!-- CHANGELOG_ENTRIES:END -->", flags=re.S)
+    if not pattern.search(page):
+        raise ValueError("Changelog page entry markers are missing")
+    return pattern.sub(lambda _: replacement, page, count=1)
+
+
+LOCALIZED_TIMELINE_COPY = {
+    "de": {
+        "v2.1.3": ("Auswahl folgt langen Zeilen", "Beim Auswählen mit der Maus über den linken oder rechten Rand einer langen, nicht umbrochenen Zeile scrollt der Mac-Editor jetzt seitwärts mit. Die Markdown-Formatierungsleiste sitzt wieder oben rechts im Editor, und über der Minimap scrollt das Mausrad den Editor.", ["Auswahl", "Scrollen", "Markdown"]),
+        "v2.1.2": ("Nebeneinander bearbeiten in Mac-Tabs", "Zeigt zwei geöffnete Mac-Tabs wieder nebeneinander an, beide bearbeitbar, und vergleicht geöffnete Tabs wieder in der Diff-Ansicht. Sichern gilt für den bearbeiteten Bereich, und „Tab in neues Fenster bewegen“ ist im Menü „Fenster“ verfügbar.", ["Nebeneinander", "Tabs", "Vergleich"]),
+        "v2.1.1": ("Sofort tippen in neuen Tabs", "Neue Mac-Tabs übernehmen Eingaben und Einfügen sofort, ohne zuerst in den Editor zu klicken. Zurückgewählte Tabs zeigen immer ihren Inhalt, geschlossene Tabs beenden ihre Hintergrundarbeit und öffnen sich nicht erneut.", ["Tabs", "Fokus", "Stabilität"]),
+        "v2.1.0": ("Native Dokument-Tabs und unabhängige Vorschauen", "Ergänzt native Mac-Dokument-Tabs mit Dateinamen und Schließen per Doppelklick. Teilt die Projektseitenleiste, erhält unabhängige Dokumentvorschauen und schützt ungespeicherte Änderungen sowie die Reihenfolge und Zahlenwerte beim JSON-Formatieren.", ["Tabs", "Vorschau", "Dateisicherheit"]),
+        "v2.0.0": ("Schneller wechseln und präziser bearbeiten", "Verbessert den Wechsel zwischen Mac-Dokumenten und Aktualisierungen der Markdown-Vorschau. Stabilisiert die Cursorposition auf iPhone und iPad, stellt gespeicherte Positionen nach dem Laden großer Dateien wieder her und ergänzt Pfeiltasten für überlaufende Mac-Tabs.", ["Leistung", "Cursor", "Tabs"]),
+        "v1.9.3": ("Textansicht und übersichtliche Einstellungen", "Ergänzt einen macOS-Schalter für CSV/TSV-Tabellen, verhindert die Tabellenerkennung gewöhnlicher Notizen und hält lange Schriftnamen in ihren Auswahlfeldern. Ordnet Markdown- und KI-Einstellungen auf dem Mac in eigenen Bereichen an und stellt die native Fenstergröße wieder her.", ["Einstellungen", "Textansicht", "Schriften"]),
+        "v1.9.2": ("Unicode-Tastenkürzel und optionaler KI-Kontext", "Ergänzt sicheres Löschen mit Wahltaste-Rücktaste auf dem Mac und experimentelle Jev-Kontextauswahl für externe KI-Chats. Stellt mobile KI-Einstellungen wieder her und korrigiert die Symbolleistenbreite beim ersten Layout.", ["Tastatur", "KI", "Symbolleisten"]),
+        "v1.9.1": ("Native Textkodierungen und präzise Navigation", "Ergänzt Apples Textkodierungen einschließlich Shift-JIS, korrigiert die Erkennung japanischer Dateien und die Navigation mit Befehl-Auf/Ab in langen macOS-Dokumenten. Verbessert mobile Leistenabstände und die iPad-Leistenbreite; Einstellungen lassen sich in mobilen Symbolleisten neu anordnen.", ["Kodierungen", "Navigation", "Symbolleisten"]),
+        "v1.9.0": ("Sieben Sprachen und aktuelle Neuigkeiten", "Ergänzt vier App-Sprachen, einen Schließen-Knopf und aktuelle Versionshinweise unter Neuigkeiten sowie eine optionale Übertragung von Textkopien an Geräte in der Nähe mit Kopplung und Zustimmung.", ["Sprachen", "Neuigkeiten", "Übertragung"]),
+        "v1.8.6": ("Markdown nebeneinander und lange Zeilen bearbeiten", "Markdown-Quelltext und Vorschau erscheinen wieder standardmäßig nebeneinander. Sehr lange Einzelzeilen bleiben auf iPhone und iPad bearbeitbar; macOS-Tabs lassen sich verschieben, ohne zuvor das Dokument zu öffnen.", ["Markdown", "Editor", "Tabs"]),
+        "v1.8.5": ("Markdown-Lesemodus und verlässliche Tastenkürzel", "Wählt beim Öffnen von Markdown zwischen Bearbeiten und Vollbild-Lesemodus, ordnet mobile Symbolleistenaktionen neu und stellt Tastenkürzel sowie die macOS-Navigation mit Befehlspfeilen wieder her.", ["Markdown", "Tastatur", "Editor"]),
+        "v1.8.4": ("Strukturierte Vorschauen und flexible Fenster", "Ergänzt JSON- und YAML-Vorschauen, Optionen für macOS-Schreibtische und leere Fenster sowie Platz unter dem Cursor auf iPhone und iPad.", ["Vorschau", "macOS", "Editor"]),
+        "v1.8.3": ("Vollständige Textdateien und verlässlicher Zeilenumbruch", "Bearbeitet Textdateien unter 100 MB vollständig, behebt abgeschnittene lange Zeilen auf iPhone und iPad und verbessert Themes, Formatierung, Symbolleisten und native macOS-Einstellungen. Mac-Versionen unterstützen nur noch Apple Silicon.", ["Editor", "Einstellungen", "iPhone und iPad"]),
+        "v1.8.2": ("Vollständige Vorschau großer Markdown-Dateien", "Zeigt große Markdown-Dateien vollständig formatiert statt als gekürzten Quelltext an. Öffnet Dateien aus dem Finder auch ohne offenes Editorfenster und beschränkt das Scrollen langer Dokumente auf sichtbare Zeilen.", ["Markdown", "Editor", "macOS"]),
+        "v1.8.1": ("Mobile Symbolleisten und natives Glas", "Kompakte Symbolleisten für iPhone und iPad halten den Editor sichtbar. Tastaturaktionen, Status und Vorschauen passen sich dem Editor-Theme und den Systemeinstellungen für Glas an.", ["Editor", "Symbolleiste", "iPhone und iPad"]),
+        "v1.8.0": ("Schnellere Dateien und anpassbares Fensterglas", "Öffnet Dateien per Drag-and-drop, beschleunigt Datei- und Projektarbeit mit Swift 6.4 und OS 27, hält lange Dokumente vollständig sichtbar und passt Layouts sowie natives Fensterglas flexibel an.", ["Editor", "Leistung", "macOS"]),
+        "v1.7.6": ("Stabile Editorzeilen beim Scrollen", "Zeichnet beim Scrollen den sichtbaren Core-Text-Bereich neu und verhindert überlagerte oder abgeschnittene Zeilen in langen und umbrochenen Dokumenten.", ["Editor", "Scrollen", "macOS"]),
+        "v1.7.5": ("Flüssigeres Scrollen und zuverlässige Tabs", "Hält feine Scrollbewegungen auf dem schnellen AppKit-Pfad, vermeidet redundante Minimap-Aktualisierungen und stellt das Verschieben nativer macOS-Tabs wieder her.", ["Editor", "Leistung", "Tabs"]),
+        "v1.7.4": ("Flüssigere Projektvorschauen", "Aktualisiert Markdown- und PDF-Projektkarten in begrenzten Gruppen und vermeidet redundante SwiftUI-Aktualisierungen für jede indizierte Datei.", ["Vorschau", "Leistung", "Projekte"]),
+        "v1.7.3": ("Bereit für macOS 27 und schnellere Einstellungen", "Aktiviert Agent Mode in Xcode-27-Builds, reduziert redundante Arbeit bei Themes und Tabs und vereinheitlicht System-Glass-Flächen unter visionOS.", ["macOS 27", "Leistung", "Themes"]),
+        "v1.7.2": ("Schnellere Tabs und konsistente Editorflächen", "Verbessert mobile Tabs, Toolbar- und AI-Seitenleistenflächen, verhindert macOS-Auswahlfehler beim Fensterziehen und startet die Syntaxhervorhebung beim Tabwechsel früher.", ["Tabs", "Editor", "Leistung"]),
+        "v1.7.1": ("Stabilere Fenster, Auswahl und App-Store-Builds", "Behebt das Verschieben von Fenstern, die Textauswahl auf iPhone und iPad, die Darstellung der Willkommenstour und die iOS-App-Store-Paketierung.", ["Fenster", "Auswahl", "App Store"]),
+        "v1.7.0": ("Native Tabs und konsistente Fensterdarstellung", "Hält Tabs, Seitenleisten, Editorflächen und Einstellungen über macOS, iOS und iPadOS hinweg konsistent und stabil.", ["Tabs", "Darstellung", "Seitenleisten"]),
+        "v1.6.4": ("Stabiles Tippen und zuverlässiges Fensterziehen", "Hält den macOS-Editor beim Tippen stabil und macht leere Bereiche der nativen Symbolleiste verschiebbar, ohne ihre Aktionen zu blockieren.", ["Editor", "Fenster", "Symbolleiste"]),
+        "v1.6.3": ("Sofortiger Tabwechsel und reibungsloser Editor", "Beschleunigt den Wechsel zwischen Markdown- und Quelldateien und verschiebt Vorschau- sowie Layoutarbeit aus dem ersten Anzeigeframe.", ["Editor", "Leistung", "Tabs"]),
+        "v1.6.2": ("Sichereres Speichern und zuverlässigere App-Starts", "Verbessert das Speichern externer Dokumente und erkennt Änderungen auf Netzlaufwerken, öffnet Textdateien mit unbekannten Endungen und macht die automatische Willkommenstour abschaltbar.", ["Dateisicherheit", "Textdateien", "Start"]),
+        "v1.6.1": ("Vollständiges Emmet und vertraute Editorbefehle", "Erweitert Emmet-Abkürzungen in Markup und Stylesheets, stellt macOS-Editoraktionen wieder her und verbessert Syntaxfarben sowie die Leistung großer Dateien.", ["Emmet", "Editor", "Leistung"]),
+        "v1.6.0": ("Große Dateien schneller und zuverlässiger bearbeiten", "Beschleunigt das Öffnen und Scrollen großer Markdown-Dateien, verbessert Eingabe und Speichern und ergänzt native HEX-Farbvorschauen unter macOS.", ["Editor", "Leistung", "Farben"]),
+        "v1.5.6": ("Kompaktere, verlässlichere Editorwerkzeuge", "Macht mobile Symbolleisten übersichtlicher, setzt Markdown-Nummerierungen korrekt fort und schützt die eingeklappte Formatierungspille vor durchscheinendem Text.", ["Symbolleiste", "Markdown", "Auswahl"]),
+        "v1.5.5": ("Präzise Bearbeitung mit Apple Pencil", "Zeigt auf dem iPad beim Schweben die Caret-Position, ermöglicht die direkte Bereichsauswahl mit dem Pencil und korrigiert die macOS-Editorzeichnung.", ["Editor", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("Alle Editorzeilen bleiben erreichbar", "Stellt sicher, dass umbrochene Zeilen nach Änderungen an Seitenleiste oder Vorschau bis zum Dokumentende erreichbar bleiben.", ["Editor", "Zeilenumbruch", "macOS"]),
+        "v1.5.3": ("Große Dokumente reagieren schneller", "Beschleunigt Bearbeitung und Scrollen, reduziert unnötige Aktualisierungen und ergänzt einen ablenkungsfreien Fokusmodus.", ["Editor", "Leistung", "Fokusmodus"]),
+        "v1.5.2": ("Editor und Vorschau bleiben synchron", "Gleicht die Schriftgröße der Markdown-Vorschau an den Editor an und misst die Leistung großer Dokumente.", ["Editor", "Vorschau", "Leistung"]),
+        "v1.5.1": ("Lebendigere Markdown-Themes", "Verfeinert die Farbpaletten der Vorschau, verbessert das Öffnen von Projektordnern und stabilisiert Sparkle-Updates.", ["Markdown", "Themes", "Updates"]),
+        "v1.3.6": ("Quick Look und Einstellungen werden stabiler", "Verfeinert Quick Look und die Größenanpassung des macOS-Einstellungsfensters für einen ruhigeren Arbeitsablauf.", ["Quick Look", "Einstellungen", "macOS"]),
+        "v1.4.0": ("Toolbar und Quick Look bleiben lesbar", "Stellt die Kurzbezeichnungen der Toolbar wieder her und bündelt Quick Look in einem eigenständigen, überprüfbaren Build-Schema.", ["Symbolleiste", "Quick Look", "macOS"]),
+        "v1.4.1": ("Große Dokumente bleiben flüssig", "Verbessert den virtuellen macOS-Editor, die Projektnavigation und kompakte iPhone-Bedienelemente.", ["Editor", "Projekt", "iPhone"]),
+        "v1.4.2": ("Lesbare Vorschauen aus Milchglas", "Macht abgetrennte Markdown- und Finder-Quick-Look-Vorschauen transparenter und zugleich besser lesbar.", ["Vorschau", "Quick Look", "macOS"]),
+        "v1.4.3": ("Stabiles Layout und Markdown-Karten", "Hält den macOS-Editor beim Wechseln von Arbeitsbereichen stabil und platziert Markdown-Aktionen direkt in der Vorschau.", ["Editor", "Markdown", "macOS"]),
+        "v1.4.4": ("Zuverlässige Tastaturaktionen", "Zeigt Bearbeitungsaktionen über der Bildschirmtastatur und erhält den Zeilenumbruch bei Vorschau- und Seitenleistenwechseln.", ["Editor", "Tastatur", "iPhone"]),
+        "v1.4.5": ("Editorbreite bleibt korrekt", "Hält den gesamten macOS-Editor nach Vorschau- und Seitenleistenwechseln beschreibbar und stellt den Zeilenumbruch sofort wieder her.", ["Editor", "Zeilenumbruch", "macOS"]),
+        "v1.4.6": ("Quick Look zeigt mehr Syntaxfarben", "Erweitert die Syntaxfarben für unterstützte Dateitypen und hält kompakte Finder-Vorschauen frei von zusätzlichen Bedienelementen.", ["Quick Look", "Syntax", "macOS"]),
+        "v1.5.0": ("Editor und Snapshots werden verlässlicher", "Verbessert Auswahl, Tastaturnavigation und Themes im macOS-Editor und erweitert den Code-Snapshot-Export.", ["Editor", "Themes", "Snapshots"]),
+    },
+    "da": {
+        "v2.1.3": ("Markering følger lange linjer", "Når du markerer med musen forbi venstre eller højre kant af en lang linje uden ombrydning, ruller Mac-editoren nu sidelæns med. Markdown-formateringslinjen sidder igen øverst til højre i editoren, og rullehjulet over minikortet ruller editoren.", ["Markering", "Rulning", "Markdown"]),
+        "v2.1.2": ("Rediger side om side i Mac-faner", "Viser igen to åbne Mac-faner side om side, begge redigerbare, og sammenligner åbne faner i diff-visningen igen. Gem gælder den rude, du redigerer, og ”Flyt fane til nyt vindue” findes i menuen Vindue.", ["Side om side", "Faner", "Sammenligning"]),
+        "v2.1.1": ("Skriv straks i nye faner", "Nye Mac-faner modtager tastning og indsæt med det samme uden et klik i editoren først. Faner, du vender tilbage til, viser altid deres indhold, og lukkede faner stopper deres baggrundsarbejde og åbnes ikke igen.", ["Faner", "Fokus", "Stabilitet"]),
+        "v2.1.0": ("Native dokumentfaner og uafhængige forhåndsvisninger", "Tilføjer native Mac-dokumentfaner med filnavne og lukning med dobbeltklik. Deler projektsidepanelet, bevarer uafhængige dokumentvisninger og beskytter ikke-gemte ændringer samt rækkefølge og talværdier ved JSON-formatering.", ["Faner", "Forhåndsvisning", "Filsikkerhed"]),
+        "v2.0.0": ("Hurtigere skift og mere præcis redigering", "Forbedrer skift mellem dokumenter på Mac og opdateringer af Markdown-forhåndsvisningen. Stabiliserer markørplacering på iPhone og iPad, gendanner gemte positioner efter indlæsning af store filer og tilføjer pile til at gennemse Mac-faner.", ["Ydeevne", "Markør", "Faner"]),
+        "v1.9.3": ("Tekstvisning og overskuelige indstillinger", "Tilføjer en macOS-indstilling til CSV/TSV-tabeller, undgår at almindelige noter vises som tabeller og holder lange skriftnavne inden for deres menuer. Samler Markdown- og AI-indstillinger i egne sektioner på Mac og gendanner vinduets native størrelse.", ["Indstillinger", "Tekstvisning", "Skrifttyper"]),
+        "v1.9.2": ("Unicode-genveje og valgfri AI-kontekst", "Tilføjer sikker sletning med Option-Delete på Mac og eksperimentel Jev-kontekstsortering til ekstern AI-chat. Gendanner mobile AI-indstillinger og retter værktøjslinjens bredde ved første layout.", ["Tastatur", "AI", "Værktøjslinjer"]),
+        "v1.9.1": ("Native tekstkodninger og præcis navigation", "Tilføjer Apples tekstkodninger, herunder Shift-JIS, og retter registrering af japanske filer samt Command-op/ned i lange macOS-dokumenter. Forbedrer afstand mellem mobile bjælker og iPad-værktøjslinjens bredde; Indstillinger kan omarrangeres i mobile værktøjslinjer.", ["Kodninger", "Navigation", "Værktøjslinjer"]),
+        "v1.9.0": ("Syv sprog og opdaterede nyheder", "Tilføjer fire appsprog, en Luk-knap og aktuelle versionsnoter i Nyheder samt valgfri overførsel af tekstkopier til enheder i nærheden med parring og samtykke.", ["Sprog", "Nyheder", "Overførsel"]),
+        "v1.8.6": ("Markdown side om side og lange linjer", "Markdown-kilde og forhåndsvisning vises igen side om side som standard. Meget lange enkeltlinjer kan redigeres på iPhone og iPad, og macOS-faner kan flyttes uden først at åbne dokumentet.", ["Markdown", "Editor", "Faner"]),
+        "v1.8.5": ("Markdown-læsetilstand og pålidelige genveje", "Vælg redigering eller fuldskærmslæsning, når Markdown åbnes, omarranger mobile værktøjslinjehandlinger, og få genveje samt macOS-navigation med Command-piletaster tilbage.", ["Markdown", "Tastatur", "Editor"]),
+        "v1.8.4": ("Strukturerede forhåndsvisninger og fleksible vinduer", "Tilføjer JSON- og YAML-forhåndsvisninger, indstillinger for macOS-skriveborde og tomme vinduer samt plads under markøren på iPhone og iPad.", ["Forhåndsvisning", "macOS", "Editor"]),
+        "v1.8.3": ("Komplette tekstfiler og pålidelige lange linjer", "Redigerer hele tekstfiler under 100 MB, retter afklippede lange linjer på iPhone og iPad og forbedrer temaer, formatering, værktøjslinjer og native macOS-indstillinger. Mac-versioner understøtter nu kun Apple Silicon.", ["Editor", "Indstillinger", "iPhone og iPad"]),
+        "v1.8.2": ("Fuld visning af store Markdown-filer", "Viser store Markdown-filer som formateret indhold i stedet for afkortet kildetekst. Åbner filer fra Finder uden et åbent redigeringsvindue og begrænser rulning i lange dokumenter til synlige linjer.", ["Markdown", "Editor", "macOS"]),
+        "v1.8.1": ("Mobile værktøjslinjer og indbygget glas", "Kompakte værktøjslinjer til iPhone og iPad holder editoren synlig. Tastaturhandlinger, status og forhåndsvisninger følger editorens tema og systemets glasindstillinger.", ["Editor", "Værktøjslinje", "iPhone og iPad"]),
+        "v1.8.0": ("Hurtigere filer og justerbart vinduesglas", "Åbner filer med træk og slip, fremskynder fil- og projektarbejde med Swift 6.4 og OS 27, holder lange dokumenter komplette og tilpasser layout samt native vinduesglas fleksibelt.", ["Editor", "Ydeevne", "macOS"]),
+        "v1.7.6": ("Stabile editorlinjer under rulning", "Gentegner det synlige Core Text-område under rulning og forhindrer overlappende eller afskårne linjer i lange dokumenter med linjeombrydning.", ["Editor", "Rulning", "macOS"]),
+        "v1.7.5": ("Mere flydende rulning og pålidelige faner", "Holder fine rullebevægelser på den hurtige AppKit-sti, undgår overflødige minimap-opdateringer og gendanner flytning af native macOS-faner.", ["Editor", "Ydeevne", "Faner"]),
+        "v1.7.4": ("Mere flydende projektvisninger", "Opdaterer Markdown- og PDF-projektkort i afgrænsede grupper og undgår overflødige SwiftUI-opdateringer for hver indekseret fil.", ["Forhåndsvisning", "Ydeevne", "Projekter"]),
+        "v1.7.3": ("Klar til macOS 27 og hurtigere indstillinger", "Aktiverer Agent Mode i Xcode 27-builds, reducerer overflødigt arbejde ved tema- og faneskift og ensretter System Glass-flader på visionOS.", ["macOS 27", "Ydeevne", "Temaer"]),
+        "v1.7.2": ("Hurtigere faner og ensartede editorflader", "Forbedrer mobile faner, værktøjslinjer og AI-sidepaneler, forhindrer markeringsfejl ved vinduesflytning på macOS og starter syntaksfarver tidligere ved faneskift.", ["Faner", "Editor", "Ydeevne"]),
+        "v1.7.1": ("Mere stabile vinduer, markering og App Store-builds", "Retter flytning af vinduer, tekstmarkering på iPhone og iPad, velkomstturens udseende og iOS App Store-paketering.", ["Vinduer", "Markering", "App Store"]),
+        "v1.7.0": ("Native faner og ensartet vinduesvisning", "Holder faner, sidepaneler, editorflader og indstillinger ensartede og stabile på macOS, iOS og iPadOS.", ["Faner", "Visning", "Sidepaneler"]),
+        "v1.6.4": ("Stabil indtastning og pålidelig vinduesflytning", "Holder macOS-editoren stabil under indtastning og gør tomme områder i den native værktøjslinje flytbare uden at blokere dens handlinger.", ["Editor", "Vindue", "Værktøjslinje"]),
+        "v1.6.3": ("Øjeblikkeligt faneskift og mere flydende editor", "Gør skift mellem Markdown- og kildefiler hurtigere og flytter forhåndsvisnings- og layoutarbejde efter den første visning.", ["Editor", "Ydeevne", "Faner"]),
+        "v1.6.2": ("Sikrere lagring og mere pålidelig opstart", "Forbedrer lagring af eksterne dokumenter og registrering af ændringer på netværksdrev, åbner tekstfiler med ukendte filendelser og gør den automatiske velkomst valgfri.", ["Filsikkerhed", "Tekstfiler", "Opstart"]),
+        "v1.6.1": ("Fuld Emmet og velkendte editorhandlinger", "Udvider Emmet-forkortelser i markup og stylesheets, gendanner macOS-editorhandlinger og forbedrer syntaksfarver samt ydeevnen i store filer.", ["Emmet", "Editor", "Ydeevne"]),
+        "v1.6.0": ("Hurtigere og mere pålidelig redigering af store filer", "Åbner og ruller hurtigere i store Markdown-filer, forbedrer indtastning og lagring og tilføjer native HEX-farvevisninger på macOS.", ["Editor", "Ydeevne", "Farver"]),
+        "v1.5.6": ("Mere kompakte og pålidelige editorværktøjer", "Gør mobile værktøjslinjer tydeligere, fortsætter Markdown-nummerering korrekt og beskytter den sammenklappede formateringsknap mod gennemskinnende tekst.", ["Værktøjslinje", "Markdown", "Markering"]),
+        "v1.5.5": ("Præcis redigering med Apple Pencil", "Viser markørens placering ved svævning på iPad, vælger tekstområder direkte med Pencil og retter tegningen i macOS-editoren.", ["Editor", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("Alle editorlinjer forbliver tilgængelige", "Sikrer, at ombrudte linjer kan nås helt til dokumentets slutning efter ændringer i sidepanel eller forhåndsvisning.", ["Editor", "Linjeombrydning", "macOS"]),
+        "v1.5.3": ("Store dokumenter reagerer hurtigere", "Gør redigering og rulning hurtigere, reducerer unødvendige opdateringer og tilføjer en fokustilstand uden forstyrrelser.", ["Editor", "Ydeevne", "Fokustilstand"]),
+        "v1.5.2": ("Editor og forhåndsvisning følger hinanden", "Tilpasser Markdown-forhåndsvisningens skriftstørrelse til editoren og måler ydeevnen i store dokumenter.", ["Editor", "Forhåndsvisning", "Ydeevne"]),
+        "v1.5.1": ("Mere levende Markdown-temaer", "Forfiner forhåndsvisningens farvepaletter, forbedrer åbning af projektmapper og stabiliserer Sparkle-opdateringer.", ["Markdown", "Temaer", "Opdateringer"]),
+        "v1.3.6": ("Quick Look og indstillinger bliver mere stabile", "Forfiner Quick Look og størrelsestilpasningen af macOS-indstillingsvinduet for et roligere arbejdsforløb.", ["Quick Look", "Indstillinger", "macOS"]),
+        "v1.4.0": ("Værktøjslinje og Quick Look forbliver læselige", "Gendanner værktøjslinjens korte etiketter og samler Quick Look i et selvstændigt, verificerbart byggeskema.", ["Værktøjslinje", "Quick Look", "macOS"]),
+        "v1.4.1": ("Store dokumenter forbliver hurtige", "Forbedrer den virtuelle macOS-editor, projektnavigationen og kompakte iPhone-kontroller.", ["Editor", "Projekt", "iPhone"]),
+        "v1.4.2": ("Læsbare frostede forhåndsvisninger", "Gør separate Markdown- og Finder Quick Look-forhåndsvisninger gennemsigtige og samtidig lettere at læse.", ["Forhåndsvisning", "Quick Look", "macOS"]),
+        "v1.4.3": ("Stabilt layout og Markdown-kort", "Holder macOS-editoren stabil ved skift af arbejdsområde og placerer Markdown-handlinger direkte i forhåndsvisningen.", ["Editor", "Markdown", "macOS"]),
+        "v1.4.4": ("Pålidelige tastaturhandlinger", "Viser redigeringshandlinger over skærmtastaturet og bevarer linjeskift ved skift af forhåndsvisning og sidepanel.", ["Editor", "Tastatur", "iPhone"]),
+        "v1.4.5": ("Korrekt editorbredde", "Holder hele macOS-editoren skrivbar efter skift af forhåndsvisning og sidepanel og gendanner linjeombrydning med det samme.", ["Editor", "Linjeombrydning", "macOS"]),
+        "v1.4.6": ("Flere syntaksfarver i Quick Look", "Udvider syntaksfarverne til understøttede filtyper og holder kompakte Finder-forhåndsvisninger fri for ekstra betjeningselementer.", ["Quick Look", "Syntaks", "macOS"]),
+        "v1.5.0": ("Editor og snapshots bliver mere pålidelige", "Forbedrer markering, tastaturnavigation og temaer i macOS-editoren og udvider eksporten af kodesnapshots.", ["Editor", "Temaer", "Snapshots"]),
+    },
+    "fr": {
+        "v2.1.3": ("La sélection suit les longues lignes", "Lorsque vous sélectionnez à la souris au-delà du bord gauche ou droit d’une longue ligne non renvoyée, l’éditeur Mac défile désormais latéralement. La barre de mise en forme Markdown retrouve le coin supérieur droit de l’éditeur, et la molette au-dessus de la minicarte fait défiler l’éditeur.", ["Sélection", "Défilement", "Markdown"]),
+        "v2.1.2": ("Édition côte à côte dans les onglets Mac", "Affiche de nouveau deux onglets Mac ouverts côte à côte, tous deux modifiables, et compare de nouveau les onglets ouverts dans la vue des différences. L’enregistrement s’applique au volet en cours d’édition, et « Placer l’onglet dans une nouvelle fenêtre » est disponible dans le menu Fenêtre.", ["Côte à côte", "Onglets", "Comparaison"]),
+        "v2.1.1": ("Saisie immédiate dans les nouveaux onglets", "Les nouveaux onglets Mac acceptent la saisie et le collage immédiatement, sans cliquer d’abord dans l’éditeur. Un onglet resélectionné affiche toujours son contenu, et un onglet fermé arrête son travail en arrière-plan et ne se rouvre plus.", ["Onglets", "Focus", "Stabilité"]),
+        "v2.1.0": ("Onglets natifs et aperçus indépendants", "Ajoute les onglets de documents natifs du Mac avec les noms de fichiers et la fermeture par double-clic. Partage le panneau de projet, conserve des aperçus indépendants et protège les modifications non enregistrées ainsi que l’ordre et les valeurs numériques du JSON.", ["Onglets", "Aperçus", "Sécurité des fichiers"]),
+        "v2.0.0": ("Navigation plus rapide et édition plus précise", "Améliore le passage entre documents sur Mac et les mises à jour de l’aperçu Markdown. Stabilise le placement du curseur sur iPhone et iPad, restaure les positions enregistrées après le chargement de gros fichiers et ajoute des flèches pour parcourir les onglets Mac.", ["Performances", "Curseur", "Onglets"]),
+        "v1.9.3": ("Vue texte et réglages mieux organisés", "Ajoute une option macOS pour les tableaux CSV/TSV, évite de traiter les notes ordinaires comme des tableaux et maintient les noms de polices longs dans leurs menus. Organise les réglages Markdown et IA dans des sections dédiées sur Mac et rétablit la taille native de la fenêtre.", ["Réglages", "Vue texte", "Polices"]),
+        "v1.9.2": ("Raccourcis Unicode et contexte IA facultatif", "Ajoute la suppression sûre avec Option-Supprimer sur Mac et le classement expérimental du contexte Jev pour le chat IA externe. Rétablit les réglages IA mobiles et corrige la largeur de la barre au premier affichage.", ["Clavier", "IA", "Barres d’outils"]),
+        "v1.9.1": ("Encodages natifs et navigation précise", "Ajoute les encodages Apple, dont Shift-JIS, et corrige la détection des fichiers japonais ainsi que Commande-haut/bas dans les longs documents macOS. Améliore l’espacement des barres mobiles et la largeur de la barre iPad ; Réglages peut être réordonné dans les barres mobiles.", ["Encodages", "Navigation", "Barres d’outils"]),
+        "v1.9.0": ("Sept langues et nouveautés à jour", "Ajoute quatre langues, un bouton Fermer et les notes de version actuelles dans les nouveautés, ainsi qu’un transfert facultatif de copies de texte vers les appareils proches avec appairage et consentement.", ["Langues", "Nouveautés", "Transfert"]),
+        "v1.8.6": ("Markdown côte à côte et longues lignes", "La source Markdown et son aperçu s’affichent de nouveau côte à côte par défaut. Les très longues lignes restent modifiables sur iPhone et iPad, et les onglets macOS se déplacent sans ouvrir d’abord le document.", ["Markdown", "Éditeur", "Onglets"]),
+        "v1.8.5": ("Lecture Markdown et raccourcis fiables", "Choisissez l’édition ou la lecture plein écran à l’ouverture d’un fichier Markdown, réorganisez les actions de la barre d’outils mobile et retrouvez les raccourcis ainsi que la navigation Commande-flèche sur macOS.", ["Markdown", "Clavier", "Éditeur"]),
+        "v1.8.4": ("Aperçus structurés et fenêtres flexibles", "Ajoute des aperçus JSON et YAML, des options pour les bureaux et fenêtres vides sur macOS, et de l’espace sous le curseur sur iPhone et iPad.", ["Aperçu", "macOS", "Éditeur"]),
+        "v1.8.3": ("Fichiers texte complets et lignes longues lisibles", "Permet de modifier entièrement les fichiers texte de moins de 100 Mo, corrige les lignes tronquées sur iPhone et iPad et améliore thèmes, mise en forme, barres d’outils et réglages natifs de macOS. Les versions Mac nécessitent désormais Apple Silicon.", ["Éditeur", "Réglages", "iPhone et iPad"]),
+        "v1.8.2": ("Aperçu complet des grands fichiers Markdown", "Affiche les grands fichiers Markdown mis en forme plutôt qu’un extrait de code tronqué. Ouvre les fichiers depuis le Finder sans fenêtre d’édition et limite le défilement des longs documents aux lignes visibles.", ["Markdown", "Éditeur", "macOS"]),
+        "v1.8.1": ("Barres d’outils mobiles et verre natif", "Des barres d’outils compactes sur iPhone et iPad laissent l’éditeur visible. Les commandes du clavier, l’état et les aperçus suivent le thème de l’éditeur et les réglages système du verre.", ["Éditeur", "Barre d’outils", "iPhone et iPad"]),
+        "v1.8.0": ("Fichiers plus rapides et verre réglable", "Ouvre les fichiers par glisser-déposer, accélère les opérations de fichiers et de projets avec Swift 6.4 et OS 27, conserve les longs documents complets et adapte la disposition ainsi que le verre natif.", ["Éditeur", "Performances", "macOS"]),
+        "v1.7.6": ("Lignes stables pendant le défilement", "Redessine la zone Core Text visible pendant le défilement et évite les lignes superposées ou tronquées dans les documents longs avec retour à la ligne.", ["Éditeur", "Défilement", "macOS"]),
+        "v1.7.5": ("Défilement plus fluide et onglets fiables", "Conserve les petits défilements sur le chemin AppKit rapide, évite les mises à jour redondantes de la minicarte et rétablit le déplacement des onglets natifs macOS.", ["Éditeur", "Performances", "Onglets"]),
+        "v1.7.4": ("Aperçus de projet plus fluides", "Actualise les cartes de projet Markdown et PDF par lots limités et évite les mises à jour SwiftUI redondantes pour chaque fichier indexé.", ["Aperçu", "Performances", "Projets"]),
+        "v1.7.3": ("Prêt pour macOS 27 et réglages plus rapides", "Active le mode Agent dans les builds Xcode 27, réduit le travail superflu lors des changements de thème et d’onglet et harmonise les surfaces System Glass sur visionOS.", ["macOS 27", "Performances", "Thèmes"]),
+        "v1.7.2": ("Onglets plus rapides et surfaces cohérentes", "Améliore les onglets mobiles, les barres d’outils et les panneaux AI, évite les sélections involontaires lors du déplacement d’une fenêtre macOS et lance plus tôt la coloration syntaxique.", ["Onglets", "Éditeur", "Performances"]),
+        "v1.7.1": ("Fenêtres, sélection et builds App Store plus stables", "Corrige le déplacement des fenêtres, la sélection de texte sur iPhone et iPad, l’apparence de l’accueil et le paquet iOS pour l’App Store.", ["Fenêtres", "Sélection", "App Store"]),
+        "v1.7.0": ("Onglets natifs et apparence cohérente", "Garde les onglets, barres latérales, surfaces d’édition et réglages cohérents et stables sur macOS, iOS et iPadOS.", ["Onglets", "Apparence", "Barres latérales"]),
+        "v1.6.4": ("Saisie stable et déplacement fiable des fenêtres", "Stabilise l’éditeur macOS pendant la saisie et rend les espaces vides de la barre d’outils déplaçables sans bloquer ses actions.", ["Éditeur", "Fenêtre", "Barre d’outils"]),
+        "v1.6.3": ("Changement d’onglet instantané et éditeur plus fluide", "Accélère le passage entre fichiers Markdown et source et reporte le travail d’aperçu et de mise en page après le premier affichage.", ["Éditeur", "Performances", "Onglets"]),
+        "v1.6.2": ("Enregistrement plus sûr et démarrage plus fiable", "Améliore l’enregistrement des documents externes et la détection des modifications réseau, ouvre les fichiers texte aux extensions inconnues et rend l’accueil automatique facultatif.", ["Sécurité des fichiers", "Fichiers texte", "Démarrage"]),
+        "v1.6.1": ("Emmet complet et commandes d’édition familières", "Développe les abréviations Emmet dans le balisage et les feuilles de style, restaure les actions de l’éditeur macOS et améliore les couleurs syntaxiques ainsi que les performances des grands fichiers.", ["Emmet", "Éditeur", "Performances"]),
+        "v1.6.0": ("Une édition plus rapide et fiable des fichiers volumineux", "Accélère l’ouverture et le défilement des grands fichiers Markdown, fiabilise la saisie et l’enregistrement et ajoute des aperçus de couleurs HEX natifs sur macOS.", ["Éditeur", "Performances", "Couleurs"]),
+        "v1.5.6": ("Des outils d’édition plus compacts et fiables", "Clarifie les barres d’outils mobiles, poursuit correctement la numérotation Markdown et empêche le texte de traverser la pastille de formatage repliée.", ["Barre d’outils", "Markdown", "Sélection"]),
+        "v1.5.5": ("Édition précise avec Apple Pencil", "Affiche la position du curseur au survol sur iPad, sélectionne directement des plages avec le Pencil et corrige le rendu de l’éditeur macOS.", ["Éditeur", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("Toutes les lignes restent accessibles", "Garantit l’accès aux lignes renvoyées à la ligne jusqu’à la fin du document après un changement de barre latérale ou d’aperçu.", ["Éditeur", "Retour à la ligne", "macOS"]),
+        "v1.5.3": ("Les grands documents répondent plus vite", "Accélère l’édition et le défilement, réduit les actualisations inutiles et ajoute un mode concentration sans distraction.", ["Éditeur", "Performances", "Concentration"]),
+        "v1.5.2": ("Éditeur et aperçu restent synchronisés", "Aligne la taille du texte de l’aperçu Markdown sur celle de l’éditeur et mesure les performances des grands documents.", ["Éditeur", "Aperçu", "Performances"]),
+        "v1.5.1": ("Des thèmes Markdown plus vivants", "Affine les palettes de l’aperçu, améliore l’ouverture des dossiers de projet et stabilise les mises à jour Sparkle.", ["Markdown", "Thèmes", "Mises à jour"]),
+        "v1.3.6": ("Quick Look et les réglages gagnent en stabilité", "Affine Quick Look et l’adaptation de taille de la fenêtre Réglages sur macOS pour un flux de travail plus calme.", ["Quick Look", "Réglages", "macOS"]),
+        "v1.4.0": ("Barre d’outils et Quick Look restent lisibles", "Restaure les libellés courts de la barre d’outils et regroupe Quick Look dans un schéma de build autonome et vérifiable.", ["Barre d’outils", "Quick Look", "macOS"]),
+        "v1.4.1": ("Les grands documents restent fluides", "Améliore l’éditeur virtuel macOS, la navigation de projet et les commandes compactes sur iPhone.", ["Éditeur", "Projet", "iPhone"]),
+        "v1.4.2": ("Des aperçus givrés lisibles", "Rend les aperçus Markdown détachés et Finder Quick Look transparents tout en améliorant leur lisibilité.", ["Aperçu", "Quick Look", "macOS"]),
+        "v1.4.3": ("Mise en page stable et cartes Markdown", "Maintient la stabilité de l’éditeur macOS lors des changements d’espace de travail et place les actions Markdown dans l’aperçu.", ["Éditeur", "Markdown", "macOS"]),
+        "v1.4.4": ("Actions clavier fiables", "Affiche les actions d’édition au-dessus du clavier à l’écran et préserve le retour à la ligne lors des changements d’aperçu ou de barre latérale.", ["Éditeur", "Clavier", "iPhone"]),
+        "v1.4.5": ("Largeur d’éditeur fiable", "Garde toute la largeur de l’éditeur macOS modifiable après les changements d’aperçu ou de barre latérale et rétablit immédiatement le retour à la ligne.", ["Éditeur", "Retour à la ligne", "macOS"]),
+        "v1.4.6": ("Plus de couleurs de syntaxe dans Quick Look", "Étend les couleurs de syntaxe aux types de fichiers pris en charge et garde les aperçus compacts du Finder sans commandes supplémentaires.", ["Quick Look", "Syntaxe", "macOS"]),
+        "v1.5.0": ("Éditeur et instantanés plus fiables", "Améliore la sélection, la navigation au clavier et les thèmes dans l’éditeur macOS, tout en enrichissant l’export d’instantanés de code.", ["Éditeur", "Thèmes", "Instantanés"]),
+    },
+    "es": {
+        "v2.1.3": ("La selección sigue las líneas largas", "Al seleccionar con el ratón más allá del borde izquierdo o derecho de una línea larga sin ajuste, el editor de Mac ahora se desplaza de lado. La barra de formato Markdown vuelve a la esquina superior derecha del editor, y la rueda sobre el minimapa desplaza el editor.", ["Selección", "Desplazamiento", "Markdown"]),
+        "v2.1.2": ("Edición en paralelo en pestañas de Mac", "Vuelve a mostrar dos pestañas abiertas de Mac una al lado de la otra, ambas editables, y vuelve a comparar pestañas abiertas en la vista de diferencias. Guardar se aplica al panel que estás editando, y «Mover pestaña a una ventana nueva» está en el menú Ventana.", ["En paralelo", "Pestañas", "Comparación"]),
+        "v2.1.1": ("Escritura inmediata en pestañas nuevas", "Las pestañas nuevas en Mac aceptan escritura y pegado de inmediato, sin hacer clic antes en el editor. Al volver a una pestaña siempre se muestra su contenido, y las pestañas cerradas detienen su trabajo en segundo plano y ya no se vuelven a abrir.", ["Pestañas", "Foco", "Estabilidad"]),
+        "v2.1.0": ("Pestañas nativas y vistas previas independientes", "Añade pestañas de documentos nativas en Mac con nombres de archivo y cierre con doble clic. Comparte el panel del proyecto, conserva vistas previas independientes y protege los cambios sin guardar, el orden y los valores numéricos al formatear JSON.", ["Pestañas", "Vista previa", "Seguridad de archivos"]),
+        "v2.0.0": ("Cambios más rápidos y edición más precisa", "Mejora el cambio entre documentos en Mac y las actualizaciones de la vista previa de Markdown. Estabiliza la posición del cursor en iPhone y iPad, restaura las posiciones guardadas después de cargar archivos grandes y añade flechas para recorrer las pestañas de Mac.", ["Rendimiento", "Cursor", "Pestañas"]),
+        "v1.9.3": ("Vista de texto y ajustes más claros", "Añade una opción de macOS para las tablas CSV/TSV, evita mostrar notas comunes como tablas y mantiene los nombres largos de fuentes dentro de sus menús. Organiza los ajustes de Markdown e IA en secciones propias en Mac y restaura el tamaño nativo de la ventana.", ["Ajustes", "Vista de texto", "Fuentes"]),
+        "v1.9.2": ("Atajos Unicode y contexto de IA opcional", "Añade borrado seguro con Opción-Suprimir en Mac y clasificación experimental del contexto Jev para chat de IA externo. Recupera los ajustes de IA móviles y corrige el ancho de la barra en el primer diseño.", ["Teclado", "IA", "Barras"]),
+        "v1.9.1": ("Codificaciones nativas y navegación precisa", "Añade las codificaciones de Apple, incluido Shift-JIS, y corrige la detección de archivos japoneses y Comando-arriba/abajo en documentos largos de macOS. Mejora el espaciado de las barras móviles y el ancho de la barra del iPad; Ajustes puede reordenarse en las barras móviles.", ["Codificaciones", "Navegación", "Barras"]),
+        "v1.9.0": ("Siete idiomas y novedades actualizadas", "Añade cuatro idiomas, un botón Cerrar y las notas de la versión actual en las novedades, además de una transferencia opcional de copias de texto a dispositivos cercanos con emparejamiento y consentimiento.", ["Idiomas", "Novedades", "Transferencia"]),
+        "v1.8.6": ("Markdown en paralelo y líneas largas", "El código Markdown y su vista previa vuelven a mostrarse en paralelo de forma predeterminada. Las líneas muy largas siguen siendo editables en iPhone y iPad, y las pestañas de macOS se pueden mover sin abrir antes el documento.", ["Markdown", "Editor", "Pestañas"]),
+        "v1.8.5": ("Lectura Markdown y atajos fiables", "Elige edición o lectura a pantalla completa al abrir Markdown, reordena las acciones de la barra móvil y recupera los atajos y la navegación con Comando y las flechas en macOS.", ["Markdown", "Teclado", "Editor"]),
+        "v1.8.4": ("Vistas previas estructuradas y ventanas flexibles", "Añade vistas previas de JSON y YAML, opciones para escritorios y ventanas vacías de macOS y espacio bajo el cursor en iPhone y iPad.", ["Vista previa", "macOS", "Editor"]),
+        "v1.8.3": ("Archivos de texto completos y líneas largas legibles", "Edita archivos de texto completos de menos de 100 MB, corrige las líneas cortadas en iPhone y iPad y mejora temas, formato, barras de herramientas y ajustes nativos de macOS. Las versiones para Mac ahora requieren Apple Silicon.", ["Editor", "Ajustes", "iPhone y iPad"]),
+        "v1.8.2": ("Vista previa completa de archivos Markdown grandes", "Muestra los archivos Markdown grandes con formato en lugar de texto de origen truncado. Abre archivos desde Finder sin una ventana de edición y limita el desplazamiento en documentos largos a las líneas visibles.", ["Markdown", "Editor", "macOS"]),
+        "v1.8.1": ("Barras móviles y cristal nativo", "Las barras compactas de iPhone y iPad dejan visible el editor. Los controles del teclado, el estado y las vistas previas siguen el tema del editor y los ajustes de cristal del sistema.", ["Editor", "Barra de herramientas", "iPhone y iPad"]),
+        "v1.8.0": ("Archivos más rápidos y cristal ajustable", "Abre archivos mediante arrastrar y soltar, acelera el trabajo con archivos y proyectos usando Swift 6.4 y OS 27, mantiene completos los documentos largos y adapta el diseño y el cristal nativo.", ["Editor", "Rendimiento", "macOS"]),
+        "v1.7.6": ("Líneas estables al desplazarse", "Redibuja la región visible de Core Text durante el desplazamiento y evita líneas superpuestas o recortadas en documentos largos con ajuste de línea.", ["Editor", "Desplazamiento", "macOS"]),
+        "v1.7.5": ("Desplazamiento más fluido y pestañas fiables", "Mantiene los pequeños desplazamientos en la ruta rápida de AppKit, evita actualizaciones redundantes del minimapa y restaura el movimiento de pestañas nativas de macOS.", ["Editor", "Rendimiento", "Pestañas"]),
+        "v1.7.4": ("Vistas previas de proyecto más fluidas", "Actualiza las tarjetas de proyecto Markdown y PDF en lotes limitados y evita actualizaciones redundantes de SwiftUI por cada archivo indexado.", ["Vista previa", "Rendimiento", "Proyectos"]),
+        "v1.7.3": ("Preparado para macOS 27 y ajustes más rápidos", "Activa el modo Agente en builds con Xcode 27, reduce el trabajo redundante al cambiar temas y pestañas y unifica las superficies System Glass en visionOS.", ["macOS 27", "Rendimiento", "Temas"]),
+        "v1.7.2": ("Pestañas más rápidas y superficies coherentes", "Mejora las pestañas móviles, las barras y los paneles de IA, evita selecciones involuntarias al mover ventanas en macOS e inicia antes el resaltado de sintaxis.", ["Pestañas", "Editor", "Rendimiento"]),
+        "v1.7.1": ("Ventanas, selección y builds del App Store más estables", "Corrige el movimiento de ventanas, la selección de texto en iPhone y iPad, la apariencia de la bienvenida y el empaquetado iOS para el App Store.", ["Ventanas", "Selección", "App Store"]),
+        "v1.7.0": ("Pestañas nativas y apariencia coherente", "Mantiene coherentes y estables las pestañas, barras laterales, superficies del editor y Ajustes en macOS, iOS y iPadOS.", ["Pestañas", "Apariencia", "Barras laterales"]),
+        "v1.6.4": ("Escritura estable y movimiento fiable de ventanas", "Estabiliza el editor de macOS al escribir y permite mover la ventana desde los espacios vacíos de la barra nativa sin bloquear sus acciones.", ["Editor", "Ventana", "Barra"]),
+        "v1.6.3": ("Cambio de pestaña instantáneo y editor más fluido", "Acelera el cambio entre archivos Markdown y de código y pospone el trabajo de vista previa y diseño tras el primer dibujo.", ["Editor", "Rendimiento", "Pestañas"]),
+        "v1.6.2": ("Guardado más seguro e inicio más fiable", "Mejora el guardado de documentos externos y la detección de cambios en red, abre archivos de texto con extensiones desconocidas y permite desactivar la bienvenida automática.", ["Seguridad de archivos", "Archivos de texto", "Inicio"]),
+        "v1.6.1": ("Emmet completo y acciones de edición habituales", "Expande abreviaturas Emmet en marcado y hojas de estilo, restaura las acciones del editor de macOS y mejora los colores de sintaxis y el rendimiento de archivos grandes.", ["Emmet", "Editor", "Rendimiento"]),
+        "v1.6.0": ("Edición más rápida y fiable de archivos grandes", "Acelera la apertura y el desplazamiento de archivos Markdown grandes, mejora la escritura y el guardado y añade vistas previas nativas de colores HEX en macOS.", ["Editor", "Rendimiento", "Colores"]),
+        "v1.5.6": ("Herramientas de edición más compactas y fiables", "Aclara las barras móviles, continúa correctamente la numeración Markdown e impide que el texto atraviese la píldora de formato contraída.", ["Barra", "Markdown", "Selección"]),
+        "v1.5.5": ("Edición precisa con Apple Pencil", "Muestra la posición del cursor al pasar el Pencil en iPad, permite seleccionar rangos directamente y corrige el dibujo del editor de macOS.", ["Editor", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("Todas las líneas siguen accesibles", "Garantiza el acceso a las líneas ajustadas hasta el final del documento tras cambiar la barra lateral o la vista previa.", ["Editor", "Ajuste de línea", "macOS"]),
+        "v1.5.3": ("Los documentos grandes responden más rápido", "Acelera la edición y el desplazamiento, reduce actualizaciones innecesarias y añade un modo de concentración sin distracciones.", ["Editor", "Rendimiento", "Concentración"]),
+        "v1.5.2": ("Editor y vista previa sincronizados", "Alinea el tamaño del texto de la vista previa Markdown con el editor y mide el rendimiento de documentos grandes.", ["Editor", "Vista previa", "Rendimiento"]),
+        "v1.5.1": ("Temas Markdown más vivos", "Perfecciona las paletas de color de la vista previa, mejora la apertura de carpetas de proyecto y estabiliza las actualizaciones de Sparkle.", ["Markdown", "Temas", "Actualizaciones"]),
+        "v1.3.6": ("Quick Look y Ajustes ganan estabilidad", "Perfecciona Quick Look y el ajuste de tamaño de la ventana Ajustes de macOS para un flujo de trabajo más tranquilo.", ["Quick Look", "Ajustes", "macOS"]),
+        "v1.4.0": ("La barra y Quick Look siguen siendo legibles", "Restaura las etiquetas abreviadas de la barra y reúne Quick Look en un esquema de compilación autónomo y verificable.", ["Barra", "Quick Look", "macOS"]),
+        "v1.4.1": ("Los documentos grandes siguen siendo ágiles", "Mejora el editor virtual de macOS, la navegación de proyectos y los controles compactos del iPhone.", ["Editor", "Proyecto", "iPhone"]),
+        "v1.4.2": ("Vistas previas de vidrio esmerilado", "Mantiene transparentes las vistas previas Markdown separadas y de Finder Quick Look, con mejor legibilidad.", ["Vista previa", "Quick Look", "macOS"]),
+        "v1.4.3": ("Diseño estable y tarjetas Markdown", "Mantiene estable el editor de macOS al cambiar de espacio de trabajo y sitúa las acciones de Markdown en la vista previa.", ["Editor", "Markdown", "macOS"]),
+        "v1.4.4": ("Acciones de teclado fiables", "Muestra acciones de edición sobre el teclado en pantalla y conserva el ajuste de línea al cambiar la vista previa o la barra lateral.", ["Editor", "Teclado", "iPhone"]),
+        "v1.4.5": ("Ancho de editor fiable", "Mantiene editable todo el ancho del editor de macOS tras cambiar la vista previa o la barra lateral y restaura de inmediato el ajuste de línea.", ["Editor", "Ajuste de línea", "macOS"]),
+        "v1.4.6": ("Más colores de sintaxis en Quick Look", "Amplía los colores de sintaxis para los tipos de archivo compatibles y mantiene las vistas compactas del Finder sin controles adicionales.", ["Quick Look", "Sintaxis", "macOS"]),
+        "v1.5.0": ("Editor y capturas más fiables", "Mejora la selección, la navegación por teclado y los temas del editor de macOS, y amplía la exportación de capturas de código.", ["Editor", "Temas", "Capturas"]),
+    },
+    "ja": {
+        "v2.1.3": ("長い行の選択に追従", "折り返さない長い行で、マウスで左右の端を越えて選択すると、Mac のエディタが横方向にスクロールするようになりました。Markdown 書式バーはエディタの右上に戻り、ミニマップ上でのホイール操作でエディタをスクロールできます。", ["選択", "スクロール", "Markdown"]),
+        "v2.1.2": ("Mac のタブを左右に並べて編集", "Mac で開いている 2 つのタブを再び左右に並べて表示し、どちらも編集できます。開いているタブを差分ビューで比較する機能も復活しました。保存は編集中のパネルに適用され、「タブを新規ウインドウに移動」を「ウインドウ」メニューから使えます。", ["左右に並べて表示", "タブ", "比較"]),
+        "v2.1.1": ("新しいタブですぐに入力", "Mac の新しいタブで、エディタをクリックしなくてもすぐに入力やペーストができるようになりました。タブに戻ると常に内容が表示され、閉じたタブはバックグラウンド処理を停止し、再び開かなくなりました。", ["タブ", "フォーカス", "安定性"]),
+        "v2.1.0": ("ネイティブの書類タブと独立したプレビュー", "Mac のネイティブ書類タブにファイル名を表示し、ダブルクリックで閉じられるようにしました。プロジェクトサイドバーを共有しながら書類ごとのプレビューを維持し、未保存の変更と JSON 整形時のキー順序・数値を保護します。", ["タブ", "プレビュー", "ファイルの安全性"]),
+        "v2.0.0": ("すばやい切り替えと正確な編集", "Macでの文書切り替えとMarkdownプレビューの更新を改善。iPhoneとiPadでのカーソル位置を安定させ、大きなファイルの読み込み後に保存した位置を復元し、Macのタブを移動する矢印ボタンを追加します。", ["パフォーマンス", "カーソル", "タブ"]),
+        "v1.9.3": ("テキスト表示と使いやすい設定", "macOSにCSV/TSVの表表示を切り替える設定を追加し、通常のメモが表として表示される問題を修正。長いフォント名を選択欄内に収め、MacのMarkdownとAI設定を専用セクションに整理し、設定ウィンドウ本来のサイズを復元します。", ["設定", "テキスト表示", "フォント"]),
+        "v1.9.2": ("Unicode のショートカットと任意の AI コンテキスト", "Mac の Option＋Delete による安全な単語削除と、外部 AI チャット向けの実験的な Jev コンテキスト選別を追加しました。モバイルの AI 設定へのアクセスを復元し、初回表示のツールバー幅を修正しました。", ["キーボード", "AI", "ツールバー"]),
+        "v1.9.1": ("標準文字エンコーディングと正確な移動", "Shift-JIS を含む Apple 標準の文字エンコーディングを追加し、日本語ファイルの判定と、macOS の長い文書での Command＋上下キーによる移動を修正しました。モバイルのバー間隔と iPad のツールバー幅を改善し、モバイルのツールバーで設定を並べ替えられます。", ["エンコーディング", "移動", "ツールバー"]),
+        "v1.9.0": ("7言語と最新の更新情報", "4つのアプリ言語を追加し、更新情報に閉じるボタンと最新のリリース内容を表示します。ペアリングと受信側の同意により、近くのデバイスへテキストのコピーを任意で転送できます。", ["言語", "更新情報", "転送"]),
+        "v1.8.6": ("Markdown の並列表示と長い行の編集", "Markdown のソースとプレビューを既定で再び並べて表示します。iPhone と iPad では非常に長い単一行も編集でき、macOS のタブは文書を先に開かずに移動できます。", ["Markdown", "エディタ", "タブ"]),
+        "v1.8.5": ("Markdown の閲覧モードと確実なショートカット", "Markdown を開くときに編集または全画面閲覧を選べます。モバイルのツールバー操作を並べ替え、ショートカットと macOS の Command＋矢印キーによる移動を復元しました。", ["Markdown", "キーボード", "エディタ"]),
+        "v1.8.4": ("構造化プレビューと柔軟なウインドウ", "JSON と YAML のプレビュー、macOS のデスクトップと空のウインドウに関する設定、iPhone と iPad でカーソルの下に余白を表示する改善を追加しました。", ["プレビュー", "macOS", "エディタ"]),
+        "v1.8.3": ("テキスト全文の編集と長い行の表示を改善", "100 MB 未満のテキストファイルを全文編集できます。iPhone と iPad で長い行が途中で切れる問題を修正し、テーマ、書式、ツールバー、macOS のネイティブ設定画面を改善しました。Mac 版は Apple Silicon のみをサポートします。", ["エディタ", "設定", "iPhone と iPad"]),
+        "v1.8.2": ("大きな Markdown ファイルを最後までプレビュー", "大きな Markdown ファイルを途中で切れたソース表示ではなく、書式付きで最後まで表示します。編集ウインドウがなくても Finder からファイルを開けます。長い文書のスクロールでは表示行のみを描画します。", ["Markdown", "エディタ", "macOS"]),
+        "v1.8.1": ("モバイルツールバーとネイティブガラス", "iPhone と iPad のコンパクトなツールバーでエディタを広く表示。キーボード操作、ステータス、プレビューがエディタのテーマとシステムのガラス設定に合わせて変化します。", ["エディタ", "ツールバー", "iPhone と iPad"]),
+        "v1.8.0": ("高速なファイル処理と調整可能なウインドウガラス", "ドラッグ＆ドロップでファイルを開き、Swift 6.4 と OS 27 でファイルとプロジェクトの処理を高速化。長い文書を最後まで表示し、レイアウトとネイティブガラスを柔軟に調整します。", ["エディタ", "パフォーマンス", "macOS"]),
+        "v1.7.6": ("スクロール中も安定したエディタ行", "スクロール時に表示中の Core Text 領域だけを再描画し、長い折り返し文書で行が重なったり欠けたりする問題を防ぎます。", ["エディタ", "スクロール", "macOS"]),
+        "v1.7.5": ("より滑らかなスクロールと確実なタブ操作", "細かなスクロールを高速な AppKit 経路で処理し、不要なミニマップ更新を避け、macOS のネイティブタブ移動を復元します。", ["エディタ", "パフォーマンス", "タブ"]),
+        "v1.7.4": ("より滑らかなプロジェクトプレビュー", "Markdown と PDF のプロジェクトカードを制限された単位で更新し、インデックスされたファイルごとの不要な SwiftUI 更新を防ぎます。", ["プレビュー", "パフォーマンス", "プロジェクト"]),
+        "v1.7.3": ("macOS 27 対応と設定操作の高速化", "Xcode 27 ビルドで Agent Mode を有効にし、テーマとタブ切り替え時の不要な処理を減らし、visionOS の System Glass 表示を統一します。", ["macOS 27", "パフォーマンス", "テーマ"]),
+        "v1.7.2": ("高速なタブ切り替えと一貫したエディタ表示", "モバイルタブ、ツールバー、AI サイドバーを改善し、macOS のウインドウ移動時の意図しない選択を防ぎ、タブ切り替え時の構文色表示を早めます。", ["タブ", "エディタ", "パフォーマンス"]),
+        "v1.7.1": ("ウインドウ、選択、App Store ビルドを安定化", "ウインドウ移動、iPhone と iPad のテキスト選択、ウェルカムツアーの外観、iOS App Store パッケージを修正します。", ["ウインドウ", "選択", "App Store"]),
+        "v1.7.0": ("ネイティブタブと一貫したウインドウ表示", "macOS、iOS、iPadOS でタブ、サイドバー、エディタ面、設定の表示を一貫させ、安定させます。", ["タブ", "表示", "サイドバー"]),
+        "v1.6.4": ("安定した入力と確実なウインドウ移動", "macOS エディタの入力中のちらつきを抑え、ネイティブツールバーの空白部分から操作を妨げずにウインドウを移動できます。", ["エディタ", "ウインドウ", "ツールバー"]),
+        "v1.6.3": ("瞬時のタブ切り替えとより滑らかなエディタ", "Markdown とソースファイルの切り替えを高速化し、プレビューとレイアウト処理を初回表示後に行います。", ["エディタ", "パフォーマンス", "タブ"]),
+        "v1.6.2": ("より安全な保存と安定した起動", "外部ドキュメントの保存とネットワーク上の変更検出を改善し、未知の拡張子のテキストファイルを開けるようにしました。自動ウェルカム画面も無効にできます。", ["ファイルの安全性", "テキストファイル", "起動"]),
+        "v1.6.1": ("完全な Emmet と使い慣れた編集操作", "マークアップとスタイルシートの Emmet 略語を展開し、macOS エディタの操作を復元して、構文カラーと大きなファイルの性能を改善します。", ["Emmet", "エディタ", "パフォーマンス"]),
+        "v1.6.0": ("大きなファイルをより速く確実に編集", "大きな Markdown ファイルの表示とスクロールを高速化し、入力と保存の安定性を向上。macOS ではネイティブの HEX カラープレビューを追加しました。", ["エディタ", "パフォーマンス", "カラー"]),
+        "v1.5.6": ("よりコンパクトで確実な編集ツール", "モバイルのツールバーを整理し、Markdown の番号付きリストを正しく継続し、折りたたんだ書式ピルへの文字の透過を防ぎます。", ["ツールバー", "Markdown", "選択"]),
+        "v1.5.5": ("Apple Pencil で正確に編集", "iPad でホバー時にキャレット位置を表示し、Pencil で範囲を直接選択できるようにして、macOS エディタの描画も修正します。", ["エディタ", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("すべての行に最後までアクセス", "サイドバーやプレビューの変更後も、折り返された行を文書の末尾まで確実に表示できるようにします。", ["エディタ", "行の折り返し", "macOS"]),
+        "v1.5.3": ("大きな書類をさらに高速に操作", "編集とスクロールを高速化し、不要な更新を減らして、集中できるフォーカスモードを追加します。", ["エディタ", "パフォーマンス", "フォーカス"]),
+        "v1.5.2": ("エディタとプレビューを同期", "Markdown プレビューの文字サイズをエディタに合わせ、大きなドキュメントのパフォーマンスを測定します。", ["エディタ", "プレビュー", "パフォーマンス"]),
+        "v1.5.1": ("Markdown テーマをより鮮やかに", "プレビューのカラーパレットを改善し、プロジェクトフォルダの直接オープンと Sparkle の更新を安定させます。", ["Markdown", "テーマ", "アップデート"]),
+        "v1.3.6": ("Quick Look と設定がさらに安定", "Quick Look と macOS 設定ウインドウのサイズ調整を改善し、より落ち着いた作業環境にします。", ["Quick Look", "設定", "macOS"]),
+        "v1.4.0": ("ツールバーと Quick Look の可読性を維持", "ツールバーの短いラベルを復元し、Quick Look を独立した検証可能なビルドスキームにまとめます。", ["ツールバー", "Quick Look", "macOS"]),
+        "v1.4.1": ("大きな書類も快適に操作", "macOS の仮想エディタ、プロジェクトナビゲーション、iPhone のコンパクトな操作を改善します。", ["エディタ", "プロジェクト", "iPhone"]),
+        "v1.4.2": ("読みやすいフロストガラスのプレビュー", "分離した Markdown と Finder Quick Look のプレビューを透明に保ちながら読みやすくします。", ["プレビュー", "Quick Look", "macOS"]),
+        "v1.4.3": ("安定したレイアウトと Markdown カード", "ワークスペースの切り替え時も macOS エディタを安定させ、Markdown の操作をプレビュー内に配置します。", ["エディタ", "Markdown", "macOS"]),
+        "v1.4.4": ("信頼できるキーボード操作", "画面キーボードの上に編集操作を表示し、プレビューやサイドバーの切り替え時も行の折り返しを維持します。", ["エディタ", "キーボード", "iPhone"]),
+        "v1.4.5": ("正確なエディタ幅", "プレビューやサイドバーの切り替え後も macOS エディタの全幅で編集でき、行の折り返しをすぐに復元します。", ["エディタ", "行の折り返し", "macOS"]),
+        "v1.4.6": ("Quick Look の構文色を拡充", "対応するファイル形式の構文色を増やし、Finder のコンパクトなプレビューでは追加の操作を表示しません。", ["Quick Look", "構文", "macOS"]),
+        "v1.5.0": ("エディタとスナップショットをさらに信頼性向上", "macOS エディタの選択、キーボード操作、テーマを改善し、コードスナップショットの書き出しを拡充します。", ["エディタ", "テーマ", "スナップショット"]),
+    },
+    "zh-Hans": {
+        "v2.1.3": ("选择跟随长行", "在未换行的长行中用鼠标拖动选择并越过左右边缘时，Mac 编辑器现在会横向滚动。Markdown 格式栏回到编辑器右上角，在迷你地图上滚动鼠标滚轮即可滚动编辑器。", ["选择", "滚动", "Markdown"]),
+        "v2.1.2": ("在 Mac 标签页中并排编辑", "再次支持将两个已打开的 Mac 标签页并排显示，两侧均可编辑，并可再次在差异视图中比较已打开的标签页。存储会应用到正在编辑的窗格，“将标签页移到新窗口”可在“窗口”菜单中使用。", ["并排", "标签页", "比较"]),
+        "v2.1.1": ("新标签页可立即输入", "Mac 新标签页无需先点按编辑器即可立即输入和粘贴。切换回标签页时始终显示其内容，关闭的标签页会停止后台工作且不再重新打开。", ["标签页", "焦点", "稳定性"]),
+        "v2.1.0": ("原生文稿标签页与独立预览", "新增 Mac 原生文稿标签页，显示文件名并支持双击关闭。共享项目侧边栏，同时保留各文稿的独立预览，保护未保存的更改，并在 JSON 格式化时保留键顺序与精确数值。", ["标签页", "预览", "文件安全"]),
+        "v2.0.0": ("更快切换，更精准编辑", "改进Mac文档切换和Markdown预览更新。稳定iPhone和iPad上的光标定位，在大文件加载完成后恢复已保存的位置，并新增箭头按钮以浏览超出可见区域的Mac标签页。", ["性能", "光标", "标签页"]),
+        "v1.9.3": ("文本视图与更清晰的设置", "为macOS新增CSV/TSV表格视图开关，避免将普通笔记识别为表格，并让较长的字体名称保持在选择控件内。将Mac的Markdown与AI设置整理为独立分区，并恢复设置窗口的原生尺寸。", ["设置", "文本视图", "字体"]),
+        "v1.9.2": ("Unicode 快捷键与可选 AI 上下文", "新增 Mac 上安全的 Option-Delete 单词删除，以及外部 AI 聊天的实验性 Jev 上下文筛选。恢复移动端 AI 设置入口，并修复首次布局时的工具栏宽度。", ["键盘", "AI", "工具栏"]),
+        "v1.9.1": ("原生文本编码与准确导航", "新增包括 Shift-JIS 在内的 Apple 原生文本编码，修复日文文件识别以及 macOS 长文稿中的 Command 加上下方向键导航。改善移动端栏间距和 iPad 工具栏宽度，并允许在移动端工具栏中重新排列设置按钮。", ["编码", "导航", "工具栏"]),
+        "v1.9.0": ("七种语言与最新更新信息", "新增四种应用语言，为更新信息添加关闭按钮并显示当前版本说明，还可通过配对和接收方同意，将文本副本按需传送到附近设备。", ["语言", "更新信息", "传送"]),
+        "v1.8.6": ("并排 Markdown 预览与长行编辑", "Markdown 源码和预览再次默认并排显示。iPhone 和 iPad 上的超长单行文本仍可编辑；移动 macOS 标签页时无需先打开对应文稿。", ["Markdown", "编辑器", "标签页"]),
+        "v1.8.5": ("Markdown 阅读模式与可靠的快捷键", "打开 Markdown 时可选择编辑或全屏阅读；可重新排列移动端工具栏操作，并恢复快捷键及 macOS 上的 Command 加方向键导航。", ["Markdown", "键盘", "编辑器"]),
+        "v1.8.4": ("结构化预览与灵活的窗口", "新增 JSON 和 YAML 预览、macOS 桌面和空窗口选项，并改善 iPhone 和 iPad 上光标下方的留白。", ["预览", "macOS", "编辑器"]),
+        "v1.8.3": ("完整编辑文本并改善长行显示", "完整编辑小于 100 MB 的文本文件，修复 iPhone 和 iPad 上长行被截断的问题，并改善主题、格式、工具栏和 macOS 原生设置窗口。Mac 版本现仅支持 Apple Silicon。", ["编辑器", "设置", "iPhone 和 iPad"]),
+        "v1.8.2": ("完整预览大型 Markdown 文件", "将大型 Markdown 文件完整呈现为格式化内容，而不是截断的源文本。即使没有打开编辑器窗口，也能从 Finder 打开文件；滚动长文档时只重绘可见行。", ["Markdown", "编辑器", "macOS"]),
+        "v1.8.1": ("移动工具栏与原生玻璃效果", "iPhone 和 iPad 的紧凑工具栏让编辑器保留更多可见空间。键盘操作、状态信息和预览会适应编辑器主题及系统玻璃效果设置。", ["编辑器", "工具栏", "iPhone 和 iPad"]),
+        "v1.8.0": ("更快的文件处理与可调窗口玻璃效果", "支持拖放打开文件，利用 Swift 6.4 和 OS 27 加速文件与项目操作，完整显示长文档，并让布局和原生窗口玻璃效果灵活适配可用空间。", ["编辑器", "性能", "macOS"]),
+        "v1.7.6": ("滚动时保持编辑器行稳定", "滚动时仅重绘可见的 Core Text 区域，避免长文档和自动换行文档中的文本行重叠或被裁切。", ["编辑器", "滚动", "macOS"]),
+        "v1.7.5": ("更流畅的滚动与可靠的标签页", "让细微滚动保持在快速的 AppKit 路径上，避免重复更新小地图，并恢复 macOS 原生标签页拖动排序。", ["编辑器", "性能", "标签页"]),
+        "v1.7.4": ("更流畅的项目预览", "以有限批次更新 Markdown 和 PDF 项目卡片，避免每个索引文件触发重复的 SwiftUI 刷新。", ["预览", "性能", "项目"]),
+        "v1.7.3": ("支持 macOS 27，并提升设置响应速度", "在 Xcode 27 构建中启用 Agent Mode，减少切换主题和标签页时的重复工作，并统一 visionOS 的 System Glass 表面。", ["macOS 27", "性能", "主题"]),
+        "v1.7.2": ("更快的标签页与一致的编辑器表面", "改进移动标签页、工具栏和 AI 侧边栏，避免 macOS 拖动窗口时意外选择文本，并在切换标签页时更早启动语法高亮。", ["标签页", "编辑器", "性能"]),
+        "v1.7.1": ("更稳定的窗口、文本选择与 App Store 构建", "修复窗口移动、iPhone 和 iPad 文本选择、欢迎导览外观以及 iOS App Store 打包问题。", ["窗口", "选择", "App Store"]),
+        "v1.7.0": ("原生标签页与一致的窗口外观", "在 macOS、iOS 和 iPadOS 上保持标签页、侧边栏、编辑器表面和设置的一致性与稳定性。", ["标签页", "外观", "侧边栏"]),
+        "v1.6.4": ("稳定输入与可靠的窗口拖动", "让 macOS 编辑器输入时保持稳定，并可从原生工具栏的空白区域移动窗口，同时不影响工具栏操作。", ["编辑器", "窗口", "工具栏"]),
+        "v1.6.3": ("即时标签页切换与更流畅的编辑器", "加快 Markdown 与源文件之间的切换，并将预览和布局工作延后到首帧显示之后。", ["编辑器", "性能", "标签页"]),
+        "v1.6.2": ("更安全的保存与更可靠的启动", "改进外部文档保存和网络文件变更检测，支持打开未知扩展名的文本文件，并允许关闭自动欢迎界面。", ["文件安全", "文本文件", "启动"]),
+        "v1.6.1": ("完整 Emmet 与熟悉的编辑操作", "扩展标记和样式表中的 Emmet 缩写，恢复 macOS 编辑器操作，并改进语法颜色和大型文件性能。", ["Emmet", "编辑器", "性能"]),
+        "v1.6.0": ("更快速、更可靠的大文件编辑", "加快大型 Markdown 文件的打开和滚动，提升输入与保存的可靠性，并在 macOS 上新增原生 HEX 颜色预览。", ["编辑器", "性能", "颜色"]),
+        "v1.5.6": ("更紧凑、更可靠的编辑工具", "简化移动工具栏，正确续排 Markdown 编号列表，并防止编辑器文字透过折叠的格式工具胶囊。", ["工具栏", "Markdown", "选择"]),
+        "v1.5.5": ("使用 Apple Pencil 精确编辑", "在 iPad 悬停时预览插入点，使用 Pencil 直接选择文本范围，并修复 macOS 编辑器绘制问题。", ["编辑器", "Apple Pencil", "iPad"]),
+        "v1.5.4": ("所有编辑器行均可访问", "在切换侧边栏或预览后，确保自动换行内容一直可以滚动到文档末尾。", ["编辑器", "自动换行", "macOS"]),
+        "v1.5.3": ("大型文档响应更快", "加快编辑和滚动，减少不必要的刷新，并加入无干扰的专注模式。", ["编辑器", "性能", "专注模式"]),
+        "v1.5.2": ("编辑器与预览保持同步", "让 Markdown 预览文字大小与编辑器一致，并测量大型文档的性能。", ["编辑器", "预览", "性能"]),
+        "v1.5.1": ("更鲜明的 Markdown 主题", "改进预览配色，优化直接打开项目文件夹，并提高 Sparkle 更新的稳定性。", ["Markdown", "主题", "更新"]),
+        "v1.3.6": ("Quick Look 与设置更加稳定", "优化 Quick Look 和 macOS 设置窗口的尺寸调整，让工作流程更加稳定。", ["Quick Look", "设置", "macOS"]),
+        "v1.4.0": ("工具栏与 Quick Look 保持清晰", "恢复工具栏的简短标签，并将 Quick Look 整合到独立且可验证的构建方案中。", ["工具栏", "Quick Look", "macOS"]),
+        "v1.4.1": ("大文档依然流畅", "改进 macOS 虚拟编辑器、项目导航和 iPhone 的紧凑控制。", ["编辑器", "项目", "iPhone"]),
+        "v1.4.2": ("更易读的磨砂玻璃预览", "让独立 Markdown 和 Finder Quick Look 预览保持透明，同时提高可读性。", ["预览", "Quick Look", "macOS"]),
+        "v1.4.3": ("稳定布局与 Markdown 卡片", "在切换工作区时保持 macOS 编辑器稳定，并将 Markdown 操作放在预览中。", ["编辑器", "Markdown", "macOS"]),
+        "v1.4.4": ("可靠的键盘操作", "在屏幕键盘上方显示编辑操作，并在切换预览或侧边栏时保持自动换行。", ["编辑器", "键盘", "iPhone"]),
+        "v1.4.5": ("可靠的编辑器宽度", "切换预览或侧边栏后，macOS 编辑器的整个宽度仍可编辑，并立即恢复自动换行。", ["编辑器", "自动换行", "macOS"]),
+        "v1.4.6": ("Quick Look 展示更多语法颜色", "扩展受支持文件类型的语法配色，并让 Finder 的紧凑预览不显示额外控件。", ["Quick Look", "语法", "macOS"]),
+        "v1.5.0": ("编辑器与快照更加可靠", "改进 macOS 编辑器的选择、键盘导航和主题，并扩展代码快照导出功能。", ["编辑器", "主题", "快照"]),
+    },
+}
+
+README_PREVIOUS_RELEASE_OVERRIDES = {
+    "v1.3.3": "v1.3.1",
+}
+
+
+def rebuild_localized_website_release_timeline(website: str, changelog: str, current_tag: str, locale: str) -> str:
+    source_entries = release_timeline_entries(changelog, current_tag)
+    copy = LOCALIZED_TIMELINE_COPY[locale]
+    source_tags = tuple(entry[0] for entry in source_entries)
+    missing_tags = [tag for tag in source_tags if tag not in copy]
+    if missing_tags:
+        raise ValueError(f"Localized timeline copy is incomplete for {locale}: missing {', '.join(missing_tags)}.")
+    entries: list[str] = []
+    for tag, date, _, _, _ in source_entries:
+        title, description, tags = copy[tag]
+        current_class = " current" if tag == current_tag else ""
+        tag_html = "".join(f"<span>{html.escape(item)}</span>" for item in tags)
+        entries.extend([
+            f'        <article class="release-entry{current_class}">',
+            f'          <div class="release-marker" aria-hidden="true">{html.escape(tag.removeprefix("v"))}</div>',
+            '          <div class="release-card">',
+            '            <div class="release-card-header">',
+            f'              <h3><a href="https://github.com/h3pdesign/Neon-Vision-Editor/releases/tag/{html.escape(tag)}">{html.escape(tag)} — {html.escape(title)}</a></h3>',
+            f'              <span class="release-date">{html.escape(display_release_date(date))}</span>',
+            "            </div>",
+            f"            <p>{html.escape(description)}</p>",
+            f'            <div class="release-tags">{tag_html}</div>',
+            "          </div>",
+            "        </article>",
+        ])
+    replacement = "\n".join(["        <!-- RELEASE_TIMELINE:START -->", *entries, "        <!-- RELEASE_TIMELINE:END -->"])
+    pattern = re.compile(r"        <!-- RELEASE_TIMELINE:START -->.*?        <!-- RELEASE_TIMELINE:END -->", flags=re.S)
+    if not pattern.search(website):
+        raise ValueError(f"Localized website timeline markers are missing for {locale}.")
+    return pattern.sub(lambda _: replacement, website, count=1)
+
+
+def validate_release_input(changelog: str, tag: str) -> None:
+    if not has_changelog_section(changelog, tag):
+        raise ValueError(f"CHANGELOG.md has no section for {tag}.")
+    for locale, path in LOCALIZED_WEBSITES.items():
+        rebuild_localized_website_release_timeline(read_text(path), changelog, tag, locale)
+
+
+def replace_website_value(website: str, pattern: str, replacement: str, label: str) -> str:
+    updated, count = re.subn(pattern, replacement, website, count=1, flags=re.S)
+    if count != 1:
+        raise ValueError(f"Website replacement failed for {label}.")
+    return updated
+
+
+def update_website_release_fallbacks(website: str, tag: str, build: str | None = None) -> str:
+    version = tag.removeprefix("v")
+    website = replace_website_value(
+        website,
+        r'(<html lang="en" data-static-release-version=")v[^\"]+(">)',
+        rf"\g<1>{tag}\g<2>",
+        "static release marker",
+    )
+    website = replace_website_value(
+        website,
+        r'("softwareVersion": ")\d+\.\d+(?:\.\d+)?(?:-[^\"]+)?(")',
+        rf"\g<1>{version}\g<2>",
+        "JSON-LD software version",
+    )
+    for label, pattern in (
+        ("JSON-LD download URL", r'("downloadUrl": "https://github\.com/h3pdesign/Neon-Vision-Editor/releases/tag/)v[^\"]+(\")'),
+        ("JSON-LD release-notes URL", r'("releaseNotes": "https://github\.com/h3pdesign/Neon-Vision-Editor/releases/tag/)v[^\"]+(\")'),
+    ):
+        website = replace_website_value(website, pattern, rf"\g<1>{tag}\g<2>", label)
+
+    website = re.sub(r'(<span data-latest-version>)v[^<]+(</span>)', rf"\g<1>{tag}\g<2>", website)
+    website = re.sub(
+        r'(<p class="markdown-feature-cta"><a class="button" href="#get-neon">[^<]*?)v\d+\.\d+\.\d+',
+        rf'\g<1>{tag}',
+        website,
+    )
+    if build is not None:
+        website = re.sub(r'(<(?:span|strong) data-latest-build>)\d+(</(?:span|strong)>)', rf"\g<1>{build}\g<2>", website)
+    website = re.sub(
+        r'(data-latest-release-url href="https://github\.com/h3pdesign/Neon-Vision-Editor/releases/tag/)v[^\"]+(\")',
+        rf"\g<1>{tag}\g<2>",
+        website,
+    )
+    website = re.sub(
+        r'(data-release-asset="[^\"]+"\s+href="https://github\.com/h3pdesign/Neon-Vision-Editor/releases/download/)v[^/\"]+(/[^\"]+\")',
+        rf"\g<1>{tag}\g<2>",
+        website,
+    )
+    return website
+
+
+def update_localized_website_release_fallbacks(website: str, tag: str, build: str | None = None) -> str:
+    """Keep localized Pages fallbacks and client-side release selectors aligned."""
+    version = tag.removeprefix("v")
+    website, count = re.subn(
+        r'(<html lang="[^"]+" )data-static-release-[^=]+="v[^"]+"',
+        rf'\g<1>data-static-release-version="{tag}"',
+        website,
+        count=1,
+    )
+    if count != 1:
+        raise ValueError("Localized website static release marker is missing.")
+    website = re.sub(
+        r'data-latest-(?:Version|versión|バージョン|版本)(?=[\s>])',
+        "data-latest-version",
+        website,
+    )
+    website = re.sub(r'("softwareVersion": ")\d+\.\d+(?:\.\d+)?(?:-[^"]+)?(")', rf'\g<1>{version}\g<2>', website)
+    website = re.sub(
+        r'("(?:downloadUrl|releaseNotes)": "https://github\.com/h3pdesign/Neon-Vision-Editor/releases/tag/)v[^"]+(")',
+        rf'\g<1>{tag}\g<2>',
+        website,
+    )
+    website = re.sub(r'(<span data-latest-version>)v[^<]+(</span>)', rf'\g<1>{tag}\g<2>', website)
+    website = re.sub(
+        r'(<p class="markdown-feature-cta"><a class="button" href="#get-neon">[^<]*?)v\d+\.\d+\.\d+',
+        rf'\g<1>{tag}',
+        website,
+    )
+    if build is not None:
+        website = re.sub(r'(<(?:span|strong) data-latest-build>)\d+(</(?:span|strong)>)', rf'\g<1>{build}\g<2>', website)
+    website = re.sub(
+        r'(data-latest-release-url href="https://github\.com/h3pdesign/Neon-Vision-Editor/releases/tag/)v[^"]+(")',
+        rf'\g<1>{tag}\g<2>',
+        website,
+    )
+    return re.sub(
+        r'(data-release-asset="[^"]+"\s+href="https://github\.com/h3pdesign/Neon-Vision-Editor/releases/download/)v[^/"]+(/[^\"]+")',
+        rf'\g<1>{tag}\g<2>',
+        website,
+    )
 
 
 def normalize_none_value(value: str, default: str) -> str:
@@ -328,8 +1126,8 @@ def build_readme_release_row(tag: str, date: str, section_body: str) -> str:
 def rebuild_readme_changelog_table(readme: str, changelog: str, current_tag: str, limit: int = 3) -> str:
     pattern = re.compile(
         r"(### Recent Releases \(At a glance\)\n\n"
-        r"\| Version \| Date \| Highlights \| Fixes \| Breaking changes \| Migration \|\n"
-        r"\|---\|---\|---\|---\|---\|---\|\n)"
+        r"\| Release \| The editor change \| What it protects or enables \|\n"
+        r"\|---\|---\|---\|\n)"
         r"(?P<rows>.*?)(?=\n- Full release history:)",
         flags=re.S,
     )
@@ -341,8 +1139,14 @@ def rebuild_readme_changelog_table(readme: str, changelog: str, current_tag: str
     top_tags = sorted_latest_tags(tags, limit=limit, ensure_tag=current_tag)
     rows: list[str] = []
     for tag in top_tags:
-        date, section = extract_changelog_section_meta(changelog, tag)
-        rows.append(build_readme_release_row(tag, date, section))
+        _, section = extract_changelog_section_meta(changelog, tag)
+        title = release_timeline_title(section)
+        description = release_timeline_description(section, limit=150)
+        impact = release_timeline_impact(section, limit=150)
+        rows.append(
+            f"| [`{tag}`](https://github.com/h3pdesign/Neon-Vision-Editor/releases/tag/{tag}) | "
+            f"**{title}** — {description} | {impact} |"
+        )
 
     rows_block = "\n".join(rows) + "\n"
     return readme[: match.start("rows")] + rows_block + readme[match.end("rows") :]
@@ -396,6 +1200,22 @@ def update_readme_release_refs(readme: str, tag: str) -> str:
         f"> Direct GitHub release: **{tag}** / App Store and TestFlight availability varies by platform and review status",
         readme,
     )
+    fallback_tag = README_PREVIOUS_RELEASE_OVERRIDES.get(tag)
+    fallback_line = (
+        f"> Previous viable fallback: **{fallback_tag}**"
+        if fallback_tag
+        else ""
+    )
+    if fallback_line:
+        direct_release_line = (
+            f"> Direct GitHub release: **{tag}** / App Store and TestFlight availability varies by platform and review status"
+        )
+        if re.search(r"(?m)^> Previous viable fallback: .*$", readme):
+            readme = re.sub(r"(?m)^> Previous viable fallback: .*$", fallback_line, readme)
+        else:
+            readme = readme.replace(direct_release_line, f"{direct_release_line}\n{fallback_line}", 1)
+    else:
+        readme = re.sub(r"(?m)^> Previous viable fallback: .*$\n?", "", readme)
     readme = re.sub(
         r"(?m)^- Latest release: \*\*.*\*\*$",
         f"- Latest release: **{tag}**",
@@ -412,7 +1232,7 @@ def update_readme_release_refs(readme: str, tag: str) -> str:
         readme,
     )
     readme = re.sub(
-        r"(?m)^(\| \*\*Stable\*\* \| [^|]+ \| \[GitHub Releases\]\(https://github\.com/h3pdesign/Neon-Vision-Editor/releases\) \| )\*\*v[^*]+\*\*( \| .*)$",
+        r"(?m)^(\| \*\*Stable\*\* \| [^|]+ \| [^|]+ \| \[GitHub Releases\]\(https://github\.com/h3pdesign/Neon-Vision-Editor/releases\) \| )\*\*v[^*]+\*\*( \| Current direct download \|)$",
         rf"\1**{tag}**\2",
         readme,
     )
@@ -444,6 +1264,17 @@ def markdown_bullets(items: list[str], fallback: str) -> str:
     return "\n".join(f"- {item}" for item in items)
 
 
+def whats_new_feature_badges(why_upgrade_items: list[str]) -> list[str]:
+    release_summary = " ".join(why_upgrade_items).lower()
+    if "shared-file sync" not in release_summary:
+        return []
+    return [
+        '<p align="center">',
+        '  <img alt="Shared File Sync" src="https://img.shields.io/badge/Shared%20Files-Open%20Tab%20Sync-14B8A6?style=for-the-badge">',
+        "</p>",
+    ]
+
+
 def update_readme_whats_new_section(
     readme: str,
     changelog: str,
@@ -454,18 +1285,25 @@ def update_readme_whats_new_section(
     heading = whats_new_heading(previous_tag, current_tag)
     current_why = extract_heading_bullets(current_section, "Why Upgrade", limit=3)
     current_highlights = extract_heading_bullets(current_section, "Highlights", limit=5)
+    feature_badges = whats_new_feature_badges(current_why)
 
     sections = [
         heading,
         "",
         "### Why Upgrade",
         "",
-        markdown_bullets([f"{current_tag}: {item}" for item in current_why], f"{current_tag}: See CHANGELOG.md entry."),
-        "",
-        f"### {current_tag} Highlights",
-        "",
-        markdown_bullets(current_highlights, "See CHANGELOG.md release highlights."),
     ]
+    if feature_badges:
+        sections.extend(feature_badges + [""])
+    sections.extend(
+        [
+            markdown_bullets([f"{current_tag}: {item}" for item in current_why], f"{current_tag}: See CHANGELOG.md entry."),
+            "",
+            f"### {current_tag} Highlights",
+            "",
+            markdown_bullets(current_highlights, "See CHANGELOG.md release highlights."),
+        ]
+    )
 
     if adjacent_patch_release(previous_tag, current_tag):
         assert previous_tag is not None
@@ -495,7 +1333,14 @@ def update_readme_whats_new_section(
     )
     if not pattern.search(readme):
         raise ValueError("README missing What's New section before Start Here.")
-    return pattern.sub(replacement, readme, count=1)
+    return pattern.sub(lambda _: replacement, readme, count=1)
+
+
+def readme_previous_release_tag(changelog: str, current_tag: str) -> str | None:
+    preferred_tag = README_PREVIOUS_RELEASE_OVERRIDES.get(current_tag)
+    if preferred_tag and has_changelog_section(changelog, preferred_tag):
+        return preferred_tag
+    return previous_release_tag(changelog, current_tag)
 
 
 def parse_stable_semver(tag: str) -> tuple[int, int, int] | None:
@@ -505,7 +1350,7 @@ def parse_stable_semver(tag: str) -> tuple[int, int, int] | None:
     return int(match.group(1)), int(match.group(2)), int(match.group(3))
 
 
-def update_readme_roadmap_windows(readme: str, tag: str) -> str:
+def update_readme_roadmap_windows(readme: str, tag: str, section: str = "") -> str:
     stable = parse_stable_semver(tag)
     if stable is None:
         return readme
@@ -544,7 +1389,7 @@ def update_readme_roadmap_windows(readme: str, tag: str) -> str:
         r"(?m)^- !\[v[^]]+\]\(https://img\.shields\.io/badge/v[^)]+-22C55E\?style=flat-square\) focuses on .*$",
         (
             f"- ![v{major}.{minor}.{patch}](https://img.shields.io/badge/v{major}.{minor}.{patch}-22C55E?style=flat-square) "
-            "focuses on editor interaction polish, Markdown preview stability, local custom AI endpoints, sidebar terminal improvements, and release workflow hardening."
+            f"focuses on {release_timeline_description(section)}"
         ),
         readme,
     )
@@ -558,7 +1403,7 @@ def update_readme_roadmap_windows(readme: str, tag: str) -> str:
         r"(?m)^- !\[v[^]]+\]\(https://img\.shields\.io/badge/v[^)]+-F59E0B\?style=flat-square\) targets .*$",
         (
             f"- ![v{major}.{minor}.{next_patch}](https://img.shields.io/badge/v{major}.{minor}.{next_patch}-F59E0B?style=flat-square) "
-            f"targets post-{major}.{minor}.{patch} stabilization: App Store review follow-up, README/release metadata freshness, preview polish, and small cross-platform editor fixes."
+            "targets the reviewed changes listed under Unreleased in CHANGELOG.md; scope is not final until release preparation."
         ),
         readme,
     )
@@ -631,6 +1476,9 @@ def update_readme_feature_spotlight(readme: str, tag: str, section_body: str) ->
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare README and CHANGELOG for a release tag.")
     parser.add_argument("tag", help="Release tag, e.g. v0.4.6")
+    parser.add_argument("--notes-only", action="store_true", help="Promote reviewed Unreleased notes before preflight; no other edits")
+    parser.add_argument("--published", action="store_true", help="Promote public download references after verified publication")
+    parser.add_argument("--public-tag", action="store_true", help="Print the public documentation tag without modifying files")
     parser.add_argument(
         "--date",
         help="Release date for a new CHANGELOG section (YYYY-MM-DD). Defaults to today.",
@@ -640,39 +1488,113 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Verify release docs are already up to date without writing files.",
     )
+    parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help="Validate the changelog and localized timeline inputs before release preparation mutates project metadata.",
+    )
+    parser.add_argument(
+        "--build",
+        help="Release build number used by static website fallbacks. Release preparation supplies this after bumping the project build.",
+    )
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
     tag = normalize_tag(args.tag)
+    state = json.loads(read_text(RELEASE_STATE)) if RELEASE_STATE.exists() else None
+    if state is not None:
+        from release_prepare import validate_state
+        validate_state(state)
+    if state is not None and state["tag"] != tag:
+        raise ValueError(f"Release state belongs to {state['tag']}, not {tag}.")
+    public_tag = tag if not state or args.published or state["status"] == "published" else state["published_tag"]
+    if args.public_tag:
+        print(public_tag)
+        return 0
+    if args.check and args.preflight:
+        raise ValueError("--check and --preflight cannot be used together.")
+    if args.build is not None and not re.fullmatch(r"[1-9]\d*", args.build):
+        raise ValueError("Build number must be a positive integer.")
     release_date = args.date or dt.date.today().isoformat()
 
     original_changelog = read_text(CHANGELOG)
+    if args.notes_only:
+        if args.check or args.preflight or args.published:
+            raise ValueError("--notes-only cannot be combined with check/preflight/published.")
+        if not has_changelog_section(original_changelog, tag):
+            promoted = promote_unreleased_section(original_changelog, tag, release_date)
+            if promoted is None:
+                raise ValueError("Write substantive Unreleased notes before preparing a release.")
+            validate_release_input(promoted, tag)
+            write_text(CHANGELOG, promoted)
+        return 0
+    if args.preflight:
+        validate_release_input(original_changelog, tag)
+        print(f"Release input preflight passed for {tag}.")
+        return 0
+
     changelog = original_changelog
     if not has_changelog_section(changelog, tag):
-        changelog = add_changelog_section(changelog, tag, release_date)
+        promoted = promote_unreleased_section(changelog, tag, release_date)
+        changelog = promoted if promoted is not None else add_changelog_section(changelog, tag, release_date)
         if not args.check:
-            print(f"Added CHANGELOG template for {tag} ({release_date}).")
+            action = "Promoted Unreleased notes" if promoted is not None else "Added CHANGELOG template"
+            print(f"{action} for {tag} ({release_date}).")
     elif not args.check:
         print(f"Found existing CHANGELOG section for {tag}.")
 
+    candidate_tag = tag
+    candidate_section = extract_changelog_section(changelog, candidate_tag)
+    bullets = normalize_welcome_tour_bullets(welcome_release_bullets(changelog, candidate_tag, candidate_section))
+    # Candidate notes stay in CHANGELOG and the embedded app welcome screen.
+    # Public download surfaces advance only after verified publication.
+    tag = public_tag
+    candidate_changelog = changelog
+    changelog = public_changelog(changelog, tag)
     section = extract_changelog_section(changelog, tag)
-    prev_tag = previous_release_tag(changelog, tag)
-    bullets = normalize_welcome_tour_bullets(welcome_release_bullets(changelog, tag, section, prev_tag))
+    prev_tag = readme_previous_release_tag(changelog, tag)
 
     original_readme = read_text(README)
     readme = update_readme_release_refs(original_readme, tag)
     readme = update_readme_whats_new_heading(readme, prev_tag, tag)
     readme = update_readme_whats_new_section(readme, changelog, tag, section, prev_tag)
-    readme = update_readme_roadmap_windows(readme, tag)
+    readme = update_readme_roadmap_windows(readme, tag, section)
     readme = update_readme_compare_link(readme, prev_tag, tag)
     readme = update_readme_feature_spotlight(readme, tag, section)
     readme = update_readme_latest_stable_line(readme, tag, changelog)
+    readme = rebuild_readme_release_timeline(readme, changelog, tag)
     readme = rebuild_readme_changelog_table(readme, changelog, tag, limit=3)
+    readme = update_readme_durable_documentation(readme, changelog, tag)
+    readme = re.sub(r"(?m)^> Prepared release: .*\n(?:\n)?", "", readme)
+    if candidate_tag != public_tag:
+        readme = readme.replace("\n", f"\n\n> Prepared release: **{candidate_tag}** — not published. See [candidate notes](CHANGELOG.md).\n", 1)
+
+    original_architecture = read_text(ARCHITECTURE)
+    architecture = update_architecture_release_alignment(original_architecture, candidate_changelog, candidate_tag)
 
     original_welcome_src = read_text(WELCOME_TOUR_SWIFT)
-    welcome_src = update_welcome_tour_release_page(original_welcome_src, tag, bullets, prev_tag)
+    welcome_src = update_welcome_tour_release_page(original_welcome_src, candidate_tag, bullets)
+    welcome_src = update_in_app_changelog(welcome_src, candidate_changelog, candidate_tag)
+
+    original_website = read_text(WEBSITE)
+    website = rebuild_website_release_timeline(original_website, changelog, tag)
+    public_build = str(state["published_build"] if candidate_tag != public_tag else state["build"]) if state else args.build
+    website = update_website_release_fallbacks(website, tag, public_build)
+    original_changelog_page = read_text(CHANGELOG_PAGE)
+    changelog_page = rebuild_changelog_page(original_changelog_page, changelog, tag)
+    original_localized_websites = {locale: read_text(path) for locale, path in LOCALIZED_WEBSITES.items()}
+    localized_websites = {
+        locale: update_localized_website_release_fallbacks(
+            rebuild_localized_website_release_timeline(content, changelog, tag, locale),
+            tag,
+            public_build,
+        )
+        for locale, content in original_localized_websites.items()
+    }
+
+    changelog = candidate_changelog
 
     if args.check:
         outdated_files: list[str] = []
@@ -680,23 +1602,44 @@ def main() -> int:
             outdated_files.append(str(CHANGELOG))
         if readme != original_readme:
             outdated_files.append(str(README))
+        if architecture != original_architecture:
+            outdated_files.append(str(ARCHITECTURE))
         if welcome_src != original_welcome_src:
             outdated_files.append(str(WELCOME_TOUR_SWIFT))
+        if website != original_website:
+            outdated_files.append(str(WEBSITE))
+        if changelog_page != original_changelog_page:
+            outdated_files.append(str(CHANGELOG_PAGE))
+        outdated_files.extend(
+            str(LOCALIZED_WEBSITES[locale])
+            for locale, website_content in localized_websites.items()
+            if website_content != original_localized_websites[locale]
+        )
         if outdated_files:
-            print(f"Release docs are not up to date for {tag}.", file=sys.stderr)
-            print("Run: scripts/prepare_release_docs.py {}{}".format(tag, f" --date {release_date}" if args.date else ""), file=sys.stderr)
+            print(f"Release docs are not up to date for {candidate_tag}.", file=sys.stderr)
+            print("Run: scripts/prepare_release_docs.py {}{}".format(candidate_tag, f" --date {release_date}" if args.date else ""), file=sys.stderr)
             print("Outdated files:", file=sys.stderr)
             for path in outdated_files:
                 print(f"- {path}", file=sys.stderr)
             return 1
-        print(f"Release docs are up to date for {tag}.")
+        print(f"Release docs are up to date for {candidate_tag} (public downloads: {public_tag}).")
         return 0
 
     write_text(CHANGELOG, changelog)
     write_text(README, readme)
+    write_text(ARCHITECTURE, architecture)
     write_text(WELCOME_TOUR_SWIFT, welcome_src)
-    print("Updated README release references and top 3 release rows.")
-    print(f"Updated Welcome Tour release page from CHANGELOG for {tag}.")
+    write_text(WEBSITE, website)
+    write_text(CHANGELOG_PAGE, changelog_page)
+    for locale, path in LOCALIZED_WEBSITES.items():
+        write_text(path, localized_websites[locale])
+    if args.published and state:
+        state["status"] = "published"
+        write_text(RELEASE_STATE, json.dumps(state, indent=2) + "\n")
+    print("Updated README release references, durable feature coverage, and top 3 release rows.")
+    print("Updated architecture release alignment from CHANGELOG.")
+    print("Updated English and localized GitHub Pages release fallbacks and timelines from CHANGELOG.")
+    print(f"Updated Welcome Tour release page from CHANGELOG for {candidate_tag}.")
 
     return 0
 

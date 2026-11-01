@@ -1,0 +1,1235 @@
+import SwiftUI
+import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
+#if os(macOS)
+import AppKit
+#endif
+
+ #if os(iOS) || os(visionOS)
+private struct FileTabBarScrollFadeMask<Mask: View>: ViewModifier {
+    let mask: Mask
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        content.mask(mask)
+    }
+}
+#endif
+
+extension ContentView {
+#if os(iOS) || os(visionOS)
+    var usesIPhoneBottomToolbar: Bool {
+#if os(iOS)
+        IOSAdaptiveLayoutPolicy.usesCompactPhoneToolbar(
+            isPhone: UIDevice.current.userInterfaceIdiom == .phone,
+            regularLayout: usesRegularIOSLayout
+        )
+#else
+        false
+#endif
+    }
+
+    var usesIPadBottomToolbar: Bool {
+#if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .pad ||
+            (UIDevice.current.userInterfaceIdiom == .phone && usesRegularIOSLayout)
+#else
+        false
+#endif
+    }
+
+    var usesIOSBottomToolbar: Bool {
+        usesIPhoneBottomToolbar || usesIPadBottomToolbar
+    }
+
+    struct IPhoneFullWidthModifier: ViewModifier {
+        @ViewBuilder
+        func body(content: Content) -> some View {
+            content
+        }
+    }
+
+    @ViewBuilder
+    var iOSUnifiedToolbarHost: some View {
+        if isIPadToolbarLayout {
+            iPadUnifiedToolbarRow(availableWidth: liveContainerWidth)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
+        } else {
+            GlassSurface(
+                enabled: enableTranslucentWindow || visionOSSystemGlassEnabled,
+                material: primaryGlassMaterial,
+                fallbackColor: iOSNonTranslucentSurfaceColor,
+                shape: .capsule,
+                chromeStyle: .single
+            ) {
+                iPhoneUnifiedToolbarRow
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 6)
+        }
+    }
+
+    var iOSUnifiedDocumentChromeHost: some View {
+        VStack(spacing: 0) {
+            tabBarView
+                .padding(.bottom, 8)
+            if shouldPlaceMarkdownFormattingBelowTabs {
+                iPhoneMarkdownFormattingTopChrome
+            }
+        }
+        .overlay(alignment: .bottom) {
+            if IOSFloatingStatusPolicy.isVisible(
+                brainDumpLayoutEnabled: brainDumpLayoutEnabled,
+                shouldPinToTop: shouldPinFloatingStatusToTop,
+                findPresented: showFindReplace,
+                pinnedPresentation: true
+            ) {
+                iOSPinnedEditingStatusRow
+                    // Align the status below the chrome using its measured height
+                    // instead of assuming a fixed toolbar height.
+                    .alignmentGuide(.bottom) { dimensions in
+                        dimensions[.top]
+                    }
+            }
+        }
+    }
+
+    var iOSUnifiedTopChromeHost: some View {
+        VStack(spacing: 0) {
+            if !usesIOSBottomToolbar {
+                iOSUnifiedToolbarHost
+            }
+            iOSUnifiedDocumentChromeHost
+        }
+    }
+
+    private var iPhoneMarkdownFormattingTopChrome: some View {
+        // Keep the iPad toolbar visually identical to the iPhone control:
+        // both use the same glass capsule, tint, padding, and accessibility
+        // treatment instead of exposing the unwrapped toolbar directly.
+        iPhoneMarkdownFormattingChrome
+            // Collapsed chrome stays compact. Expanded chrome accepts the
+            // available width so its action row can scroll horizontally.
+            .fixedSize(horizontal: markdownFormattingToolbarCollapsed, vertical: false)
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.top, 12)
+            .tint(iOSToolbarForegroundColor)
+    }
+
+    private var iOSPinnedEditingStatusRow: some View {
+        VStack(alignment: .trailing, spacing: 4) {
+            if shouldEmbedMarkdownFormattingInMobileStatusRow {
+                iPhoneMarkdownFormattingStatusControl
+            }
+            floatingStatusPill
+        }
+        .frame(maxWidth: .infinity, alignment: .trailing)
+        .padding(.top, 8)
+        .padding(.horizontal, 12)
+        .padding(.bottom, 8)
+    }
+
+    private var isPhoneCompactStatusMode: Bool {
+        usesCompactIOSLayout && (isPhoneEditorFocused || isPhoneSoftwareKeyboardVisible)
+    }
+
+    private var shouldUseEditingMobileStatusPreset: Bool {
+        usesCompactIOSLayout
+        && mobileEditingStatusPresetEnabled
+        && isPhoneCompactStatusMode
+    }
+
+    var shouldPinFloatingStatusToTop: Bool {
+        IOSFloatingStatusPolicy.shouldPinToTop(
+            isPhoneBottomToolbar: usesIOSBottomToolbar,
+            compactLayout: usesCompactIOSLayout,
+            keyboardVisible: isPhoneSoftwareKeyboardVisible
+        )
+    }
+
+    private var floatingStatusPillText: String {
+        if let externalStatus = viewModel.externalFileRefreshStatus {
+            return externalStatus.message
+        }
+        if !projectRefreshStatusMessage.isEmpty {
+            return projectRefreshStatusMessage
+        }
+        if shouldUseEditingMobileStatusPreset {
+            let items = editingMobileStatusItems
+            let maxItemCount = isPhoneStatusBarExpanded ? items.count : 1
+            return statusBarText(for: items, maxItemCount: maxItemCount)
+        }
+        let maxItemCount = IOSFloatingStatusPolicy.itemLimit(
+            isPhoneBottomToolbar: usesIOSBottomToolbar,
+            compactEditing: isPhoneCompactStatusMode,
+            expanded: isPhoneStatusBarExpanded,
+            regularLimit: mobileStatusBarMaxItemCount
+        )
+        let suffixes = [largeFileStatusBadgeText, remoteSessionStatusBadgeText].filter { !$0.isEmpty }
+        if usesIOSBottomToolbar {
+            return statusBarText(for: statusBarItems() + suffixes, maxItemCount: maxItemCount)
+        }
+        let base = statusBarText(maxItemCount: maxItemCount)
+        if suffixes.isEmpty {
+            return base
+        }
+        return "\(base) • \(suffixes.joined(separator: " • "))"
+    }
+
+    var floatingStatusPill: some View {
+        floatingStatusPillSurface
+            .contentShape(Rectangle())
+            .onTapGesture {
+                guard usesIOSBottomToolbar || isPhoneCompactStatusMode else { return }
+                isPhoneStatusBarExpanded.toggle()
+                if isPhoneStatusBarExpanded {
+                    schedulePhoneStatusAutoCollapse()
+                } else {
+                    cancelPhoneStatusAutoCollapse()
+                }
+            }
+            .accessibilityLabel("Editor status")
+            .accessibilityValue(floatingStatusPillText)
+            .accessibilityHint(usesIOSBottomToolbar || isPhoneCompactStatusMode ? "Double tap to expand or collapse editor status details" : "")
+    }
+
+    @ViewBuilder
+    private var floatingStatusPillSurface: some View {
+#if os(iOS)
+        if usesIOSBottomToolbar {
+            floatingStatusPillLabel
+                .background {
+                    IOSAdaptiveChromeBackground(enabled: shouldUseLiquidGlass)
+                        .clipShape(Capsule())
+                }
+        } else {
+            floatingStatusMaterialPill
+        }
+#else
+        floatingStatusMaterialPill
+#endif
+    }
+
+    private var floatingStatusMaterialPill: some View {
+        GlassSurface(
+            enabled: shouldUseLiquidGlass,
+            material: primaryGlassMaterial,
+            fallbackColor: toolbarFallbackColor,
+            shape: .capsule,
+            chromeStyle: .single
+        ) {
+            floatingStatusPillLabel
+        }
+    }
+
+    private var floatingStatusPillLabel: some View {
+        Text(floatingStatusPillText)
+            .font(.system(size: 12, weight: .medium, design: .monospaced))
+            .lineLimit(1)
+            .minimumScaleFactor(0.85)
+            .foregroundStyle(iOSToolbarForegroundColor)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+    }
+
+    var iOSToolbarForegroundColor: Color {
+        if toolbarIconsBlueIOS {
+            return NeonUIStyle.accentBlue
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.95) : Color.primary.opacity(0.92)
+    }
+#endif
+
+    private var macStatusBarText: String {
+        statusBarText(maxItemCount: nil)
+    }
+
+    private func statusBarText(maxItemCount: Int?) -> String {
+        statusBarText(for: statusBarItems(), maxItemCount: maxItemCount)
+    }
+
+    private func statusBarText(for allItems: [String], maxItemCount: Int?) -> String {
+        var items = allItems
+        var hiddenItemCount = 0
+        if let maxItemCount {
+            hiddenItemCount = max(0, allItems.count - maxItemCount)
+            items = Array(allItems.prefix(maxItemCount))
+        }
+        if items.isEmpty {
+            items = ["Ready"]
+        }
+        if hiddenItemCount > 0 {
+            items.append("+\(hiddenItemCount)")
+        }
+        return "\(items.joined(separator: " • "))\(vimStatusSuffix)"
+    }
+
+    private var editingMobileStatusItems: [String] {
+        var items: [String] = [caretStatus]
+        if let selection = selectionStatusText {
+            items.append(selection)
+        }
+        if !largeFileStatusBadgeText.isEmpty {
+            items.append(largeFileStatusBadgeText)
+        }
+        return items
+    }
+
+#if os(iOS) || os(visionOS)
+    @MainActor
+    func handlePhoneKeyboardVisibilityChange(isVisible: Bool) {
+        isPhoneSoftwareKeyboardVisible = isVisible
+        cancelPhoneStatusAutoCollapse()
+        isPhoneStatusBarExpanded = false
+        if isVisible {
+            markdownFormattingToolbarCollapsed = true
+        }
+    }
+
+    @MainActor
+    func schedulePhoneStatusAutoCollapse() {
+        cancelPhoneStatusAutoCollapse()
+        guard usesIOSBottomToolbar || isPhoneCompactStatusMode else { return }
+        phoneStatusAutoCollapseTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            guard !Task.isCancelled else { return }
+            isPhoneStatusBarExpanded = false
+            phoneStatusAutoCollapseTask = nil
+        }
+    }
+
+    @MainActor
+    func cancelPhoneStatusAutoCollapse() {
+        phoneStatusAutoCollapseTask?.cancel()
+        phoneStatusAutoCollapseTask = nil
+    }
+#endif
+
+    private func statusBarItems() -> [String] {
+        var items: [String] = []
+        // FORK: format/minify/transform/line-ending/copy feedback. Shown first so it isn't
+        // truncated on narrow layouts (see `maxItemCount` callers).
+        if !forkStatusMessage.isEmpty {
+            items.append(forkStatusMessage)
+        }
+        if statusBarShowCursor {
+            items.append(caretStatus)
+        }
+        if statusBarShowLineCount {
+            items.append("Lines: \(statusLineCount)")
+        }
+        if statusBarShowWordCount && !effectiveLargeFileModeEnabled {
+            items.append("Words: \(statusWordCount)")
+        }
+        if statusBarShowEncoding {
+#if !os(macOS)
+            items.append(viewModel.selectedTab?.fileEncoding.displayName ?? "UTF-8")
+#endif
+        }
+        if statusBarShowLineEndings {
+            items.append(lineEndingStatusText)
+        }
+        if statusBarShowIndentation {
+            items.append(indentationStatusText)
+        }
+        if statusBarShowSelection, let selection = selectionStatusText {
+            items.append(selection)
+        }
+        if statusBarShowFileSize {
+            items.append(fileSizeStatusText)
+        }
+        if statusBarShowLastModified, let modified = lastModifiedStatusText {
+            items.append(modified)
+        }
+        if statusBarShowGit, let git = gitStatusText {
+            items.append(git)
+        }
+        return items
+    }
+
+    /// FORK: last-modified timestamp for the status bar. Reads the tab's in-memory
+    /// `lastKnownFileModificationDate` (no per-render filesystem stat). Nil for unsaved buffers.
+    private var lastModifiedStatusText: String? {
+        guard let date = viewModel.selectedTab?.lastKnownFileModificationDate else { return nil }
+        return "Modified: " + date.formatted(date: .abbreviated, time: .shortened)
+    }
+
+#if os(iOS) || os(visionOS)
+    private var mobileStatusBarMaxItemCount: Int {
+        usesRegularIOSLayout ? 5 : 3
+    }
+#endif
+
+    private var lineEndingStatusText: String {
+        viewModel.selectedTab?.lineEnding.displayName ?? "LF"
+    }
+
+    private var indentationStatusText: String {
+        let label = indentStyle == "tabs"
+            ? NSLocalizedString("Tabs", comment: "Indentation status")
+            : NSLocalizedString("Spaces", comment: "Indentation status")
+        return String.localizedStringWithFormat(NSLocalizedString("%@: %lld", comment: "Indentation status"), label, Int64(indentWidth))
+    }
+
+    private var selectionStatusText: String? {
+        guard !currentSelectionSnapshotText.isEmpty else { return nil }
+        let lines = selectionLineCount(for: currentSelectionSnapshotText)
+        if lines > 1 {
+            return String.localizedStringWithFormat(NSLocalizedString("Sel: %lld lines", comment: "Selection status"), Int64(lines))
+        }
+        let count = currentSelectionSnapshotText.count
+        let format = count == 1
+            ? NSLocalizedString("Sel: %lld char", comment: "Selection status")
+            : NSLocalizedString("Sel: %lld chars", comment: "Selection status")
+        return String.localizedStringWithFormat(format, Int64(count))
+    }
+
+    private func selectionLineCount(for text: String) -> Int {
+        guard !text.isEmpty else { return 1 }
+        var count = 1
+        for codeUnit in text.utf16 where codeUnit == 10 {
+            count += 1
+        }
+        return count
+    }
+
+    private var fileSizeStatusText: String {
+        let byteCount = viewModel.selectedTab?.fileByteCount ?? currentContent.utf8.count
+        return ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+    }
+
+    private var gitStatusText: String? {
+        guard gitViewModel.isRepo else { return nil }
+        let branch = gitViewModel.branch.trimmingCharacters(in: .whitespacesAndNewlines)
+        let branchText = branch.isEmpty ? "Git" : branch
+        let changedCount = gitViewModel.entries.count
+        if changedCount > 0 {
+            return "\(branchText): \(changedCount) changes"
+        }
+        return branchText
+    }
+
+#if os(macOS)
+    private var encodingStatusMenu: some View {
+        Menu {
+            Section("Save Encoding") {
+            let selectedEncoding = viewModel.selectedTab?.fileEncoding
+            ForEach(TextEncodingDescriptor.all) { encoding in
+                Button {
+                    guard let tabID = viewModel.selectedTab?.id else { return }
+                    guard viewModel.selectedTab?.usesFileBackedStorage != true else {
+                        viewModel.fileEncodingErrorMessage = "Changing text encoding is not available for large virtual documents yet."
+                        return
+                    }
+                    guard encoding.encodedData(
+                        for: (viewModel.selectedTab?.lineEnding ?? .lf).applying(to: currentContent)
+                    ) != nil else {
+                        viewModel.fileEncodingErrorMessage =
+                            "\(encoding.displayName) cannot represent every character in this document. Choose a Unicode encoding to avoid data loss."
+                        return
+                    }
+                    viewModel.saveFile(tabID: tabID, using: encoding)
+                } label: {
+                    HStack {
+                        Text("Save Using \(encoding.displayName)")
+                        if selectedEncoding == encoding {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                .disabled(viewModel.selectedTab?.isReadOnlyPreview != false || viewModel.selectedTab?.usesFileBackedStorage == true)
+            }
+            }
+
+            Section("Line Endings") {
+                let selectedLineEnding = viewModel.selectedTab?.lineEnding
+                Button {
+                    guard let tabID = viewModel.selectedTab?.id else { return }
+                    viewModel.setLineEnding(tabID: tabID, lineEnding: .lf)
+                } label: {
+                    Label("LF (Unix)", systemImage: selectedLineEnding == .lf ? "checkmark" : "")
+                }
+                Button {
+                    guard let tabID = viewModel.selectedTab?.id else { return }
+                    viewModel.setLineEnding(tabID: tabID, lineEnding: .crlf)
+                } label: {
+                    Label("CRLF (Windows)", systemImage: selectedLineEnding == .crlf ? "checkmark" : "")
+                }
+            }
+
+            Divider()
+
+            Button("Reopen and Detect Encoding") {
+                guard let tabID = viewModel.selectedTab?.id else { return }
+                viewModel.reopenFileWithAutomaticEncoding(tabID: tabID)
+            }
+            .disabled(!canReopenSelectedTabWithEncoding)
+
+            Button("Reopen with Selected Encoding") {
+                guard let tabID = viewModel.selectedTab?.id else { return }
+                viewModel.reopenFileWithSelectedEncoding(tabID: tabID)
+            }
+            .disabled(!canReopenSelectedTabWithEncoding)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "textformat.abc")
+                Text(
+                    "\(viewModel.selectedTab?.fileEncoding.displayName ?? "UTF-8") · " +
+                    "\(viewModel.selectedTab?.lineEnding.displayName ?? "LF")"
+                )
+                Image(systemName: "chevron.up")
+                    .font(.caption2.weight(.semibold))
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(NeonUIStyle.accentBlue)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Document format")
+        .accessibilityValue(
+            "\(viewModel.selectedTab?.fileEncoding.displayName ?? "UTF-8"), " +
+            "\(viewModel.selectedTab?.lineEnding.displayName ?? "LF")"
+        )
+        .accessibilityHint("Opens encoding, byte order mark, and line-ending choices above the status bar.")
+    }
+
+    private var canReopenSelectedTabWithEncoding: Bool {
+        guard let tab = viewModel.selectedTab else { return false }
+        return tab.fileURL != nil && !tab.isReadOnlyPreview && !tab.isLoadingContent
+    }
+
+    private var syncChangesMenu: some View {
+        Menu {
+            ForEach(viewModel.recentExternalSyncChanges) { change in
+                Menu {
+                    Button("Open Tab") {
+                        viewModel.selectTab(id: change.tabID)
+                    }
+                    if change.kind == .needsReview {
+                        Button("Review Diff") {
+                            viewModel.selectTab(id: change.tabID)
+                            Task {
+                                guard let snapshot = await viewModel.compareCurrentTabAgainstDiskSnapshot(
+                                    tabID: change.tabID
+                                ) else { return }
+                                await presentDocumentDiff(snapshot)
+                            }
+                        }
+                    }
+                    if let url = viewModel.tabs.first(where: { $0.id == change.tabID })?.fileURL {
+                        Button("Reveal in Finder") {
+                            NSWorkspace.shared.activateFileViewerSelecting([url])
+                        }
+                    }
+                } label: {
+                    Label(syncChangeMenuTitle(change), systemImage: syncChangeSystemImage(change.kind))
+                }
+            }
+            Divider()
+            Button("Clear History", role: .destructive) {
+                viewModel.clearRecentExternalSyncChanges()
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.triangle.2.circlepath")
+                Text("Sync: \(viewModel.recentExternalSyncChanges.count)")
+                Image(systemName: "chevron.up")
+                    .font(.caption2.weight(.semibold))
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(syncChangesNeedsReview ? Color.orange : NeonUIStyle.accentBlue)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .accessibilityLabel("Sync changes")
+        .accessibilityValue(
+            syncChangesNeedsReview
+                ? "\(viewModel.recentExternalSyncChanges.count) recent changes, review required"
+                : "\(viewModel.recentExternalSyncChanges.count) recent changes"
+        )
+        .accessibilityHint("Opens the ten latest external file sync changes above the status bar.")
+    }
+
+    private func syncChangeMenuTitle(_ change: EditorViewModel.ExternalSyncChange) -> String {
+        let state = change.kind == .needsReview ? "Needs review" : "Refreshed"
+        let timestamp = change.timestamp.formatted(.relative(presentation: .named))
+        return "\(state): \(change.fileName) — \(timestamp)"
+    }
+
+    private var syncChangesNeedsReview: Bool {
+        viewModel.recentExternalSyncChanges.contains { $0.kind == .needsReview }
+    }
+
+    private func syncChangeSystemImage(_ kind: EditorViewModel.ExternalSyncChangeKind) -> String {
+        switch kind {
+        case .refreshed: return "checkmark.circle"
+        case .needsReview: return "exclamationmark.triangle"
+        }
+    }
+#endif
+
+    private var externalFileRefreshStatusSystemImage: String {
+        switch viewModel.externalFileRefreshStatus?.kind {
+        case .refreshing: return "arrow.clockwise"
+        case .refreshed: return "checkmark.circle"
+        case .needsReview: return "exclamationmark.triangle"
+        case nil: return "arrow.clockwise"
+        }
+    }
+
+    @ViewBuilder
+    var wordCountView: some View {
+        HStack(spacing: 10) {
+            if let externalStatus = viewModel.externalFileRefreshStatus {
+                Label(
+                    externalStatus.message,
+                    systemImage: externalFileRefreshStatusSystemImage
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(externalStatus.kind == .needsReview ? Color.orange : Color.secondary)
+                .lineLimit(1)
+                .accessibilityLabel("External file refresh status")
+                .accessibilityValue(externalStatus.message)
+                .padding(.leading, 12)
+            }
+
+            if !projectRefreshStatusMessage.isEmpty {
+                Label(
+                    projectRefreshStatusMessage,
+                    systemImage: isProjectFileIndexing ? "arrow.clockwise" : "checkmark.circle"
+                )
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .accessibilityLabel("Project refresh status")
+                .accessibilityValue(projectRefreshStatusMessage)
+                .padding(.leading, 12)
+            }
+
+            if droppedFileLoadInProgress {
+                HStack(spacing: 8) {
+                    if droppedFileProgressDeterminate {
+                        ProgressView(value: droppedFileLoadProgress)
+                            .progressViewStyle(.linear)
+                            .frame(width: 130)
+                    } else {
+                        ProgressView()
+                            .frame(width: 18)
+                    }
+                    Text(droppedFileProgressDeterminate ? "\(droppedFileLoadLabel) \(importProgressPercentText)" : "\(droppedFileLoadLabel) Loading…")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                .padding(.leading, 12)
+            }
+
+            if !remoteSessionStatusBadgeText.isEmpty {
+                remoteSessionBadge
+            }
+            if !selectedRemoteDocumentBadgeText.isEmpty {
+                selectedRemoteDocumentBadge
+            }
+            Spacer()
+            HStack(spacing: 8) {
+                Text(macStatusBarText)
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if statusBarShowCursor {
+                    Button(action: copyCurrentEditorReference) {
+                        Image(systemName: "doc.on.doc")
+                    }
+                    .buttonStyle(.plain)
+                    .help("Copy current editor reference")
+                    .accessibilityLabel("Copy current editor reference")
+                }
+                if shouldPresentLargeFileSessionUI {
+                    largeFileSessionBadge
+                }
+#if os(macOS)
+                if statusBarShowEncoding, viewModel.selectedTab != nil {
+                    encodingStatusMenu
+                }
+                if !viewModel.recentExternalSyncChanges.isEmpty {
+                    syncChangesMenu
+                }
+#endif
+            }
+            .padding(.bottom, 8)
+            .padding(.trailing, 16)
+        }
+        .background(forkStatusBarBackgroundStyle) // FORK E16: status bar elevation step
+    }
+
+    // FORK E16: status bar sits one elevation step above the panel chrome in the
+    // A2 surface system; upstream surface style otherwise.
+    private var forkStatusBarBackgroundStyle: AnyShapeStyle {
+#if os(macOS)
+        if let fork = forkChromeColor(.statusBar) { return AnyShapeStyle(fork) }
+#endif
+        return editorSurfaceBackgroundStyle
+    }
+
+    private var largeFileStatusBadge: some View {
+        Text(largeFileStatusBadgeText)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.16))
+            )
+            .accessibilityLabel("Large file mode")
+            .accessibilityValue(currentLargeFileOpenModeAccessibilityLabel)
+            .accessibilityHint(largeFileModeFeatureDetails)
+    }
+
+    private var remoteSessionBadge: some View {
+        Text(remoteSessionStatusBadgeText)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(remoteSessionBadgeForegroundColor)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(remoteSessionBadgeBackgroundColor)
+            )
+            .accessibilityLabel("Remote session status")
+            .accessibilityValue(remoteSessionBadgeAccessibilityValue)
+    }
+
+    private var selectedRemoteDocumentBadgeText: String {
+        guard let tab = viewModel.selectedTab, tab.isRemoteDocument else { return "" }
+        return tab.isReadOnlyPreview ? "Remote Document • Read-Only" : "Remote Document • Editable"
+    }
+
+    private var selectedRemoteDocumentBadge: some View {
+        Text(selectedRemoteDocumentBadgeText)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule(style: .continuous)
+                    .fill(Color.secondary.opacity(0.16))
+            )
+            .accessibilityLabel("Selected document status")
+            .accessibilityValue(selectedRemoteDocumentBadgeText)
+    }
+
+    var largeFileSessionBadge: some View {
+        Menu {
+            largeFileOpenModeMenuContent
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "bolt.horizontal.circle.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(NeonUIStyle.accentBlue)
+                Text(largeFileStatusBadgeText)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background {
+#if os(macOS) || os(iOS)
+                if #available(macOS 26.0, iOS 26.0, *) {
+                    Color.clear.glassEffect(.regular, in: Capsule(style: .continuous))
+                } else {
+                    Color.clear.background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                }
+#else
+                Color.clear.background(.ultraThinMaterial, in: Capsule(style: .continuous))
+#endif
+            }
+        }
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel("Large file session")
+        .accessibilityValue(currentLargeFileOpenModeAccessibilityLabel)
+        .accessibilityHint("\(largeFileModeFeatureDetails) Open large file mode options.")
+    }
+
+    @ViewBuilder
+    private var largeFileOpenModeMenuContent: some View {
+        Section("Large File Mode") {
+            Text("\(currentDocumentFileSizeText) • \(viewModel.selectedTab?.isPartialFilePreview == true ? "Read-Only" : "Editable")")
+            Text(largeFileModeFeatureDetails)
+        }
+        Divider()
+        Button {
+            largeFileOpenModeRaw = "standard"
+        } label: {
+            largeFileOpenModeMenuLabel(title: "Standard", isSelected: largeFileOpenModeRaw == "standard")
+        }
+        Button {
+            largeFileOpenModeRaw = "deferred"
+        } label: {
+            largeFileOpenModeMenuLabel(title: "Responsive", isSelected: largeFileOpenModeRaw == "deferred")
+        }
+        Button {
+            largeFileOpenModeRaw = "plainText"
+        } label: {
+            largeFileOpenModeMenuLabel(title: "Plain Text", isSelected: largeFileOpenModeRaw == "plainText")
+        }
+    }
+
+    private func largeFileOpenModeMenuLabel(title: String, isSelected: Bool) -> some View {
+        HStack {
+            Text(title)
+            Spacer(minLength: 10)
+            if isSelected {
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func tabRemoteBadge(for tab: TabData) -> some View {
+        if tab.isRemoteDocument {
+            Text("Remote")
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundStyle(viewModel.selectedTabID == tab.id ? Color.accentColor : Color.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 2)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(Color.accentColor.opacity(viewModel.selectedTabID == tab.id ? 0.16 : 0.10))
+                )
+        }
+    }
+
+    private func tabAccessibilityLabel(for tab: TabData) -> String {
+        var parts: [String] = [tab.name]
+        if tab.isRemoteDocument {
+            parts.append(tab.isReadOnlyPreview ? "remote read only document" : "remote editable document")
+        } else {
+            parts.append("local document")
+        }
+        if tab.isDirty {
+            parts.append("unsaved changes")
+        }
+        return parts.joined(separator: ", ")
+    }
+
+#if os(macOS)
+    /// FORK shell redesign: in-app pill tabs inside the editor card. Replaces
+    /// the native window tab bar (tabbingMode is .disallowed when the fork
+    /// in-app tabs flag is on), so documents open as tabs in this window.
+    var forkMacTabStrip: some View {
+        HStack(spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(viewModel.tabs) { tab in
+                        forkMacTabPill(tab)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+            Button { viewModel.addNewTab() } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(width: 24, height: 22)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("New Tab (Cmd+T)")
+        }
+        .padding(.horizontal, 8)
+        .frame(height: 34)
+        .background(macToolbarBackgroundStyle)
+    }
+
+    @ViewBuilder
+    private func forkMacTabContextMenu(_ tab: TabData) -> some View {
+        let index = viewModel.tabs.firstIndex { $0.id == tab.id } ?? 0
+        let others = viewModel.tabs.filter { $0.id != tab.id }
+        let toTheRight = Array(viewModel.tabs.dropFirst(index + 1))
+        Button("Close Tab", systemImage: "xmark") { requestCloseTab(tab) }
+        Button("Close Other Tabs") { forkCloseTabsSkippingDirty(others) }
+            .disabled(others.isEmpty)
+        Button("Close Tabs to the Right") { forkCloseTabsSkippingDirty(toTheRight) }
+            .disabled(toTheRight.isEmpty)
+        Divider()
+        Button("Copy File Name", systemImage: "doc.on.doc") {
+            forkCopyToPasteboard(tab.fileURL?.lastPathComponent ?? tab.name)
+        }
+        Button("Copy File Path", systemImage: "link") {
+            if let path = tab.fileURL?.path { forkCopyToPasteboard(path) }
+        }
+        .disabled(tab.fileURL == nil)
+        Button("Reveal in Finder", systemImage: "folder") {
+            if let url = tab.fileURL { NSWorkspace.shared.activateFileViewerSelecting([url]) }
+        }
+        .disabled(tab.fileURL == nil)
+    }
+
+    /// Bulk close never discards edits: clean tabs close, tabs with unsaved
+    /// changes stay open for the user to save or close individually.
+    private func forkCloseTabsSkippingDirty(_ tabs: [TabData]) {
+        for tab in tabs where !tab.isDirty {
+            viewModel.closeTab(tabID: tab.id)
+        }
+    }
+
+    private func forkCopyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
+    }
+
+    private func forkMacTabPill(_ tab: TabData) -> some View {
+        let isSelected = viewModel.selectedTabID == tab.id
+        let isPrevious = !isSelected && previousSelectedTabID == tab.id
+        // Not a Button wrapping a Button: a nested close button would fire the
+        // select action on the same click. Tap gesture selects; only the ✕ is
+        // a real button.
+        return HStack(spacing: 5) {
+            Text(tab.name)
+                .font(.system(size: 12, weight: isSelected ? .medium : .regular))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            if tab.isDirty {
+                Circle().fill(.secondary).frame(width: 5, height: 5)
+            }
+            Button {
+                requestCloseTab(tab)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .opacity(isSelected ? 0.7 : 0.4)
+            .help("Close Tab")
+        }
+        .padding(.horizontal, 10)
+        .frame(height: 26)
+        .frame(minWidth: 70, maxWidth: 200)
+        .background(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(forkMacTabPillFill(isSelected: isSelected, isPrevious: isPrevious))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(isSelected ? macShellCardStroke
+                        : isPrevious ? Color.accentColor.opacity(0.35)
+                        : Color.clear,
+                        lineWidth: 1)
+        )
+        .foregroundStyle(forkMacTabPillForeground(isSelected: isSelected, isPrevious: isPrevious))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if viewModel.selectedTabID != tab.id {
+                previousSelectedTabID = viewModel.selectedTabID
+                viewModel.selectTab(id: tab.id)
+            }
+        }
+        .help(tab.fileURL.map { ($0.path as NSString).abbreviatingWithTildeInPath } ?? tab.name)
+        .contextMenu { forkMacTabContextMenu(tab) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(tab.name)
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+        .accessibilityAction {
+            if viewModel.selectedTabID != tab.id {
+                previousSelectedTabID = viewModel.selectedTabID
+                viewModel.selectTab(id: tab.id)
+            }
+        }
+    }
+
+    private func forkMacTabPillFill(isSelected: Bool, isPrevious: Bool) -> AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(editorSurfaceBackgroundStyle) }
+        if isPrevious { return AnyShapeStyle(Color.accentColor.opacity(0.09)) }
+        return AnyShapeStyle(Color.clear)
+    }
+
+    private func forkMacTabPillForeground(isSelected: Bool, isPrevious: Bool) -> AnyShapeStyle {
+        if isSelected { return AnyShapeStyle(HierarchicalShapeStyle.primary) }
+        if isPrevious { return AnyShapeStyle(Color.accentColor.opacity(0.9)) }
+        return AnyShapeStyle(HierarchicalShapeStyle.secondary)
+    }
+#endif
+
+    @ViewBuilder
+    var tabBarView: some View {
+#if os(macOS)
+        // AppKit owns the document tab bar outside the SwiftUI editor content.
+        EmptyView()
+#else
+        VStack(spacing: 0) {
+#if os(iOS)
+            GlassSurface(
+                // Keep the tab strip tied to the editor theme. Window
+                // translucency should apply to the tab strip as well.
+                enabled: enableTranslucentWindow,
+                material: primaryGlassMaterial,
+                fallbackColor: iOSNonTranslucentSurfaceColor,
+                shape: .rounded(18),
+                chromeStyle: .single
+            ) {
+                MobileNativeFileTabBar(
+                    tabs: viewModel.tabs.map {
+                        MobileNativeFileTabSnapshot(
+                            id: $0.id,
+                            title: $0.name,
+                            isDirty: $0.isDirty,
+                            isRemote: $0.isRemoteDocument,
+                            isReadOnly: $0.isReadOnlyPreview
+                        )
+                    },
+                    selectedTabID: viewModel.selectedTabID,
+                    transitionColor: UIColor(iOSNonTranslucentSurfaceColor),
+                    transitionOpacity: enableTranslucentWindow ? 0.35 : 1,
+                    onSelect: { viewModel.selectTab(id: $0) },
+                    onClose: { tabID in
+                        guard let tab = viewModel.tabs.first(where: { $0.id == tabID }) else { return }
+                        requestCloseTab(tab)
+                    },
+                    onMove: { sourceID, destinationID, insertBefore in
+                        reorderDroppedTab(
+                            draggedTabID: sourceID,
+                            destinationTabID: destinationID,
+                            insertBefore: insertBefore
+                        )
+                    },
+                    onAdd: { viewModel.addNewTab() }
+                )
+            }
+#elseif os(visionOS)
+            GlassSurface(
+                enabled: visionOSSystemGlassEnabled,
+                material: primaryGlassMaterial,
+                fallbackColor: iOSNonTranslucentSurfaceColor,
+                shape: .rounded(14),
+                chromeStyle: .single
+            ) {
+                scrollableFileTabBar
+            }
+#else
+            EmptyView()
+#endif
+        }
+#if os(iOS)
+        .frame(height: min(max(mobileTabBarHeight, 42), 60), alignment: .center)
+        .background(
+            enableTranslucentWindow
+                ? AnyShapeStyle(.ultraThinMaterial)
+                : AnyShapeStyle(iOSNonTranslucentSurfaceColor)
+        )
+#else
+        .frame(height: min(max(mobileTabBarHeight, 42), 60), alignment: .center)
+        .background(
+            enableTranslucentWindow
+            ? AnyShapeStyle(.ultraThinMaterial)
+            : (useIOSUnifiedSolidSurfaces ? AnyShapeStyle(iOSNonTranslucentSurfaceColor) : AnyShapeStyle(Color.clear))
+        )
+        .contentShape(Rectangle())
+        .zIndex(10)
+#endif
+#endif
+    }
+
+#if os(iOS)
+    private func reorderDroppedTab(
+        draggedTabID: UUID,
+        destinationTabID: UUID,
+        insertBefore: Bool
+    ) {
+        guard draggedTabID != destinationTabID else { return }
+        if insertBefore {
+            viewModel.moveTab(tabID: draggedTabID, beforeTabID: destinationTabID)
+        } else {
+            viewModel.moveTab(tabID: draggedTabID, afterTabID: destinationTabID)
+        }
+    }
+#endif
+
+#if os(visionOS)
+    private var scrollableFileTabBar: some View {
+        ScrollViewReader { proxy in
+            ScrollView(.horizontal, showsIndicators: false) {
+                fileTabBarContent
+                    .padding(5)
+                    .background(
+                        fileTabBarContainerShape
+                            .fill(visionOSSystemGlassEnabled ? Color.clear : Color.secondary.opacity(0.065))
+                    )
+                    .overlay(
+                        fileTabBarContainerShape
+                            .stroke(Color.secondary.opacity(0.10), lineWidth: 1)
+                    )
+                    .clipShape(fileTabBarContainerShape)
+                    .padding(.leading, tabBarLeadingPadding)
+                    .padding(.trailing, 10)
+                    .padding(.vertical, 6)
+            }
+            .onChange(of: viewModel.selectedTabID) { _, selectedTabID in
+                guard let selectedTabID else { return }
+                proxy.scrollTo(selectedTabID)
+            }
+        }
+        .modifier(FileTabBarScrollFadeMask(mask: fileTabBarScrollMask))
+    }
+
+    private var fileTabBarContent: some View {
+        HStack(spacing: 6) {
+            if viewModel.tabs.isEmpty {
+                emptyFileTabButton
+            } else {
+                ForEach(viewModel.tabs) { tab in
+                    fileTabItem(for: tab)
+                        .id(tab.id)
+                }
+            }
+        }
+    }
+
+    private var emptyFileTabButton: some View {
+        Button {
+            viewModel.addNewTab()
+        } label: {
+            HStack(spacing: 6) {
+                Text("Untitled 1")
+                    .lineLimit(1)
+                    .font(.system(size: 12, weight: .semibold))
+                Image(systemName: "plus")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(NeonUIStyle.accentBlue)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color.accentColor.opacity(0.18))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func fileTabItem(for tab: TabData) -> some View {
+        let isSelected = viewModel.selectedTabID == tab.id
+        return HStack(spacing: 8) {
+            fileTabSelectButton(for: tab, isSelected: isSelected)
+            fileTabCloseButton(for: tab)
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(0.24) : Color.secondary.opacity(0.07))
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func fileTabSelectButton(for tab: TabData, isSelected: Bool) -> some View {
+        Button {
+            viewModel.selectTab(id: tab.id)
+        } label: {
+            fileTabTitleContent(for: tab, isSelected: isSelected)
+                .padding(.leading, 10)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(tabAccessibilityLabel(for: tab))
+        .accessibilityHint("Selects this editor tab.")
+#if os(macOS)
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded { requestCloseTab(tab) }
+        )
+#elseif os(iOS)
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded { requestCloseTab(tab) }
+        )
+#endif
+    }
+
+    private func fileTabTitleContent(for tab: TabData, isSelected: Bool) -> some View {
+        HStack(spacing: 6) {
+            tabRemoteBadge(for: tab)
+            Text(tab.name + (tab.isDirty ? " •" : ""))
+                .lineLimit(1)
+                .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+            if tab.isReadOnlyPreview {
+                Image(systemName: "lock.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func fileTabCloseButton(for tab: TabData) -> some View {
+        Button {
+            requestCloseTab(tab)
+        } label: {
+            Image(systemName: "xmark")
+                .font(.system(size: 10, weight: .bold))
+                .padding(.trailing, 10)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
+        .help("Close \(tab.name)")
+    }
+
+    private var usesMarkdownPreviewTabTransition: Bool {
+        isMarkdownPreviewSplitVisible
+    }
+
+    private var usesTrailingTabTransition: Bool {
+        usesMarkdownPreviewTabTransition
+    }
+
+    @ViewBuilder
+    private var fileTabBarScrollMask: some View {
+        if usesTrailingTabTransition {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: 0.035),
+                    .init(color: .black, location: 0.965),
+                    .init(color: usesTrailingTabTransition ? .clear : .black, location: 1)
+                ],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+        } else {
+            Rectangle()
+        }
+    }
+
+
+    private var fileTabBarContainerShape: RoundedRectangle {
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+    }
+#endif
+
+    private var vimStatusSuffix: String {
+#if os(macOS)
+        guard vimModeEnabled else { return " • Vim: OFF" }
+        return vimInsertMode ? " • Vim: INSERT" : " • Vim: NORMAL"
+#else
+        guard usesRegularIOSLayout else { return "" }
+        guard vimModeEnabled else { return " • Vim: OFF" }
+        return vimInsertMode ? " • Vim: INSERT" : " • Vim: NORMAL"
+#endif
+    }
+
+    var importProgressPercentText: String {
+        let clamped = min(max(droppedFileLoadProgress, 0), 1)
+        if clamped > 0, clamped < 0.01 { return "1%" }
+        return "\(Int(clamped * 100))%"
+    }
+}

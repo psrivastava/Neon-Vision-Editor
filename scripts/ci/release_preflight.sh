@@ -84,6 +84,7 @@ scripts/ci/privacy_log_audit.sh
 scripts/ci/review_metadata_audit.py
 scripts/ci/markdown_preview_remote_audit.sh
 python3 scripts/ci/markdown_preview_theme_audit.py
+python3 scripts/ci/check_performance_budget.py
 echo "Skipping App Clip card asset check; App Clip cards are App Store metadata, not GitHub release artifacts."
 scripts/ci/localization_audit.py
 
@@ -91,6 +92,14 @@ SAFE_TAG="$(echo "$TAG" | tr -c 'A-Za-z0-9_' '_')"
 WORK_DIR="/tmp/nve_release_preflight_${SAFE_TAG}"
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR"
+DERIVED_DATA_PATH="${NVE_RELEASE_DERIVED_DATA_PATH:-${WORK_DIR}/DerivedData}"
+
+section "Quick Look syntax routes"
+xcrun swiftc \
+  "Project/Sources/Neon Vision Editor Quick Look/TokenKind.swift" \
+  scripts/ci/quicklook_syntax_regressions.swift \
+  -o "${WORK_DIR}/quicklook-syntax-regressions"
+"${WORK_DIR}/quicklook-syntax-regressions"
 
 section "Critical runtime tests"
 echo "Running critical runtime tests..."
@@ -99,7 +108,7 @@ run_critical_tests() {
     -project "Neon Vision Editor.xcodeproj" \
     -scheme "Neon Vision Editor" \
     -destination "platform=macOS" \
-    -derivedDataPath "${WORK_DIR}/DerivedData" \
+    -derivedDataPath "$DERIVED_DATA_PATH" \
     CODE_SIGNING_ALLOWED=NO \
     CODE_SIGNING_REQUIRED=NO \
     CODE_SIGN_IDENTITY="" \
@@ -111,16 +120,16 @@ run_critical_tests() {
 }
 
 if ! run_critical_tests; then
-  echo "Primary test pass failed in this environment; retrying once..."
-  sleep 3
-  run_critical_tests
+  echo "Critical runtime tests failed (see ${WORK_DIR}/test.log)." >&2
+  tail -n 40 "${WORK_DIR}/test.log" >&2
+  exit 1
 fi
 
 BUILD_SETTINGS="$(xcodebuild \
   -project "Neon Vision Editor.xcodeproj" \
   -scheme "Neon Vision Editor" \
   -destination "platform=macOS" \
-  -derivedDataPath "${WORK_DIR}/DerivedData" \
+  -derivedDataPath "$DERIVED_DATA_PATH" \
   -showBuildSettings 2>/dev/null)"
 BUILT_PRODUCTS_DIR="$(echo "$BUILD_SETTINGS" | awk -F ' = ' '/BUILT_PRODUCTS_DIR/ {print $2; exit}')"
 FULL_PRODUCT_NAME="$(echo "$BUILD_SETTINGS" | awk -F ' = ' '/FULL_PRODUCT_NAME/ {print $2; exit}')"

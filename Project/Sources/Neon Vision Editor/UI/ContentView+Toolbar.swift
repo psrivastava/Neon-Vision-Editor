@@ -1,0 +1,3471 @@
+import SwiftUI
+#if os(macOS)
+struct MacDocumentToolbarModifier: ViewModifier {
+    let contentView: ContentView
+    @Environment(\.locale) private var locale
+    func body(content: Content) -> some View {
+        content.background(contentView.nativeDocumentToolbar(locale: locale))
+    }
+}
+
+import AppKit
+#elseif os(iOS) || os(visionOS)
+import UIKit
+#endif
+
+#if os(macOS)
+/// Keep unopened language rows out of every document's SwiftUI graph. AppKit
+/// requests the complete native menu when pointer, keyboard or accessibility
+/// navigation opens it.
+@MainActor
+struct MacEditorLanguageMenu: NSViewRepresentable {
+    let selectedLanguage: String
+    let options: () -> [String]
+    let label: (String) -> String
+    let tint: NSColor
+    let select: (String) -> Void
+    let search: () -> Void
+
+    final class Coordinator: NSObject, NSMenuDelegate {
+        var configuration: MacEditorLanguageMenu
+
+        init(_ configuration: MacEditorLanguageMenu) { self.configuration = configuration }
+
+        func makeButton() -> NSPopUpButton {
+            let button = NSPopUpButton(frame: .zero, pullsDown: true)
+            button.isBordered = false
+            button.controlSize = .large
+            button.font = .monospacedSystemFont(ofSize: 12, weight: .medium)
+            let menu = NSMenu()
+            menu.autoenablesItems = false
+            menu.delegate = self
+            menu.addItem(withTitle: configuration.label(configuration.selectedLanguage), action: nil, keyEquivalent: "")
+            button.menu = menu
+            updateButton(button)
+            return button
+        }
+
+        func updateButton(_ button: NSPopUpButton) {
+            let title = configuration.label(configuration.selectedLanguage)
+            if button.menu?.item(at: 0)?.title != title { button.menu?.item(at: 0)?.title = title }
+            button.contentTintColor = configuration.tint
+            button.toolTip = NSLocalizedString("Language", comment: "Toolbar language picker")
+            button.setAccessibilityLabel(NSLocalizedString("Language picker", comment: "Toolbar accessibility"))
+            button.setAccessibilityValue(title)
+        }
+
+        func menuNeedsUpdate(_ menu: NSMenu) {
+            menu.removeAllItems()
+            let selected = configuration.selectedLanguage
+            // The first item supplies a pull-down button's title and is not a
+            // selectable row. The checked current language remains a real action.
+            menu.addItem(withTitle: configuration.label(selected), action: nil, keyEquivalent: "")
+            let current = languageItem(selected)
+            current.state = .on
+            menu.addItem(current)
+            let search = NSMenuItem(title: NSLocalizedString("Language…", comment: "Language search"),
+                action: #selector(searchLanguages(_:)), keyEquivalent: "")
+            search.target = self
+            search.image = NSImage(systemSymbolName: "magnifyingglass", accessibilityDescription: nil)
+            menu.addItem(search)
+            menu.addItem(.separator())
+            for language in configuration.options() where language != selected {
+                menu.addItem(languageItem(language))
+            }
+        }
+
+        private func languageItem(_ language: String) -> NSMenuItem {
+            let item = NSMenuItem(title: configuration.label(language), action: #selector(chooseLanguage(_:)), keyEquivalent: "")
+            item.representedObject = language
+            item.target = self
+            return item
+        }
+
+        @objc func chooseLanguage(_ sender: NSMenuItem) {
+            guard let language = sender.representedObject as? String else { return }
+            configuration.select(language)
+        }
+
+        @objc func searchLanguages(_ sender: NSMenuItem) { configuration.search() }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+    func makeNSView(context: Context) -> NSPopUpButton { context.coordinator.makeButton() }
+    func updateNSView(_ button: NSPopUpButton, context: Context) {
+        context.coordinator.configuration = self
+        context.coordinator.updateButton(button)
+    }
+}
+#endif
+
+struct ToolbarActionSelection {
+    static let customizableMacActionIDs = [
+        "openFile", "undo", "newTab", "closeAllTabs", "saveFile", "saveFileAs", "newWindow", "codeSnapshot", "editorLayout",
+        "markdownPreview", "markdownProjectPreview", "previewActions", "findReplace", "findInFiles", "compare", "splitEditor", "gitChanges",
+        "codeMinimap", "toggleSidebar", "toggleProjectSidebar", "brainDump", "languageIndicator", "toolbarPreset", "providerBadge"
+    ]
+    static let supportedVisibleCounts: Set<Int> = [4, 5, 6, 7, 8, 10]
+    static let universallyAvailableMobileActionIDs: Set<String> = ["settings", "help"]
+    static let persistentMobileControlCount = 2
+
+    static func visibleLimit(requestedCount: Int, fallback: Int) -> Int {
+        supportedVisibleCounts.contains(requestedCount) ? requestedCount : fallback
+    }
+
+    static func selectedIDs(from rawValue: String) -> Set<String> {
+        Set(
+            rawValue
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        )
+    }
+
+    static func isAllowedByPreset(
+        actionID: String,
+        preset: ToolbarPreset,
+        customIDsRawValue: String,
+        universalIDs: Set<String> = []
+    ) -> Bool {
+        if universalIDs.contains(actionID) {
+            return true
+        }
+        if preset == .custom {
+            return selectedIDs(from: customIDsRawValue).contains(actionID)
+        }
+        return preset.mobileIDs.contains(actionID)
+    }
+
+    static func orderedIDs(from rawValue: String, fallback: [String]) -> [String] {
+        let selected = rawValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        var result: [String] = []
+        for id in selected where !result.contains(id) {
+            result.append(id)
+        }
+        for id in fallback where !result.contains(id) {
+            result.append(id)
+        }
+        return result
+    }
+
+    static func visibleActions<Action: Hashable>(
+        enabledActions: [Action],
+        requestedCount: Int,
+        preset: ToolbarPreset? = nil,
+        reservedControlCount: Int = 0,
+        requiredActions: Set<Action> = []
+    ) -> [Action] {
+        // Named presets define the toolbar's complete direct action set. The
+        // count preference applies only while composing a Custom toolbar.
+        if let preset, preset != .custom {
+            return enabledActions
+        }
+        let limit = supportedVisibleCounts.contains(requestedCount)
+            ? max(0, requestedCount - reservedControlCount)
+            : enabledActions.count
+        guard !requiredActions.isEmpty else {
+            return Array(enabledActions.prefix(limit))
+        }
+
+        let enabledRequiredActions = enabledActions.filter(requiredActions.contains)
+        let optionalLimit = max(0, limit - enabledRequiredActions.count)
+        let optionalActions = enabledActions
+            .filter { !requiredActions.contains($0) }
+            .prefix(optionalLimit)
+        let visibleActions = Set(enabledRequiredActions).union(optionalActions)
+        return enabledActions.filter(visibleActions.contains)
+    }
+
+    static func customSelectableActionLimit(requestedCount: Int, fallback: Int) -> Int {
+        guard supportedVisibleCounts.contains(requestedCount) else {
+            return max(0, fallback - universallyAvailableMobileActionIDs.count)
+        }
+        return requestedCount
+    }
+
+    static func limitedSelectedIDs(
+        from rawValue: String,
+        orderedIDs: [String],
+        excluding excludedIDs: Set<String>,
+        limit: Int
+    ) -> Set<String> {
+        let selected = selectedIDs(from: rawValue).subtracting(excludedIDs)
+        return Set(orderedIDs.filter { selected.contains($0) }.prefix(max(0, limit)))
+    }
+
+    static func overflowActions<Action: Hashable>(
+        enabledActions: [Action],
+        visibleActions: [Action]
+    ) -> [Action] {
+        let visible = Set(visibleActions)
+        return enabledActions.filter { !visible.contains($0) }
+    }
+
+    static func compactActions<Action: Hashable>(
+        enabledActions: [Action],
+        priority: [Action],
+        limit: Int
+    ) -> [Action] {
+        let enabled = Set(enabledActions)
+        var result: [Action] = []
+        for action in priority where enabled.contains(action) && !result.contains(action) {
+            result.append(action)
+            if result.count == limit { break }
+        }
+        return result
+    }
+
+    static func honorsSectionVisibility(preset: ToolbarPreset) -> Bool {
+        preset == .custom
+    }
+
+    static func shouldIncludeConfiguredAction(
+        actionID: String,
+        isConfiguredVisible: Bool,
+        preset: ToolbarPreset
+    ) -> Bool {
+        guard actionID != "settings" else { return true }
+        return !honorsSectionVisibility(preset: preset) || isConfiguredVisible
+    }
+
+    static func toggledSelectionRawValue(
+        toggledID: String,
+        currentRawValue: String,
+        orderedIDs: [String],
+        limit: Int
+    ) -> String {
+        let allowedIDs = Set(orderedIDs)
+        var selected = currentRawValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && allowedIDs.contains($0) }
+            .reduce(into: [String]()) { result, id in
+                if !result.contains(id) { result.append(id) }
+            }
+
+        if let existingIndex = selected.firstIndex(of: toggledID) {
+            selected.remove(at: existingIndex)
+        } else if allowedIDs.contains(toggledID), selected.count < max(0, limit) {
+            selected.append(toggledID)
+        }
+        return selected.joined(separator: ",")
+    }
+
+    static func orderedActions<Action>(
+        _ actions: [Action],
+        customIDsRawValue: String,
+        id: (Action) -> String
+    ) -> [Action] {
+        let order = customIDsRawValue
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .enumerated()
+            .reduce(into: [String: Int]()) { result, item in
+                if result[item.element] == nil {
+                    result[item.element] = item.offset
+                }
+            }
+        return actions.enumerated().sorted { lhs, rhs in
+            let leftOrder = order[id(lhs.element)] ?? (order.count + lhs.offset)
+            let rightOrder = order[id(rhs.element)] ?? (order.count + rhs.offset)
+            return leftOrder == rightOrder ? lhs.offset < rhs.offset : leftOrder < rightOrder
+        }.map(\.element)
+    }
+}
+
+enum ToolbarLanguageGlyph: Equatable {
+    case systemImage(String)
+    case initial(String)
+
+    static func resolve(language: String, displayName: String) -> ToolbarLanguageGlyph {
+        switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "swift":
+            return .systemImage("swift")
+        case "markdown":
+            return .initial("M")
+        case "rst", "typst", "tex":
+            return .systemImage("doc.richtext")
+        case "plain", "standard", "log", "crashlog":
+            return .systemImage("doc.plaintext")
+        case "html", "xml":
+            return .systemImage("chevron.left.forwardslash.chevron.right")
+        case "json", "graphql":
+            return .systemImage("curlybraces")
+        case "bash", "zsh", "fish", "powershell":
+            return .systemImage("terminal")
+        case "css":
+            return .systemImage("paintbrush")
+        default:
+            let initial = displayName
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .first
+                .map { String($0).uppercased() }
+            return initial.map(ToolbarLanguageGlyph.initial) ?? .systemImage("doc")
+        }
+    }
+}
+
+enum ToolbarPreset: String, CaseIterable, Identifiable {
+    case standard
+    case writing
+    case developer
+    case review
+    case focus
+    case all
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return NSLocalizedString("Standard", comment: "Toolbar preset")
+        case .writing: return NSLocalizedString("Writing", comment: "Toolbar preset")
+        case .developer: return NSLocalizedString("Development", comment: "Toolbar preset")
+        case .review: return NSLocalizedString("Git Review", comment: "Toolbar preset")
+        case .focus: return NSLocalizedString("Focus", comment: "Toolbar preset")
+        case .all: return NSLocalizedString("All Actions", comment: "Toolbar preset")
+        case .custom: return NSLocalizedString("Custom", comment: "Toolbar preset")
+        }
+    }
+
+    var compactTitle: String {
+        switch self {
+        case .standard: return NSLocalizedString("Std", comment: "Compact toolbar preset")
+        case .writing: return NSLocalizedString("Write", comment: "Compact toolbar preset")
+        case .developer: return NSLocalizedString("Dev", comment: "Compact toolbar preset")
+        case .review: return NSLocalizedString("Git", comment: "Compact toolbar preset")
+        case .focus: return NSLocalizedString("Focus", comment: "Compact toolbar preset")
+        case .all: return NSLocalizedString("All", comment: "Compact toolbar preset")
+        case .custom: return NSLocalizedString("Custom", comment: "Compact toolbar preset")
+        }
+    }
+
+    var toolbarLabel: String {
+        switch self {
+        case .standard: return NSLocalizedString("Standard", comment: "Toolbar label")
+        case .writing: return NSLocalizedString("Write", comment: "Toolbar label")
+        case .developer: return NSLocalizedString("Dev", comment: "Toolbar label")
+        case .review: return "Review"
+        case .focus: return "Focus"
+        case .all: return "All"
+        case .custom: return "Custom"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .standard: return "checkmark.circle"
+        case .writing: return "doc.text"
+        case .developer: return "hammer"
+        case .review: return "arrow.triangle.branch"
+        case .focus: return "moon"
+        case .all: return "ellipsis.circle"
+        case .custom: return "slider.horizontal.3"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .standard: return NeonUIStyle.accentBlue
+        case .writing: return .pink
+        case .developer: return .orange
+        case .review: return .purple
+        case .focus: return .indigo
+        case .all: return .teal
+        case .custom: return .mint
+        }
+    }
+
+    /// Ordered macOS toolbar actions for each preset.
+    var macOSIDs: [String] {
+        switch self {
+        case .standard:
+            return [
+                "openFile", "undo", "newTab", "closeAllTabs", "saveFile", "saveFileAs", "newWindow",
+                "markdownPreview", "codeMinimap", "previewActions", "markdownProjectPreview", "findReplace", "findInFiles",
+                "splitEditor", "toggleSidebar", "toggleProjectSidebar", "brainDump", "help", "languageIndicator", "settings"
+            ]
+        case .writing:
+            return ["openFile", "newTab", "saveFile", "findReplace", "editorLayout", "markdownPreview", "previewActions", "markdownProjectPreview", "settings", "help"]
+        case .developer:
+            return ["openFile", "newTab", "saveFile", "codeSnapshot", "findReplace", "findInFiles", "compare", "splitEditor", "gitChanges", "settings"]
+        case .review:
+            return ["openFile", "findReplace", "findInFiles", "compare", "splitEditor", "gitChanges", "editorLayout", "settings", "help"]
+        case .focus:
+            return ["openFile", "saveFile", "findReplace", "editorLayout", "markdownPreview", "previewActions", "settings"]
+        case .all:
+            return [
+                "openFile", "undo", "newTab", "closeAllTabs", "saveFile", "saveFileAs", "newWindow", "codeSnapshot",
+                "editorLayout", "markdownPreview", "previewActions", "markdownProjectPreview", "findReplace", "findInFiles",
+                "compare", "splitEditor", "gitChanges", "codeMinimap", "toggleSidebar", "toggleProjectSidebar",
+                "brainDump", "languageIndicator", "settings", "help"
+            ]
+        case .custom:
+            return []
+        }
+    }
+
+    /// Ordered mobile/visionOS actions. The available width still determines how
+    /// many are pinned; the rest are placed in the overflow menu.
+    var mobileIDs: [String] {
+        switch self {
+        case .standard:
+            return [
+                "openFile", "undo", "newTab", "saveFile", "findReplace", "findInFiles", "splitEditor", "markdownPreview",
+                "markdownProjectPreview", "codeMinimap", "toggleSidebar", "toggleProjectSidebar", "brainDump", "gitChanges", "settings", "help"
+            ]
+        case .writing:
+            return ["openFile", "undo", "saveFile", "findReplace", "markdownPreview", "markdownProjectPreview", "markdownPreviewStyle", "lineWrap", "settings", "help"]
+        case .developer:
+            return ["openFile", "undo", "newTab", "saveFile", "findReplace", "findInFiles", "compareTabs", "gitChanges", "splitEditor", "settings", "help"]
+        case .review:
+            return ["openFile", "findReplace", "findInFiles", "compareDisk", "compareTabs", "gitChanges", "splitEditor", "settings", "help"]
+        case .focus:
+            return ["openFile", "undo", "saveFile", "findReplace", "markdownPreview", "settings", "help"]
+        case .all:
+            return [
+                "openFile", "undo", "settings", "help", "clearEditor", "insertTemplate",
+                "newTab", "saveFile", "saveFileAs", "codeSnapshot", "markdownPreview",
+                "markdownProjectPreview", "codeMinimap", "indentationGuides", "markdownPreviewExport",
+                "markdownPreviewStyle", "closeAllTabs", "toggleSidebar", "toggleProjectSidebar",
+                "findReplace", "findInFiles", "compareDisk", "compareTabs", "gitChanges",
+                "splitEditor", "editorLayout", "previewActions", "lineWrap", "codeCompletion",
+                "keyboardAccessory", "hideKeyboard", "performanceMode", "brainDump", "welcomeTour",
+                "translucentWindow", "toolbarIconColor", "fontDecrease", "fontIncrease"
+            ]
+        case .custom:
+            return []
+        }
+    }
+
+    static var mobileSelectableIDs: [String] {
+        var result: [String] = []
+        for id in allCases.flatMap(\.mobileIDs) where !result.contains(id) {
+            result.append(id)
+        }
+        return result
+    }
+}
+
+enum ToolbarIconOption: String, CaseIterable, Identifiable {
+    case openFile, undo, settings, help, clearEditor, insertTemplate, newTab, saveFile, saveFileAs
+    case codeSnapshot, markdownPreview, markdownProjectPreview, codeMinimap, indentationGuides, markdownPreviewExport
+    case markdownPreviewStyle, closeAllTabs, toggleSidebar, toggleProjectSidebar, findReplace, findInFiles
+    case languageIndicator
+    case compareDisk, compareTabs, compare, gitChanges, splitEditor, editorLayout, previewActions
+    case lineWrap, codeCompletion, keyboardAccessory, hideKeyboard, fontDecrease, fontIncrease
+    case performanceMode, brainDump, welcomeTour, translucentWindow, toolbarIconColor
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .openFile: return "Open File"
+        case .undo: return "Undo"
+        case .settings: return "Settings"
+        case .help: return "Help"
+        case .clearEditor: return "Clear Editor"
+        case .insertTemplate: return "Insert Template"
+        case .newTab: return "New Tab"
+        case .saveFile: return "Save"
+        case .saveFileAs: return "Save As"
+        case .codeSnapshot: return "Code Snapshot"
+        case .markdownPreview: return "Markdown Preview"
+        case .markdownProjectPreview: return "Markdown Cards"
+        case .codeMinimap: return "Code Minimap"
+        case .indentationGuides: return "Indentation Guides"
+        case .markdownPreviewExport: return "Export PDF"
+        case .markdownPreviewStyle: return "Preview Style"
+        case .closeAllTabs: return "Close All Tabs"
+        case .toggleSidebar: return "Toggle Sidebar"
+        case .toggleProjectSidebar: return "Toggle Project Sidebar"
+        case .languageIndicator: return "Language Indicator"
+        case .findReplace: return "Find"
+        case .findInFiles: return "Find in Files"
+        case .compareDisk: return "Compare with Disk"
+        case .compareTabs: return "Compare Tabs"
+        case .compare: return "Compare Menu"
+        case .gitChanges: return "Git Changes"
+        case .splitEditor: return "Side by Side"
+        case .editorLayout: return "Editor Layout"
+        case .previewActions: return "Preview Actions"
+        case .lineWrap: return "Line Wrap"
+        case .codeCompletion: return "Code Completion"
+        case .keyboardAccessory: return "Keyboard Bar"
+        case .hideKeyboard: return "Hide Keyboard"
+        case .fontDecrease: return "Decrease Font Size"
+        case .fontIncrease: return "Increase Font Size"
+        case .performanceMode: return "Performance Mode"
+        case .brainDump: return "Brain Dump"
+        case .welcomeTour: return "Welcome Tour"
+        case .translucentWindow: return "Translucent Window"
+        case .toolbarIconColor: return "Blue Icons"
+        }
+    }
+
+    var localizedTitle: String {
+        NSLocalizedString(title, comment: "Toolbar action")
+    }
+}
+
+struct ToolbarPresetLabel: View {
+    let preset: ToolbarPreset
+    let title: String
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: preset.icon)
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(preset.tint)
+        }
+    }
+}
+
+enum MobileToolbarPresentationPolicy {
+    nonisolated static let standardHeight: CGFloat = 52
+    nonisolated static let labeledItemWidth: CGFloat = 52
+
+    nonisolated static func showsButtonLabels(preferenceEnabled: Bool, toolbarMinimized: Bool) -> Bool {
+        preferenceEnabled && !toolbarMinimized
+    }
+
+    nonisolated static func symbolSize(usesLargeSymbols: Bool) -> CGFloat {
+        usesLargeSymbols ? 25 : 20
+    }
+
+    nonisolated static func compactTitle(_ title: String) -> String {
+        switch title {
+        case "Open File": return "Open"
+        case "Clear Editor": return "Clear"
+        case "Insert Template": return "Template"
+        case "Code Snapshot": return "Snapshot"
+        case "Markdown Preview": return "MD Preview"
+        case "Markdown Cards": return "MD Cards"
+        case "Code Minimap": return "Minimap"
+        case "Indentation Guides": return "Guides"
+        case "Export PDF": return "PDF"
+        case "Preview Style": return "Style"
+        case "Close All Tabs": return "Close Tabs"
+        case "Toggle Sidebar": return "Contents"
+        case "Toggle Project Sidebar": return "Project"
+        case "Language Indicator": return "Language"
+        case "Find in Files": return "Find Files"
+        case "Compare with Disk": return "Disk Diff"
+        case "Compare Tabs": return "Tab Diff"
+        case "Compare Menu": return "Compare"
+        case "Git Changes": return "Git"
+        case "Side by Side": return "Split"
+        case "Editor Layout": return "Layout"
+        case "Preview Actions": return "Preview"
+        case "Line Wrap": return "Wrap"
+        case "Code Completion": return "Complete"
+        case "Keyboard Bar": return "Key Bar"
+        case "Hide Keyboard": return "Hide Keys"
+        case "Decrease Font Size": return "Font −"
+        case "Increase Font Size": return "Font +"
+        case "Performance Mode": return "Fast Mode"
+        case "Brain Dump": return "Notes"
+        case "Welcome Tour": return "Tour"
+        case "Translucent Window": return "Glass"
+        case "Blue Icons": return "Blue"
+        case "Table of Contents": return "Contents"
+        default: return title
+        }
+    }
+
+    nonisolated static func isContextualActionAvailable(
+        actionID: String,
+        supportsMinimap: Bool,
+        showsMarkdownPreview: Bool,
+        isMarkdownDocument: Bool
+    ) -> Bool {
+        switch actionID {
+        case ToolbarIconOption.codeMinimap.rawValue:
+            return supportsMinimap
+        case ToolbarIconOption.markdownPreviewExport.rawValue,
+             ToolbarIconOption.markdownPreviewStyle.rawValue:
+            return showsMarkdownPreview && isMarkdownDocument
+        default:
+            return true
+        }
+    }
+}
+
+// MARK: - Toolbar Content
+
+extension ContentView {
+    // MARK: - Provider Badge and macOS Menus
+
+    private var compactActiveProviderName: String {
+        activeProviderName.components(separatedBy: " (").first ?? activeProviderName
+    }
+
+    private var providerBadgeLabelText: String {
+#if os(macOS)
+        if compactActiveProviderName == "Apple" {
+            return "AI Provider \(compactActiveProviderName)"
+        }
+#endif
+        return compactActiveProviderName
+    }
+
+    private var providerBadgeIsAppleCompletionActive: Bool {
+        compactActiveProviderName == "Apple" && isAutoCompletionEnabled
+    }
+
+    private var providerBadgeForegroundColor: Color {
+        providerBadgeIsAppleCompletionActive ? .green : .secondary
+    }
+
+    private var providerBadgeBackgroundColor: Color {
+        providerBadgeIsAppleCompletionActive ? Color.green.opacity(0.16) : Color.secondary.opacity(0.12)
+    }
+
+    private var providerBadgeTooltip: String {
+        "AI Provider for Code Completion"
+    }
+
+    @ViewBuilder
+    private var markdownPreviewTemplateMenuItems: some View {
+        ForEach(Self.markdownPreviewTemplateOptions.prefix(4)) { option in
+            Button {
+                markdownPreviewTemplateRaw = option.id
+            } label: {
+                Label(NSLocalizedString(option.title, comment: ""), systemImage: markdownPreviewTemplateRaw == option.id ? "checkmark" : "circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(toolbarMarkdownPreviewThemeSwatchColor(for: option.id), .secondary)
+            }
+        }
+
+        Divider()
+
+        ForEach(Self.markdownPreviewTemplateOptions.dropFirst(4)) { option in
+            Button {
+                markdownPreviewTemplateRaw = option.id
+            } label: {
+                Label(NSLocalizedString(option.title, comment: ""), systemImage: markdownPreviewTemplateRaw == option.id ? "checkmark" : "circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(toolbarMarkdownPreviewThemeSwatchColor(for: option.id), .secondary)
+            }
+        }
+    }
+
+    private func toolbarMarkdownPreviewThemeSwatchColor(for template: String) -> Color {
+        switch template {
+        case "neon-editorial", "neon-paper": return Color(red: 0.38, green: 0.85, blue: 1.0)
+        case "developer-slate", "developer-spec", "api-reference": return Color(red: 0.33, green: 0.90, blue: 0.74)
+        case "nordic-light", "docs", "minimal-reader": return Color(red: 0.06, green: 0.46, blue: 0.43)
+        case "solarized", "blueprint", "notebook": return Color(red: 0.16, green: 0.63, blue: 0.60)
+        case "article", "academic-paper", "warm-sepia": return Color(red: 0.55, green: 0.26, blue: 0.35)
+        case "electric-pop": return Color(red: 0.88, green: 0.09, blue: 0.55)
+        case "aurora": return Color(red: 0.03, green: 0.50, blue: 0.40)
+        case "citrus": return Color(red: 0.85, green: 0.47, blue: 0.02)
+        case "plasma": return Color(red: 0.85, green: 0.08, blue: 0.47)
+        case "deep-ocean": return Color(red: 0.03, green: 0.49, blue: 0.78)
+        case "high-contrast": return Color.black
+        default: return Color.accentColor
+        }
+    }
+
+#if os(macOS)
+    private func isMacToolbarItemVisible(_ id: String) -> Bool {
+        if id == "settings" { return true }
+        if toolbarUseCustomMac || toolbarPresetMacRaw == ToolbarPreset.custom.rawValue {
+            return ToolbarActionSelection.selectedIDs(from: toolbarCustomIDsMac).contains(id)
+        }
+        let preset = ToolbarPreset(rawValue: toolbarPresetMacRaw) ?? .standard
+        return preset.macOSIDs.contains(id)
+    }
+
+    @ViewBuilder
+    private var macLanguageIndicatorControl: some View {
+        MacEditorLanguageMenu(
+            selectedLanguage: currentLanguagePickerBinding.wrappedValue,
+            options: { languageOptions }, label: { languageLabel(for: $0) },
+            tint: NSColor(macToolbarSymbolColor),
+            select: { currentLanguagePickerBinding.wrappedValue = $0 },
+            search: { presentLanguageSearchSheet() })
+        .frame(minWidth: 132, alignment: .center)
+        .help("Language")
+        .accessibilityLabel("Language picker")
+        .accessibilityValue(languageLabel(for: currentLanguagePickerBinding.wrappedValue))
+        .controlSize(.large)
+        .padding(.vertical, 2)
+    }
+
+    private var macToolbarSymbolColor: Color {
+        let isDarkMode = colorScheme == .dark
+        switch toolbarSymbolsColorMacRaw {
+        case "black":
+            return isDarkMode
+                ? Color(.sRGB, white: 0.94, opacity: 1.0)
+                : .black
+        case "darkGray":
+            return isDarkMode
+                ? Color(.sRGB, white: 0.84, opacity: 1.0)
+                : Color(.sRGB, white: 0.40, opacity: 1.0)
+        default:
+            return NeonUIStyle.accentBlue
+        }
+    }
+
+    @ViewBuilder
+    private var markdownPreviewExportToolbarMenuContent: some View {
+        Button(action: { exportMarkdownPreviewPDF() }) {
+            Label("Export PDF", systemImage: "square.and.arrow.down")
+        }
+        .help("Export Markdown Preview as PDF")
+
+        Menu {
+            Button(action: { markdownPDFExportModeRaw = MarkdownPDFExportMode.paginatedFit.rawValue }) {
+                if markdownPDFExportModeRaw == MarkdownPDFExportMode.paginatedFit.rawValue {
+                    Label("Paginated Fit", systemImage: "checkmark")
+                } else {
+                    Text("Paginated Fit")
+                }
+            }
+            .help("Use Paginated Fit PDF Export")
+            Button(action: { markdownPDFExportModeRaw = MarkdownPDFExportMode.onePageFit.rawValue }) {
+                if markdownPDFExportModeRaw == MarkdownPDFExportMode.onePageFit.rawValue {
+                    Label("One Page Fit", systemImage: "checkmark")
+                } else {
+                    Text("One Page Fit")
+                }
+            }
+            .help("Use One Page Fit PDF Export")
+        } label: {
+            Label("PDF Mode", systemImage: "doc.text")
+        }
+        .help("Choose PDF Export Mode")
+
+        Menu {
+            markdownPreviewTemplateMenuItems
+        } label: {
+            Label(NSLocalizedString("Preview Style", comment: "Markdown preview style menu label"), systemImage: "paintbrush")
+        }
+        .help(NSLocalizedString("Choose Markdown Preview Style", comment: "Toolbar help for markdown preview style picker"))
+
+        Button(action: { copyMarkdownPreviewHTML() }) {
+            Label("Copy HTML", systemImage: "doc.on.doc")
+        }
+        .help("Copy Markdown Preview HTML")
+        Button(action: { copyMarkdownPreviewMarkdown() }) {
+            Label("Copy Markdown", systemImage: "doc.on.clipboard")
+        }
+        .help("Copy Markdown Source")
+    }
+#endif
+
+    private func selectToolbarPreset(_ preset: ToolbarPreset) {
+#if os(macOS)
+        toolbarPresetMacRaw = preset.rawValue
+        toolbarUseCustomMac = preset == .custom
+        if preset == .custom && toolbarCustomIDsMac.isEmpty {
+            toolbarCustomIDsMac = ToolbarPreset.all.macOSIDs.joined(separator: ",")
+        }
+#else
+        toolbarPresetIOSRaw = preset.rawValue
+        toolbarUseCustomFiveIOS = preset == .custom
+        if preset == .custom && toolbarCustomFiveIDsIOS.isEmpty {
+            toolbarCustomFiveIDsIOS = ToolbarPreset.mobileSelectableIDs
+                .filter { !ToolbarActionSelection.universallyAvailableMobileActionIDs.contains($0) }
+                .prefix(toolbarFavoriteCountIOS)
+                .joined(separator: ",")
+        }
+#endif
+    }
+
+    private var toolbarPresetMenuControl: some View {
+        Menu {
+            ForEach(ToolbarPreset.allCases) { preset in
+                Button {
+                    selectToolbarPreset(preset)
+                } label: {
+                    ToolbarPresetLabel(preset: preset, title: preset.title)
+                    if currentToolbarPreset == preset {
+                        Image(systemName: "checkmark")
+                    }
+                }
+            }
+        } label: {
+#if os(macOS)
+            HStack(spacing: 5) {
+                Image(systemName: currentToolbarPreset.icon)
+                Text(currentToolbarPreset.compactTitle)
+                    .lineLimit(1)
+            }
+            .foregroundStyle(currentToolbarPreset.tint)
+            .fixedSize(horizontal: true, vertical: false)
+            .frame(minWidth: 64, alignment: .center)
+#else
+            Image(systemName: currentToolbarPreset.icon)
+                .foregroundStyle(currentToolbarPreset.tint)
+#endif
+        }
+        .help("Choose Toolbar Preset")
+        .accessibilityLabel("Toolbar Preset")
+        .accessibilityValue(currentToolbarPreset.title)
+    }
+
+    private var currentToolbarPreset: ToolbarPreset {
+#if os(macOS)
+        ToolbarPreset(rawValue: toolbarPresetMacRaw) ?? .standard
+#else
+        effectiveIOSToolbarPreset
+#endif
+    }
+
+#if os(iOS) || os(visionOS)
+    private var effectiveIOSToolbarPreset: ToolbarPreset {
+        toolbarUseCustomFiveIOS
+            ? .custom
+            : ToolbarPreset(rawValue: toolbarPresetIOSRaw) ?? .standard
+    }
+#endif
+
+    // These controls are shared by the macOS toolbar and the iPad/visionOS
+    // action renderer. Keep their declarations outside the mobile-only
+    // toolbar layout block so every platform can resolve the same action.
+    @ViewBuilder
+    private var toggleSidebarControl: some View {
+        Button(action: { toggleSidebarFromToolbar() }) {
+            Image(systemName: "sidebar.left")
+        }
+        .help("Toggle Sidebar (Cmd+Opt+S)")
+        .accessibilityLabel("Table of Contents")
+        .accessibilityValue(viewModel.showSidebar ? "Shown" : "Hidden")
+        .accessibilityHint("Shows or hides the document table of contents")
+    }
+
+    @ViewBuilder
+    private var toggleProjectSidebarControl: some View {
+        Button(action: { toggleProjectSidebarFromToolbar() }) {
+            Image(systemName: "sidebar.right")
+        }
+        .help("Toggle Project Structure Sidebar")
+    }
+
+    @ViewBuilder
+    private var brainDumpControl: some View {
+        Button(action: {
+            toggleBrainDumpModeIOSAware()
+        }) {
+            Image(systemName: "note.text")
+                .symbolVariant(viewModel.isBrainDumpMode ? .fill : .none)
+        }
+        .help("Brain Dump Mode")
+        .accessibilityLabel("Brain Dump Mode")
+        .accessibilityValue(viewModel.isBrainDumpMode ? "On" : "Off")
+        .accessibilityHint("Switches to a distraction-free scratch document")
+    }
+
+    @ViewBuilder
+    private var codeMinimapControl: some View {
+        if supportsCodeMinimap(language: currentLanguage) {
+            Button(action: {
+                showCodeMinimap.toggle()
+            }) {
+                Image(systemName: showCodeMinimap ? "map.fill" : "map")
+            }
+            .help(showCodeMinimap ? "Hide Code Minimap" : "Show Code Minimap")
+            .accessibilityLabel("Code Minimap")
+            .accessibilityValue(showCodeMinimap ? "Shown" : "Hidden")
+            .accessibilityHint("Toggles the code minimap for code files")
+        }
+    }
+
+    private func toggleBrainDumpModeIOSAware() {
+        viewModel.isBrainDumpMode.toggle()
+        UserDefaults.standard.set(viewModel.isBrainDumpMode, forKey: "BrainDumpModeEnabled")
+    }
+
+#if os(iOS) || os(visionOS)
+    // MARK: - iOS Toolbar Layout Metrics
+
+    enum IPhoneBottomToolbarWidthPolicy {
+        nonisolated static func width(availableWidth: CGFloat) -> CGFloat {
+            min(max(0, availableWidth - 24), 300)
+        }
+    }
+
+    enum IPadBottomToolbarWidthPolicy {
+        nonisolated static func width(availableWidth: CGFloat, minimized: Bool, contentWidth: CGFloat = .infinity) -> CGFloat {
+            let usableWidth = max(0, availableWidth - 64)
+            let maximumWidth = min(usableWidth, minimized ? 176 : min(max(availableWidth * 0.68, 400), 760))
+            return minimized ? maximumWidth : min(maximumWidth, max(0, contentWidth))
+        }
+    }
+
+    func mobileBottomToolbarOverlay(availableWidth: CGFloat) -> AnyView? {
+#if os(iOS)
+        guard usesIOSBottomToolbar, !showFindReplace, !isPhoneSoftwareKeyboardVisible else { return nil }
+        if usesIPhoneBottomToolbar {
+            return AnyView(iPhoneScrollableBottomToolbar.frame(width: IPhoneBottomToolbarWidthPolicy.width(availableWidth: availableWidth)))
+        }
+        return AnyView(iPadUnifiedToolbarRow(availableWidth: availableWidth))
+#else
+        return nil
+#endif
+    }
+
+    func mobileVerticalToolbarOverlay(availableLength: CGFloat) -> AnyView? {
+#if os(iOS)
+        guard usesIOSBottomToolbar, !showFindReplace, !isPhoneSoftwareKeyboardVisible else { return nil }
+        return AnyView(iOSVerticalEdgeToolbar.frame(maxHeight: availableLength, alignment: .top))
+#else
+        return nil
+#endif
+    }
+
+    private var iOSToolbarChromeStyle: GlassChromeStyle { .single }
+    private var iOSToolbarTintColor: Color {
+        if toolbarIconsBlueIOS {
+            return NeonUIStyle.accentBlue
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.95) : Color.primary.opacity(0.92)
+    }
+
+    var isIPadToolbarLayout: Bool {
+        usesRegularIOSLayout
+    }
+
+    private enum IOSPrimaryToolbarAction: String, CaseIterable, Hashable {
+        case openFile
+        case undo
+        case settings
+        case help
+        case clearEditor
+        case insertTemplate
+        case newTab
+        case saveFile
+        case saveFileAs
+        case codeSnapshot
+        case markdownPreview
+        case markdownProjectPreview
+        case codeMinimap
+        case indentationGuides
+        case markdownPreviewExport
+        case markdownPreviewStyle
+        case closeAllTabs
+        case toggleSidebar
+        case toggleProjectSidebar
+        case findReplace
+        case findInFiles
+        case compareDisk
+        case compareTabs
+        case gitChanges
+        case splitEditor
+        case editorLayout
+        case previewActions
+        case lineWrap
+        case codeCompletion
+        case keyboardAccessory
+        case hideKeyboard
+        case performanceMode
+        case brainDump
+        case welcomeTour
+        case translucentWindow
+        case toolbarIconColor
+        case fontDecrease
+        case fontIncrease
+    }
+
+    private var enabledIOSPrimaryToolbarActions: [IOSPrimaryToolbarAction] {
+        let preset = effectiveIOSToolbarPreset
+        var actions: [IOSPrimaryToolbarAction] = []
+        actions.append(contentsOf: [.openFile, .undo, .settings, .help, .clearEditor, .insertTemplate])
+        actions.append(contentsOf: [
+            .newTab,
+            .saveFile,
+            .saveFileAs,
+            .codeSnapshot
+        ])
+        actions.append(contentsOf: [.markdownPreview, .markdownProjectPreview, .codeMinimap, .indentationGuides])
+        actions.append(contentsOf: [
+            .markdownPreviewExport,
+            .markdownPreviewStyle,
+            .closeAllTabs,
+            .toggleSidebar,
+            .toggleProjectSidebar,
+            .editorLayout,
+            .previewActions
+        ])
+        actions.append(contentsOf: [.findReplace, .findInFiles])
+        actions.append(contentsOf: [.compareDisk, .compareTabs, .gitChanges, .splitEditor])
+        actions.append(contentsOf: [.lineWrap, .fontDecrease, .fontIncrease])
+        actions.append(contentsOf: [.codeCompletion, .keyboardAccessory])
+        actions.append(.hideKeyboard)
+        actions.append(contentsOf: [.performanceMode, .brainDump])
+        actions.append(.welcomeTour)
+        actions.append(.translucentWindow)
+#if os(iOS)
+        actions.append(.toolbarIconColor)
+#endif
+        let availableActions = actions.filter {
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: $0.rawValue,
+                preset: preset,
+                customIDsRawValue: toolbarCustomFiveIDsIOS,
+                universalIDs: ToolbarActionSelection.universallyAvailableMobileActionIDs
+            )
+            && MobileToolbarPresentationPolicy.isContextualActionAvailable(
+                actionID: $0.rawValue,
+                supportsMinimap: supportsCodeMinimap(language: currentLanguage),
+                showsMarkdownPreview: showMarkdownPreviewPane,
+                isMarkdownDocument: isMarkdownPreviewDocument
+            )
+        }
+        guard preset == .custom else { return availableActions }
+        return ToolbarActionSelection.orderedActions(
+            availableActions,
+            customIDsRawValue: toolbarCustomFiveIDsIOS,
+            id: \.rawValue
+        )
+    }
+
+    private var visibleIOSPrimaryToolbarActions: [IOSPrimaryToolbarAction] {
+        let enabledActions = enabledIOSPrimaryToolbarActions
+        let requiredActions = Set(enabledActions.filter {
+            ToolbarActionSelection.universallyAvailableMobileActionIDs.contains($0.rawValue)
+        })
+        return ToolbarActionSelection.visibleActions(
+            enabledActions: enabledActions,
+            requestedCount: toolbarFavoriteCountIOS + requiredActions.count,
+            preset: effectiveIOSToolbarPreset,
+            requiredActions: requiredActions
+        )
+    }
+
+    private var iPhoneMoreActions: [IOSPrimaryToolbarAction] {
+        ToolbarActionSelection.overflowActions(
+            enabledActions: enabledIOSPrimaryToolbarActions,
+            visibleActions: isPhoneBottomToolbarMinimized ? [] : iPhoneCompactToolbarActions
+        )
+    }
+
+    private var iPhoneCompactToolbarActions: [IOSPrimaryToolbarAction] {
+        let priority: [IOSPrimaryToolbarAction]
+        switch effectiveIOSToolbarPreset {
+        case .standard, .all:
+            priority = [
+                .saveFile, .findReplace, .toggleSidebar, .toggleProjectSidebar,
+                isPreviewSupportedDocument ? .markdownPreview : .markdownProjectPreview,
+                supportsCodeMinimap(language: currentLanguage) ? .codeMinimap : .markdownProjectPreview
+            ]
+        case .writing, .focus:
+            priority = [.saveFile, .findReplace, .markdownPreview]
+        case .developer:
+            priority = [.saveFile, .findReplace, .gitChanges]
+        case .review:
+            priority = [.findReplace, .gitChanges, .compareTabs]
+        case .custom:
+            priority = visibleIOSPrimaryToolbarActions
+        }
+        return ToolbarActionSelection.compactActions(
+            enabledActions: enabledIOSPrimaryToolbarActions,
+            priority: priority,
+            limit: effectiveIOSToolbarPreset == .custom ? 4 : 6
+        )
+    }
+
+    private var iPhoneScrollableToolbarActions: [IOSPrimaryToolbarAction] {
+        let compactActions = iPhoneCompactToolbarActions
+        return compactActions + visibleIOSPrimaryToolbarActions.filter {
+            !compactActions.contains($0)
+        }
+    }
+
+    private func iOSPrimaryToolbarActionControl(_ action: IOSPrimaryToolbarAction) -> AnyView {
+        // This factory is used inside the iPhone toolbar's ForEach. Keeping its
+        // 38 branches as one opaque result type causes recursive Swift metadata
+        // instantiation on device while the toolbar is laid out (stack overflow).
+        // Erase precisely at this dynamic-action boundary.
+        switch action {
+        case .openFile: AnyView(openFileControl)
+        case .undo: AnyView(undoControl)
+        case .settings: AnyView(settingsControl)
+        case .help: AnyView(helpControl)
+        case .clearEditor: AnyView(clearEditorControl)
+        case .insertTemplate: AnyView(insertTemplateControl)
+        case .newTab: AnyView(newTabControl)
+        case .saveFile: AnyView(saveFileControl)
+        case .saveFileAs: AnyView(saveFileAsControl)
+        case .codeSnapshot: AnyView(codeSnapshotControl)
+        case .markdownPreview: AnyView(markdownPreviewControl)
+        case .markdownProjectPreview: AnyView(markdownProjectPreviewControl)
+        case .codeMinimap: AnyView(codeMinimapControl)
+        case .indentationGuides: AnyView(indentationGuidesControl)
+        case .markdownPreviewExport: AnyView(markdownPreviewExportControl)
+        case .markdownPreviewStyle: AnyView(markdownPreviewStyleControl)
+        case .closeAllTabs: AnyView(closeAllTabsControl)
+        case .toggleSidebar: AnyView(toggleSidebarControl)
+        case .toggleProjectSidebar: AnyView(toggleProjectSidebarControl)
+        case .findReplace: AnyView(findReplaceControl)
+        case .findInFiles: AnyView(findInFilesControl)
+        case .compareDisk: AnyView(compareDiskControl)
+        case .compareTabs: AnyView(compareTabsControl)
+        case .gitChanges: AnyView(gitChangesControl)
+        case .splitEditor: AnyView(splitEditorControl)
+        case .editorLayout: AnyView(mobileEditorLayoutControl)
+        case .previewActions: AnyView(mobilePreviewActionsControl)
+        case .lineWrap: AnyView(lineWrapControl)
+        case .codeCompletion: AnyView(codeCompletionControl)
+        case .keyboardAccessory: AnyView(keyboardAccessoryControl)
+        case .hideKeyboard: AnyView(hideKeyboardControl)
+        case .performanceMode: AnyView(performanceModeControl)
+        case .brainDump: AnyView(brainDumpControl)
+        case .welcomeTour: AnyView(welcomeTourControl)
+        case .translucentWindow: AnyView(translucentWindowControl)
+        case .toolbarIconColor: AnyView(toolbarIconColorControl)
+        case .fontDecrease: AnyView(fontDecreaseControl)
+        case .fontIncrease: AnyView(fontIncreaseControl)
+        }
+    }
+
+    @ViewBuilder
+    private var mobileEditorLayoutControl: some View {
+        Menu {
+            ForEach(EditorLayoutPreset.allCases) { preset in
+                Button(action: { applyEditorLayoutPreset(preset) }) {
+                    Label(preset.title, systemImage: preset.symbol)
+                    if editorLayoutPreset == preset { Image(systemName: "checkmark") }
+                }
+            }
+        } label: {
+            Image(systemName: "rectangle.3.group")
+        }
+        .help("Editor Layout Presets")
+        .accessibilityLabel("Editor layout presets")
+        .accessibilityValue(editorLayoutPreset.title)
+    }
+
+    @ViewBuilder
+    private var mobilePreviewActionsControl: some View {
+        Menu {
+            Button(action: { togglePreviewFromToolbar() }) {
+                Label(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)", systemImage: previewToolbarIconName)
+            }
+            .disabled(!isPreviewSupportedDocument)
+
+            Button(action: { toggleMarkdownProjectPreviewFromToolbar() }) {
+                Label(isMarkdownProjectPreviewPresented ? "Hide Project Cards" : "Show Project Cards", systemImage: "square.grid.2x2")
+            }
+            .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+        } label: {
+            Image(systemName: isPreviewVisible ? "eye.fill" : "eye")
+        }
+        .help("Preview options")
+        .accessibilityLabel("Preview options")
+    }
+
+    private enum IPadToolbarAction: String, CaseIterable, Hashable {
+        case openFile
+        case undo
+        case newTab
+        case closeAllTabs
+        case saveFile
+        case saveFileAs
+        case codeSnapshot
+        case markdownPreview
+        case markdownProjectPreview
+        case markdownPreviewExport
+        case markdownPreviewStyle
+        case codeMinimap
+        case indentationGuides
+        case fontDecrease
+        case fontIncrease
+        case toggleSidebar
+        case toggleProjectSidebar
+        case findReplace
+        case findInFiles
+        case compareDisk
+        case compareTabs
+        case gitChanges
+        case splitEditor
+        case editorLayout
+        case previewActions
+        case settings
+        case help
+        case codeCompletion
+        case performanceMode
+        case lineWrap
+        case keyboardAccessory
+        case hideKeyboard
+        case clearEditor
+        case insertTemplate
+        case brainDump
+        case welcomeTour
+        case translucentWindow
+        case toolbarIconColor
+    }
+
+    private var iPadActionPriority: [IPadToolbarAction] {
+        [
+            .openFile,
+            .undo,
+            .newTab,
+            .closeAllTabs,
+            .saveFile,
+            .saveFileAs,
+            .codeSnapshot,
+            .markdownPreview,
+            .markdownProjectPreview,
+            .markdownPreviewExport,
+            .markdownPreviewStyle,
+            .codeMinimap,
+            .indentationGuides,
+            .fontDecrease,
+            .fontIncrease,
+            .toggleSidebar,
+            .toggleProjectSidebar,
+            .findReplace,
+            .findInFiles,
+            .compareDisk,
+            .compareTabs,
+            .gitChanges,
+            .splitEditor,
+            .editorLayout,
+            .previewActions,
+            .settings,
+            .help,
+            .codeCompletion,
+            .lineWrap,
+            .keyboardAccessory,
+            .hideKeyboard,
+            .clearEditor,
+            .insertTemplate,
+            .performanceMode,
+            .brainDump,
+            .welcomeTour,
+            .translucentWindow,
+            .toolbarIconColor
+        ]
+    }
+
+    private var enabledIPadActionPriority: [IPadToolbarAction] {
+        let preset = effectiveIOSToolbarPreset
+        let availableActions = iPadActionPriority.filter {
+            ToolbarActionSelection.shouldIncludeConfiguredAction(
+                actionID: $0.rawValue,
+                isConfiguredVisible: toolbarActionIsEnabled($0),
+                preset: preset
+            ) && ToolbarActionSelection.isAllowedByPreset(
+                actionID: $0.rawValue,
+                preset: preset,
+                customIDsRawValue: toolbarCustomFiveIDsIOS,
+                universalIDs: ToolbarActionSelection.universallyAvailableMobileActionIDs
+            )
+            && MobileToolbarPresentationPolicy.isContextualActionAvailable(
+                actionID: $0.rawValue,
+                supportsMinimap: supportsCodeMinimap(language: currentLanguage),
+                showsMarkdownPreview: showMarkdownPreviewPane,
+                isMarkdownDocument: isMarkdownPreviewDocument
+            )
+        }
+        guard preset == .custom else { return availableActions }
+        return ToolbarActionSelection.orderedActions(
+            availableActions,
+            customIDsRawValue: toolbarCustomFiveIDsIOS,
+            id: \.rawValue
+        )
+    }
+
+    private func toolbarActionIsEnabled(_ action: IPadToolbarAction) -> Bool {
+        true
+    }
+
+    private func toggleKeyboardAccessoryBar() {
+        showKeyboardAccessoryBarIOS.toggle()
+        NotificationCenter.default.post(
+            name: .keyboardAccessoryBarVisibilityChanged,
+            object: showKeyboardAccessoryBarIOS
+        )
+    }
+
+    private var visibleIPadToolbarActions: [IPadToolbarAction] {
+        let enabledActions = enabledIPadActionPriority
+        let requiredActions = Set(enabledActions.filter {
+            ToolbarActionSelection.universallyAvailableMobileActionIDs.contains($0.rawValue)
+        })
+        return ToolbarActionSelection.visibleActions(
+            enabledActions: enabledActions,
+            requestedCount: toolbarFavoriteCountIOS + requiredActions.count,
+            preset: effectiveIOSToolbarPreset,
+            requiredActions: requiredActions
+        )
+        .filter { $0 != .toggleSidebar }
+    }
+
+    private var iPadOverflowActions: [IPadToolbarAction] {
+        ToolbarActionSelection.overflowActions(
+            enabledActions: enabledIPadActionPriority,
+            visibleActions: visibleIPadToolbarActions
+        )
+        .filter { $0 != .toggleSidebar }
+    }
+
+#if os(visionOS)
+    private var visionOSPrimaryToolbarActions: [IPadToolbarAction] {
+        enabledIPadActionPriority.filter {
+            $0 != .settings &&
+            $0 != .help &&
+            visionOSToolbarActionIsEnabled($0)
+        }
+    }
+
+    private var visionOSPinnedToolbarActionCount: Int {
+        0
+    }
+
+    private var visionOSToolbarWidth: CGFloat {
+        let measuredWidth = liveContainerWidth > 700 ? liveContainerWidth - 96 : 1040
+        return min(max(measuredWidth, 760), 1280)
+    }
+
+    private func visibleVisionOSToolbarActions(for width: CGFloat) -> [IPadToolbarAction] {
+        let reservedControlWidth = CGFloat(74 + (44 * (visionOSPinnedToolbarActionCount + 1)))
+        let outerPadding: CGFloat = 16
+        let minimumSpacing: CGFloat = 8
+        let availableWidth = max(0, width - reservedControlWidth - outerPadding)
+        let visibleCount = Int((availableWidth + minimumSpacing) / (44 + minimumSpacing))
+        return Array(visionOSPrimaryToolbarActions.prefix(max(0, min(visionOSPrimaryToolbarActions.count, visibleCount))))
+    }
+
+    private func visionOSOverflowActions(visibleActions: [IPadToolbarAction]) -> [IPadToolbarAction] {
+        let visible = Set(visibleActions)
+        let primaryOverflow = visionOSPrimaryToolbarActions.filter { !visible.contains($0) }
+        let utilities = enabledIPadActionPriority.filter { $0 == .settings || $0 == .help }
+        return primaryOverflow + utilities
+    }
+
+    private func visionOSToolbarSpacing(for width: CGFloat, visibleActionCount: Int, showsOverflow: Bool) -> CGFloat {
+        let fixedControlCount = 1 + visibleActionCount + visionOSPinnedToolbarActionCount + (showsOverflow ? 1 : 0)
+        let fixedControlWidth = 74 + CGFloat(max(0, fixedControlCount - 1)) * 44
+        let gaps = max(1, fixedControlCount - 1)
+        let availableSpacing = max(8, (width - fixedControlWidth - 16) / CGFloat(gaps))
+        return min(18, availableSpacing)
+    }
+
+    private func visionOSToolbarActionIsEnabled(_ action: IPadToolbarAction) -> Bool {
+        switch action {
+        case .openFile:
+            return toolbarShowOpenFileIOS
+        case .undo:
+            return toolbarShowUndoIOS
+        default:
+            return true
+        }
+    }
+#endif
+
+    // MARK: - Shared Toolbar Controls
+
+    @ViewBuilder
+    private var newTabControl: some View {
+        Button(action: { viewModel.addNewTab() }) {
+            Image(systemName: "plus.square.on.square")
+        }
+        .help("New Tab (Cmd+T)")
+        .accessibilityLabel("New tab")
+        .accessibilityHint("Creates a new editor tab")
+    }
+
+    @ViewBuilder
+    private var settingsControl: some View {
+        Button(action: { openSettings() }) {
+            Image(systemName: "gearshape")
+        }
+        .help("Settings (Cmd+,)")
+        .accessibilityLabel("Settings")
+        .accessibilityHint("Opens app settings")
+    }
+
+    @ViewBuilder
+    private var helpControl: some View {
+        Button(action: { showEditorHelp = true }) {
+            Image(systemName: "questionmark.circle")
+        }
+        .help("Toolbar Help")
+        .accessibilityLabel("Toolbar Help")
+        .accessibilityHint("Opens help for all toolbar actions")
+    }
+
+    @ViewBuilder
+    private var languagePickerGlyph: some View {
+        let language = currentLanguagePickerBinding.wrappedValue
+        switch ToolbarLanguageGlyph.resolve(
+            language: language,
+            displayName: languageLabel(for: language)
+        ) {
+        case .systemImage(let name):
+            Image(systemName: name)
+        case .initial(let initial):
+            Text(initial)
+#if os(iOS)
+                .font(.system(
+                    size: MobileToolbarPresentationPolicy.symbolSize(
+                        usesLargeSymbols: toolbarLargeSymbolsIOS
+                    ),
+                    weight: .bold,
+                    design: .rounded
+                ))
+#else
+                .font(.system(size: 16, weight: .bold, design: .rounded))
+#endif
+        }
+    }
+
+    @ViewBuilder
+    private var languagePickerControl: some View {
+        Menu {
+            let selectedLanguage = currentLanguagePickerBinding.wrappedValue
+            Button {
+                currentLanguagePickerBinding.wrappedValue = selectedLanguage
+            } label: {
+                Label(languageLabel(for: selectedLanguage), systemImage: "checkmark")
+            }
+            Button(action: { presentLanguageSearchSheet() }) {
+                Label("Language…", systemImage: "magnifyingglass")
+            }
+            Divider()
+            ForEach(languageOptions.filter { $0 != selectedLanguage }, id: \.self) { lang in
+                Button {
+                    currentLanguagePickerBinding.wrappedValue = lang
+                } label: {
+                    Text(languageLabel(for: lang))
+                }
+            }
+        } label: {
+            languagePickerGlyph
+#if os(visionOS)
+                .foregroundStyle(Color.white.opacity(0.96))
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(NeonUIStyle.accentBlue, in: Capsule())
+                .overlay(
+                    Capsule()
+                        .stroke(Color.white.opacity(0.22), lineWidth: 1)
+                )
+                .frame(width: 74)
+#elseif os(iOS)
+                .frame(width: 24, height: 24)
+#endif
+        }
+        .labelsHidden()
+#if os(iOS)
+        .frame(minWidth: 44, minHeight: 44)
+#endif
+        .help("Language")
+        .accessibilityLabel("Language picker")
+        .accessibilityHint("Choose syntax language for the current tab")
+#if os(iOS)
+        .accessibilityValue(languageLabel(for: currentLanguagePickerBinding.wrappedValue))
+#endif
+        .layoutPriority(2)
+#if os(visionOS)
+        .tint(Color.white.opacity(0.96))
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+#elseif os(iOS)
+        .tint(iOSToolbarTintColor)
+        .menuStyle(.button)
+#endif
+    }
+
+    @ViewBuilder
+    private var clearEditorControl: some View {
+        Button(action: {
+            requestClearEditorContent()
+        }) {
+            Image(systemName: "eraser")
+        }
+        .help("Clear Editor")
+    }
+
+    @ViewBuilder
+    private var insertTemplateControl: some View {
+        Button(action: { insertTemplateForCurrentLanguage() }) {
+            Image(systemName: "doc.badge.plus")
+        }
+        .help("Insert Template for Current Language")
+    }
+
+    @ViewBuilder
+    private var lineWrapControl: some View {
+        Button(action: {
+            viewModel.isLineWrapEnabled.toggle()
+        }) {
+            Image(systemName: "text.justify")
+        }
+        .help("Enable Wrap / Disable Wrap (Cmd+Opt+L)")
+        .accessibilityLabel("Line Wrap")
+        .accessibilityValue(viewModel.isLineWrapEnabled ? "On" : "Off")
+        .accessibilityHint("Wraps long lines within the editor")
+    }
+
+    @ViewBuilder
+    private var openFileControl: some View {
+        Button(action: { openFileFromToolbar() }) {
+            Image(systemName: "folder")
+        }
+        .help("Open File… (Cmd+O)")
+        .accessibilityLabel("Open file")
+        .accessibilityHint("Opens a file picker")
+    }
+
+    @ViewBuilder
+    private var undoControl: some View {
+        Button(action: { undoFromToolbar() }) {
+            Image(systemName: "arrow.uturn.backward")
+        }
+        .help("Undo (Cmd+Z)")
+    }
+
+    @ViewBuilder
+    private var saveFileControl: some View {
+        Button(action: { saveCurrentTabFromToolbar() }) {
+            Image(systemName: "square.and.arrow.down")
+        }
+        .disabled(viewModel.selectedTab == nil || viewModel.selectedTab?.isReadOnlyPreview == true)
+        .help("Save File (Cmd+S)")
+        .accessibilityLabel("Save file")
+        .accessibilityHint("Saves the current tab")
+    }
+
+    @ViewBuilder
+    private var saveFileAsControl: some View {
+        Button(action: { saveCurrentTabAsFromToolbar() }) {
+            Image(systemName: "square.and.arrow.down.on.square")
+        }
+        .disabled(viewModel.selectedTab == nil)
+        .help("Save As… (Cmd+Shift+S)")
+        .accessibilityLabel("Save As")
+        .accessibilityHint("Saves the current tab to a new file")
+    }
+
+    @ViewBuilder
+    private var closeAllTabsControl: some View {
+        Button(action: { requestCloseAllTabsFromToolbar() }) {
+            Image(systemName: "xmark.square")
+        }
+        .disabled(viewModel.tabs.isEmpty)
+        .help("Close All Tabs")
+        .accessibilityLabel("Close all tabs")
+        .accessibilityHint("Closes every open tab")
+    }
+
+    @ViewBuilder
+    private var fontDecreaseControl: some View {
+        Button(action: { adjustEditorFontSize(-1) }) {
+            Image(systemName: "textformat.size.smaller")
+        }
+        .help("Decrease Font Size")
+    }
+
+    @ViewBuilder
+    private var fontIncreaseControl: some View {
+        Button(action: { adjustEditorFontSize(1) }) {
+            Image(systemName: "textformat.size.larger")
+        }
+        .help("Increase Font Size")
+    }
+
+    @ViewBuilder
+    private var findReplaceControl: some View {
+        Button(action: { showFindReplace = true }) {
+            Image(systemName: "magnifyingglass")
+        }
+        .help("Find & Replace (Cmd+F)")
+    }
+
+    @ViewBuilder
+    private var findInFilesControl: some View {
+        Button(action: { requestFindInFilesFromToolbar() }) {
+            Image(systemName: "text.magnifyingglass")
+        }
+        .help("Find in Files (Cmd+Shift+F)")
+        .accessibilityLabel("Find in Files")
+        .accessibilityHint("Searches across files in the current project")
+    }
+
+    @ViewBuilder
+    private var compareDiskControl: some View {
+        Button(action: { compareCurrentTabAgainstDisk() }) {
+            Image(systemName: "doc.text.magnifyingglass")
+        }
+        .disabled(viewModel.selectedTab?.fileURL == nil)
+        .help("Compare with Disk")
+        .accessibilityLabel("Compare with Disk")
+        .accessibilityHint("Compares the current tab with its saved file")
+    }
+
+    @ViewBuilder
+    private var compareTabsControl: some View {
+        Button(action: { presentCompareTabsPicker() }) {
+            Image(systemName: "rectangle.split.2x1")
+        }
+        .disabled(viewModel.selectedTab == nil)
+        .help("Compare Open Tabs")
+        .accessibilityLabel("Compare Open Tabs")
+        .accessibilityHint("Choose another open tab to compare with the current tab")
+    }
+
+    @ViewBuilder
+    private var splitEditorControl: some View {
+        Button(action: { toggleSplitEditorFromToolbar() }) {
+            Image(systemName: splitSecondaryTabID == nil ? "rectangle.split.2x1" : "rectangle")
+        }
+        .disabled(!canOpenSplitEditor && splitSecondaryTabID == nil)
+        .help(splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor")
+        .accessibilityLabel(splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor")
+        .accessibilityHint("Shows the current tab and another open tab at the same time")
+    }
+
+    @ViewBuilder
+    private var codeCompletionControl: some View {
+        Button(action: {
+            toggleAutoCompletion()
+        }) {
+            Image(systemName: "bolt.horizontal.circle")
+                .symbolVariant(isAutoCompletionEnabled ? .fill : .none)
+        }
+        .help(isAutoCompletionEnabled ? "Disable Code Completion" : "Enable Code Completion")
+        .accessibilityLabel("Code Completion")
+        .accessibilityValue(isAutoCompletionEnabled ? "On" : "Off")
+        .accessibilityHint("Offers completion suggestions while editing")
+    }
+
+    @ViewBuilder
+    private var performanceModeControl: some View {
+        Button(action: {
+            forceLargeFileMode.toggle()
+            updateLargeFileModeForCurrentContext()
+            recordDiagnostic("Toolbar toggled performance mode: \(forceLargeFileMode ? "on" : "off")")
+        }) {
+            Image(systemName: forceLargeFileMode ? "speedometer" : "speedometer")
+                .symbolVariant(forceLargeFileMode ? .fill : .none)
+        }
+        .help(forceLargeFileMode ? "Disable Performance Mode" : "Enable Performance Mode")
+        .accessibilityLabel("Performance Mode")
+        .accessibilityValue(forceLargeFileMode ? "On" : "Off")
+        .accessibilityHint("Reduces expensive editor analysis for large documents")
+    }
+
+    @ViewBuilder
+    private var markdownPreviewControl: some View {
+        Button(action: {
+            togglePreviewFromToolbar()
+        }) {
+            Image(systemName: previewToolbarIconName)
+        }
+        .disabled(!isPreviewSupportedDocument)
+        .help(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
+        .accessibilityLabel(previewTitle)
+    }
+
+    @ViewBuilder
+    private var markdownProjectPreviewControl: some View {
+        Button {
+            toggleMarkdownProjectPreviewFromToolbar()
+        } label: {
+            Image(systemName: isMarkdownProjectPreviewPresented ? "square.grid.2x2.fill" : "square.grid.2x2")
+        }
+        .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+        .help(isMarkdownProjectPreviewPresented ? "Hide Project Cards" : "Show Project Cards")
+        .accessibilityLabel("Project Cards")
+        .accessibilityHint("Shows Markdown and PDF files from the current project as preview cards")
+    }
+
+    @ViewBuilder
+    private var indentationGuidesControl: some View {
+        Button(action: {
+            showIndentationGuides.toggle()
+        }) {
+            Image(systemName: "text.alignleft")
+                .symbolVariant(showIndentationGuides ? .fill : .none)
+        }
+        .help(showIndentationGuides ? "Hide Indentation Guides" : "Show Indentation Guides")
+        .accessibilityLabel("Indentation Guides")
+        .accessibilityValue(showIndentationGuides ? "Shown" : "Hidden")
+        .accessibilityHint("Toggles light indentation guide lines in the editor")
+    }
+
+    @ViewBuilder
+    private var markdownPreviewExportControl: some View {
+        if showMarkdownPreviewPane && isMarkdownPreviewDocument {
+            Menu {
+                markdownPreviewExportToolbarMenuContent
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .help(NSLocalizedString("Markdown Preview Export Options", comment: "Toolbar help for markdown preview export options"))
+            .accessibilityLabel(NSLocalizedString("Export Markdown preview as PDF", comment: "Accessibility label for markdown preview export button"))
+        }
+    }
+
+    @ViewBuilder
+    private var markdownPreviewStyleControl: some View {
+#if os(visionOS)
+        EmptyView()
+#else
+        if showMarkdownPreviewPane && isMarkdownPreviewDocument {
+            Menu {
+                markdownPreviewTemplateMenuItems
+            } label: {
+                Image(systemName: "paintbrush")
+            }
+            .help(NSLocalizedString("Markdown Preview Template", comment: "Toolbar help for markdown preview style menu"))
+            .accessibilityLabel(NSLocalizedString("Markdown Preview Template", comment: "Accessibility label for markdown preview style menu"))
+        }
+#endif
+    }
+
+    @ViewBuilder
+    private var markdownPreviewExportToolbarMenuContent: some View {
+        Button(action: { exportMarkdownPreviewPDF() }) {
+            Label("Export PDF", systemImage: "square.and.arrow.down")
+        }
+        .help("Export Markdown Preview as PDF")
+
+        Menu {
+            Button(action: { markdownPDFExportModeRaw = MarkdownPDFExportMode.paginatedFit.rawValue }) {
+                if markdownPDFExportModeRaw == MarkdownPDFExportMode.paginatedFit.rawValue {
+                    Label("Paginated Fit", systemImage: "checkmark")
+                } else {
+                    Text("Paginated Fit")
+                }
+            }
+            .help("Use Paginated Fit PDF Export")
+            Button(action: { markdownPDFExportModeRaw = MarkdownPDFExportMode.onePageFit.rawValue }) {
+                if markdownPDFExportModeRaw == MarkdownPDFExportMode.onePageFit.rawValue {
+                    Label("One Page Fit", systemImage: "checkmark")
+                } else {
+                    Text("One Page Fit")
+                }
+            }
+            .help("Use One Page Fit PDF Export")
+        } label: {
+            Label("PDF Mode", systemImage: "doc.text")
+        }
+        .help("Choose PDF Export Mode")
+
+        Menu {
+            markdownPreviewTemplateMenuItems
+        } label: {
+            Label(NSLocalizedString("Preview Style", comment: "Markdown preview style menu label"), systemImage: "paintbrush")
+        }
+        .help(NSLocalizedString("Choose Markdown Preview Style", comment: "Toolbar help for markdown preview style picker"))
+
+        Divider()
+
+        Button(action: { copyMarkdownPreviewHTML() }) {
+            Label("Copy HTML", systemImage: "doc.on.doc")
+        }
+        .help("Copy Markdown Preview HTML")
+        Button(action: { copyMarkdownPreviewMarkdown() }) {
+            Label("Copy Markdown", systemImage: "doc.on.clipboard")
+        }
+        .help("Copy Markdown Source")
+    }
+
+    @ViewBuilder
+    private var keyboardAccessoryControl: some View {
+        Button(action: {
+            toggleKeyboardAccessoryBar()
+        }) {
+            Image(systemName: showKeyboardAccessoryBarIOS ? "keyboard.chevron.compact.down.fill" : "keyboard.chevron.compact.down")
+        }
+        .help(showKeyboardAccessoryBarIOS ? "Hide Keyboard Snippet Bar" : "Show Keyboard Snippet Bar")
+        .accessibilityLabel("Keyboard Snippet Bar")
+    }
+
+    @ViewBuilder
+    private var hideKeyboardControl: some View {
+        Button(action: { dismissKeyboard() }) {
+            Image(systemName: "keyboard.chevron.compact.down")
+        }
+        .help("Hide Keyboard")
+        .accessibilityLabel("Hide Keyboard")
+        .accessibilityHint("Dismisses the software keyboard")
+    }
+
+    @ViewBuilder
+    private var welcomeTourControl: some View {
+        Button(action: {
+            showWelcomeTour = true
+        }) {
+            Image(systemName: "sparkles.rectangle.stack")
+        }
+        .help("Welcome Tour")
+    }
+
+    @ViewBuilder
+    private var translucentWindowControl: some View {
+        Button(action: {
+            enableTranslucentWindow.toggle()
+            UserDefaults.standard.set(enableTranslucentWindow, forKey: "EnableTranslucentWindow")
+            NotificationCenter.default.post(name: .toggleTranslucencyRequested, object: enableTranslucentWindow)
+        }) {
+            Image(systemName: enableTranslucentWindow ? "rectangle.fill" : "rectangle")
+        }
+        .help("Toggle Translucent Window Background")
+        .accessibilityLabel("Translucent Window Background")
+        .accessibilityValue(enableTranslucentWindow ? "On" : "Off")
+    }
+
+    @ViewBuilder
+    private var codeSnapshotControl: some View {
+        Button(action: { presentCodeSnapshotComposer() }) {
+            Image(systemName: "camera.viewfinder")
+        }
+        .disabled(!canCreateCodeSnapshot)
+        .help("Create Code Snapshot from Selection")
+        .accessibilityLabel("Create Code Snapshot")
+    }
+
+    @ViewBuilder
+    private var toolbarIconColorControl: some View {
+        Button(action: { toolbarIconsBlueIOS.toggle() }) {
+            Image(systemName: toolbarIconsBlueIOS ? "checkmark.circle.fill" : "circle")
+        }
+        .help("Blue Toolbar Icons")
+        .accessibilityLabel("Blue Toolbar Icons")
+        .accessibilityValue(toolbarIconsBlueIOS ? "On" : "Off")
+        .accessibilityHint("Toggles blue toolbar icon coloring")
+    }
+
+    // MARK: - iPad Toolbar Composition
+
+    private func iPadToolbarActionControl(_ action: IPadToolbarAction) -> AnyView {
+        switch action {
+        case .openFile: AnyView(openFileControl)
+        case .undo: AnyView(undoControl)
+        case .newTab: AnyView(newTabControl)
+        case .closeAllTabs: AnyView(closeAllTabsControl)
+        case .saveFile: AnyView(saveFileControl)
+        case .saveFileAs: AnyView(saveFileAsControl)
+        case .codeSnapshot: AnyView(codeSnapshotControl)
+        case .markdownPreview: AnyView(markdownPreviewControl)
+        case .markdownProjectPreview: AnyView(markdownProjectPreviewControl)
+        case .markdownPreviewExport: AnyView(markdownPreviewExportControl)
+        case .markdownPreviewStyle: AnyView(markdownPreviewStyleControl)
+        case .codeMinimap: AnyView(codeMinimapControl)
+        case .indentationGuides: AnyView(indentationGuidesControl)
+        case .fontDecrease: AnyView(fontDecreaseControl)
+        case .fontIncrease: AnyView(fontIncreaseControl)
+        case .toggleSidebar: AnyView(toggleSidebarControl)
+        case .toggleProjectSidebar: AnyView(toggleProjectSidebarControl)
+        case .findReplace: AnyView(findReplaceControl)
+        case .findInFiles: AnyView(findInFilesControl)
+        case .compareDisk: AnyView(compareDiskControl)
+        case .compareTabs: AnyView(compareTabsControl)
+        case .gitChanges: AnyView(gitChangesControl)
+        case .splitEditor: AnyView(splitEditorControl)
+        case .editorLayout: AnyView(mobileEditorLayoutControl)
+        case .previewActions: AnyView(mobilePreviewActionsControl)
+        case .settings: AnyView(settingsControl)
+        case .help: AnyView(helpControl)
+        case .codeCompletion: AnyView(codeCompletionControl)
+        case .performanceMode: AnyView(performanceModeControl)
+        case .lineWrap: AnyView(lineWrapControl)
+        case .keyboardAccessory: AnyView(keyboardAccessoryControl)
+        case .hideKeyboard: AnyView(hideKeyboardControl)
+        case .clearEditor: AnyView(clearEditorControl)
+        case .insertTemplate: AnyView(insertTemplateControl)
+        case .brainDump: AnyView(brainDumpControl)
+        case .welcomeTour: AnyView(welcomeTourControl)
+        case .translucentWindow: AnyView(translucentWindowControl)
+        case .toolbarIconColor: AnyView(toolbarIconColorControl)
+        }
+    }
+
+    @ViewBuilder
+    private var iPadOverflowMenuControl: some View {
+        iPadOverflowMenuControl(actions: iPadOverflowActions)
+    }
+
+    @ViewBuilder
+    private func iPadOverflowMenuControl(actions: [IPadToolbarAction]) -> some View {
+        Menu {
+                nearbyDocumentTransferMenu
+                if usesIPadBottomToolbar && isPhoneBottomToolbarMinimized {
+                    Menu {
+                        ForEach(ToolbarPreset.allCases) { preset in
+                            Button {
+                                selectToolbarPreset(preset)
+                            } label: {
+                                ToolbarPresetLabel(preset: preset, title: preset.title)
+                                if currentToolbarPreset == preset {
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    } label: {
+                        Label("Toolbar Preset", systemImage: currentToolbarPreset.icon)
+                    }
+                }
+                ForEach(actions, id: \.self) { action in
+                    switch action {
+                    case .openFile:
+                        Button(action: { openFileFromToolbar() }) {
+                            Label("Open File…", systemImage: "folder")
+                        }
+                    case .undo:
+                        Button(action: { undoFromToolbar() }) {
+                            Label("Undo", systemImage: "arrow.uturn.backward")
+                        }
+                    case .newTab:
+                        Button(action: { viewModel.addNewTab() }) {
+                            Label("New Tab", systemImage: "plus.square.on.square")
+                        }
+                    case .closeAllTabs:
+                        Button(action: { requestCloseAllTabsFromToolbar() }) {
+                            Label("Close All Tabs", systemImage: "xmark.square")
+                        }
+                        .disabled(viewModel.tabs.isEmpty)
+                    case .saveFile:
+                        Button(action: { saveCurrentTabFromToolbar() }) {
+                            Label("Save File", systemImage: "square.and.arrow.down")
+                        }
+                        .disabled(viewModel.selectedTab == nil)
+                    case .saveFileAs:
+                        Button(action: { saveCurrentTabAsFromToolbar() }) {
+                            Label("Save As…", systemImage: "square.and.arrow.down.on.square")
+                        }
+                        .disabled(viewModel.selectedTab == nil)
+                    case .codeSnapshot:
+                        Button(action: { presentCodeSnapshotComposer() }) {
+                            Label("Create Code Snapshot", systemImage: "camera.viewfinder")
+                        }
+                        .disabled(!canCreateCodeSnapshot)
+                    case .markdownPreview:
+                        Button(action: { togglePreviewFromToolbar() }) {
+                            Label(
+                                previewTitle,
+                                systemImage: previewToolbarIconName
+                            )
+                        }
+                        .disabled(!isPreviewSupportedDocument)
+                    case .markdownProjectPreview:
+                        markdownProjectPreviewControl
+                    case .markdownPreviewExport:
+                        markdownPreviewExportToolbarMenuContent
+                    case .markdownPreviewStyle:
+                        Menu {
+                            markdownPreviewTemplateMenuItems
+                        } label: {
+                            Label(NSLocalizedString("Preview Style", comment: "Markdown preview style menu label"), systemImage: "paintbrush")
+                        }
+                    case .codeMinimap:
+                        if supportsCodeMinimap(language: currentLanguage) {
+                            Button(action: { showCodeMinimap.toggle() }) {
+                                Label(showCodeMinimap ? "Hide Code Minimap" : "Show Code Minimap", systemImage: showCodeMinimap ? "map.fill" : "map")
+                            }
+                        }
+                    case .indentationGuides:
+                        Button(action: { showIndentationGuides.toggle() }) {
+                            Label(showIndentationGuides ? "Hide Indentation Guides" : "Show Indentation Guides", systemImage: "text.alignleft")
+                        }
+                    case .fontDecrease:
+                        Button(action: { adjustEditorFontSize(-1) }) {
+                            Label("Font -", systemImage: "textformat.size.smaller")
+                        }
+                    case .fontIncrease:
+                        Button(action: { adjustEditorFontSize(1) }) {
+                            Label("Font +", systemImage: "textformat.size.larger")
+                        }
+                    case .toggleSidebar:
+                        Button(action: { toggleSidebarFromToolbar() }) {
+                            Label("Toggle Sidebar", systemImage: "sidebar.left")
+                        }
+                    case .toggleProjectSidebar:
+                        Button(action: { toggleProjectSidebarFromToolbar() }) {
+                            Label("Toggle Project Structure Sidebar", systemImage: "sidebar.right")
+                        }
+                    case .findReplace:
+                        Button(action: { showFindReplace = true }) {
+                            Label("Find & Replace", systemImage: "magnifyingglass")
+                        }
+                    case .findInFiles:
+                        Button(action: { requestFindInFilesFromToolbar() }) {
+                            Label("Find in Files…", systemImage: "text.magnifyingglass")
+                        }
+                    case .compareDisk:
+                        Button(action: { compareCurrentTabAgainstDisk() }) {
+                            Label("Compare with Disk", systemImage: "doc.text.magnifyingglass")
+                        }
+                        .disabled(viewModel.selectedTab?.fileURL == nil)
+                    case .compareTabs:
+                        Button(action: { presentCompareTabsPicker() }) {
+                            Label("Compare Open Tabs…", systemImage: "rectangle.split.2x1")
+                        }
+                        .disabled(viewModel.selectedTab == nil)
+                    case .gitChanges:
+                        gitChangesControl
+                    case .splitEditor:
+                        Button(action: { toggleSplitEditorFromToolbar() }) {
+                            Label(splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor", systemImage: "rectangle.split.2x1")
+                        }
+                        .disabled(!canOpenSplitEditor && splitSecondaryTabID == nil)
+                    case .editorLayout:
+                        mobileEditorLayoutControl
+                    case .previewActions:
+                        mobilePreviewActionsControl
+                    case .settings:
+                        Button(action: { openSettings() }) {
+                            Label("Settings", systemImage: "gearshape")
+                        }
+                    case .help:
+                        Button(action: { showEditorHelp = true }) {
+                            Label("Toolbar Help", systemImage: "questionmark.circle")
+                        }
+                    case .codeCompletion:
+                        Button(action: { toggleAutoCompletion() }) {
+                            Label(isAutoCompletionEnabled ? "Disable Code Completion" : "Enable Code Completion", systemImage: "text.badge.plus")
+                        }
+                    case .performanceMode:
+                        Button(action: {
+                            forceLargeFileMode.toggle()
+                            updateLargeFileModeForCurrentContext()
+                        }) {
+                            Label(forceLargeFileMode ? "Disable Performance Mode" : "Enable Performance Mode", systemImage: "speedometer")
+                        }
+                    case .lineWrap:
+                        Button(action: { viewModel.isLineWrapEnabled.toggle() }) {
+                            Label("Enable Wrap / Disable Wrap", systemImage: "text.justify")
+                        }
+                    case .keyboardAccessory:
+                        Button(action: { toggleKeyboardAccessoryBar() }) {
+                            Label(
+                                showKeyboardAccessoryBarIOS ? "Hide Keyboard Snippet Bar" : "Show Keyboard Snippet Bar",
+                                systemImage: showKeyboardAccessoryBarIOS ? "keyboard.chevron.compact.down.fill" : "keyboard.chevron.compact.down"
+                            )
+                        }
+                    case .hideKeyboard:
+                        Button(action: { dismissKeyboard() }) {
+                            Label("Hide Keyboard", systemImage: "keyboard.chevron.compact.down")
+                        }
+                    case .clearEditor:
+                        Button(action: { requestClearEditorContent() }) {
+                            Label("Clear Editor", systemImage: "eraser")
+                        }
+                    case .insertTemplate:
+                        Button(action: { insertTemplateForCurrentLanguage() }) {
+                            Label("Insert Template", systemImage: "doc.badge.plus")
+                        }
+                    case .brainDump:
+                        Button(action: {
+                            toggleBrainDumpModeIOSAware()
+                        }) {
+                            Label("Brain Dump Mode", systemImage: "note.text")
+                        }
+                    case .welcomeTour:
+                        Button(action: { showWelcomeTour = true }) {
+                            Label("Welcome Tour", systemImage: "sparkles.rectangle.stack")
+                        }
+                    case .translucentWindow:
+                        Button(action: {
+                            enableTranslucentWindow.toggle()
+                            UserDefaults.standard.set(enableTranslucentWindow, forKey: "EnableTranslucentWindow")
+                            NotificationCenter.default.post(name: .toggleTranslucencyRequested, object: enableTranslucentWindow)
+                        }) {
+                            Label("Translucent Window Background", systemImage: enableTranslucentWindow ? "rectangle.fill" : "rectangle")
+                        }
+                    case .toolbarIconColor:
+                        Button(action: { toolbarIconsBlueIOS.toggle() }) {
+                            Label("Blue Toolbar Icons", systemImage: toolbarIconsBlueIOS ? "checkmark.circle.fill" : "circle")
+                        }
+                    }
+                }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .frame(width: 40, height: 40, alignment: .center)
+                .contentShape(Rectangle())
+        }
+        .help("More Actions")
+        .frame(minWidth: 44, minHeight: 44)
+    }
+
+    private func iOSOverflowItem<Content: View>(
+        _ actionID: String,
+        @ViewBuilder content: () -> Content
+    ) -> AnyView {
+        if shouldShowIOSOverflowAction(actionID) {
+            AnyView(content())
+        } else {
+            AnyView(EmptyView())
+        }
+    }
+
+    private func shouldShowIOSOverflowAction(_ actionID: String) -> Bool {
+        iPhoneMoreActions.contains { $0.rawValue == actionID }
+    }
+
+    @ViewBuilder
+    private var moreActionsControl: some View {
+        Menu {
+            if usesIPhoneBottomToolbar {
+                Menu {
+                    ForEach(ToolbarPreset.allCases) { preset in
+                        Button {
+                            selectToolbarPreset(preset)
+                        } label: {
+                            ToolbarPresetLabel(preset: preset, title: preset.title)
+                            if currentToolbarPreset == preset {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Toolbar Preset", systemImage: currentToolbarPreset.icon)
+                }
+                Divider()
+            }
+            iOSOverflowItem("settings") { Button(action: {
+                openSettings()
+            }) {
+                Label("Settings", systemImage: "gearshape")
+            } }
+
+            iOSOverflowItem("help") { Button(action: {
+                showEditorHelp = true
+            }) {
+                Label("Toolbar Help", systemImage: "questionmark.circle")
+            } }
+
+            iOSOverflowItem("clearEditor") { Button(action: {
+                requestClearEditorContent()
+            }) {
+                Label("Clear Editor", systemImage: "eraser")
+            } }
+
+            iOSOverflowItem("insertTemplate") { Button(action: { insertTemplateForCurrentLanguage() }) {
+                Label("Insert Template", systemImage: "doc.badge.plus")
+            } }
+
+            iOSOverflowItem("newTab") { Button(action: { viewModel.addNewTab() }) {
+                Label("New Tab", systemImage: "plus.square.on.square")
+            } }
+
+            iOSOverflowItem("openFile") { Button(action: { openFileFromToolbar() }) {
+                Label("Open File…", systemImage: "folder")
+            } }
+
+            iOSOverflowItem("undo") { Button(action: { undoFromToolbar() }) {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+            } }
+
+            iOSOverflowItem("saveFile") { Button(action: { saveCurrentTabFromToolbar() }) {
+                Label("Save File", systemImage: "square.and.arrow.down")
+            } }
+            .disabled(viewModel.selectedTab == nil)
+
+            iOSOverflowItem("codeSnapshot") { Button(action: { presentCodeSnapshotComposer() }) {
+                Label("Create Code Snapshot", systemImage: "camera.viewfinder")
+            } }
+            .disabled(!canCreateCodeSnapshot)
+
+            iOSOverflowItem("markdownPreview") { Button(action: { togglePreviewFromToolbar() }) {
+                Label(
+                    previewTitle,
+                    systemImage: previewToolbarIconName
+                )
+            } }
+            .disabled(!isPreviewSupportedDocument)
+
+            iOSOverflowItem("markdownProjectPreview") {
+                Button(action: { toggleMarkdownProjectPreviewFromToolbar() }) {
+                    Label(
+                        isMarkdownProjectPreviewPresented ? "Hide Project Cards" : "Show Project Cards",
+                        systemImage: isMarkdownProjectPreviewPresented ? "square.grid.2x2.fill" : "square.grid.2x2"
+                    )
+                }
+                .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+            }
+
+            iOSOverflowItem("markdownPreviewStyle") {
+                if showMarkdownPreviewPane && isMarkdownPreviewDocument {
+                    Menu {
+                        markdownPreviewTemplateMenuItems
+                    } label: {
+                        Label("Preview Style", systemImage: "paintbrush")
+                    }
+                }
+            }
+
+            if supportsCodeMinimap(language: currentLanguage) {
+                iOSOverflowItem("codeMinimap") { Button(action: { showCodeMinimap.toggle() }) {
+                    Label(showCodeMinimap ? "Hide Code Minimap" : "Show Code Minimap", systemImage: showCodeMinimap ? "map.fill" : "map")
+                } }
+            }
+
+            iOSOverflowItem("indentationGuides") { Button(action: { showIndentationGuides.toggle() }) {
+                Label(showIndentationGuides ? "Hide Indentation Guides" : "Show Indentation Guides", systemImage: "text.alignleft")
+            } }
+
+            if showMarkdownPreviewPane && isMarkdownPreviewDocument {
+                iOSOverflowItem("markdownPreviewExport") {
+                    Menu {
+                        markdownPreviewExportToolbarMenuContent
+                    } label: {
+                        Label("Export PDF", systemImage: "square.and.arrow.down")
+                    }
+                }
+            }
+
+            iOSOverflowItem("closeAllTabs") { Button(action: { requestCloseAllTabsFromToolbar() }) {
+                Label("Close All Tabs", systemImage: "xmark.square")
+            } }
+            .disabled(viewModel.tabs.isEmpty)
+
+            iOSOverflowItem("saveFileAs") { Button(action: { saveCurrentTabAsFromToolbar() }) {
+                Label("Save As…", systemImage: "square.and.arrow.down.on.square")
+            } }
+            .disabled(viewModel.selectedTab == nil)
+
+            iOSOverflowItem("toggleSidebar") { Button(action: { toggleSidebarFromToolbar() }) {
+                Label("Toggle Sidebar", systemImage: "sidebar.left")
+            } }
+
+            iOSOverflowItem("toggleProjectSidebar") { Button(action: { toggleProjectSidebarFromToolbar() }) {
+                Label("Toggle Project Structure Sidebar", systemImage: "sidebar.right")
+            } }
+
+            iOSOverflowItem("findReplace") { Button(action: { showFindReplace = true }) {
+                Label("Find & Replace", systemImage: "magnifyingglass")
+            } }
+
+            iOSOverflowItem("findInFiles") { Button(action: { requestFindInFilesFromToolbar() }) {
+                Label("Find in Files…", systemImage: "text.magnifyingglass")
+            } }
+
+            iOSOverflowItem("compareDisk") { Button(action: { compareCurrentTabAgainstDisk() }) {
+                Label("Compare with Disk", systemImage: "doc.text.magnifyingglass")
+            } }
+            .disabled(viewModel.selectedTab?.fileURL == nil)
+
+            iOSOverflowItem("compareTabs") { Button(action: { presentCompareTabsPicker() }) {
+                Label("Compare Open Tabs…", systemImage: "rectangle.split.2x1")
+            } }
+            .disabled(viewModel.selectedTab == nil)
+
+            iOSOverflowItem("splitEditor") { Button(action: { toggleSplitEditorFromToolbar() }) {
+                Label(
+                    splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor",
+                    systemImage: "rectangle.split.2x1"
+                )
+            } }
+            .disabled(!canOpenSplitEditor && splitSecondaryTabID == nil)
+
+            iOSOverflowItem("editorLayout") {
+                Menu {
+                    ForEach(EditorLayoutPreset.allCases) { preset in
+                        Button(action: { applyEditorLayoutPreset(preset) }) {
+                            Label(preset.title, systemImage: preset.symbol)
+                            if editorLayoutPreset == preset { Image(systemName: "checkmark") }
+                        }
+                    }
+                } label: {
+                    Label("Editor Layout", systemImage: "rectangle.3.group")
+                }
+            }
+
+            iOSOverflowItem("previewActions") {
+                Menu {
+                    Button(action: { togglePreviewFromToolbar() }) {
+                        Label(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)", systemImage: previewToolbarIconName)
+                    }
+                    .disabled(!isPreviewSupportedDocument)
+
+                    Button(action: { toggleMarkdownProjectPreviewFromToolbar() }) {
+                        Label(isMarkdownProjectPreviewPresented ? "Hide Project Cards" : "Show Project Cards", systemImage: "square.grid.2x2")
+                    }
+                    .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+                } label: {
+                    Label("Preview Actions", systemImage: isPreviewVisible ? "eye.fill" : "eye")
+                }
+            }
+
+            iOSOverflowItem("gitChanges") { Button(action: { showGitChangesEditor.toggle() }) {
+                Label(
+                    showGitChangesEditor ? "Close Git Changes" : "Open Git Changes",
+                    systemImage: "arrow.triangle.branch"
+                )
+            } }
+
+            iOSOverflowItem("lineWrap") { Button(action: { viewModel.isLineWrapEnabled.toggle() }) {
+                Label("Enable Wrap / Disable Wrap", systemImage: "text.justify")
+            } }
+
+            iOSOverflowItem("fontDecrease") { Button(action: { adjustEditorFontSize(-1) }) {
+                Label("Font -", systemImage: "textformat.size.smaller")
+            } }
+
+            iOSOverflowItem("fontIncrease") { Button(action: { adjustEditorFontSize(1) }) {
+                Label("Font +", systemImage: "textformat.size.larger")
+            } }
+
+            iOSOverflowItem("codeCompletion") { Button(action: { toggleAutoCompletion() }) {
+                Label(isAutoCompletionEnabled ? "Disable Code Completion" : "Enable Code Completion", systemImage: "text.badge.plus")
+            } }
+
+            iOSOverflowItem("keyboardAccessory") { Button(action: {
+                toggleKeyboardAccessoryBar()
+            }) {
+                Label(
+                    showKeyboardAccessoryBarIOS ? "Hide Keyboard Snippet Bar" : "Show Keyboard Snippet Bar",
+                    systemImage: showKeyboardAccessoryBarIOS ? "keyboard.chevron.compact.down.fill" : "keyboard.chevron.compact.down"
+                )
+            } }
+
+            iOSOverflowItem("hideKeyboard") { Button(action: { dismissKeyboard() }) {
+                Label("Hide Keyboard", systemImage: "keyboard.chevron.compact.down")
+            } }
+
+            iOSOverflowItem("performanceMode") { Button(action: {
+                forceLargeFileMode.toggle()
+                updateLargeFileModeForCurrentContext()
+            }) {
+                Label(forceLargeFileMode ? "Disable Performance Mode" : "Enable Performance Mode", systemImage: "speedometer")
+            } }
+
+            iOSOverflowItem("brainDump") { Button(action: {
+                toggleBrainDumpModeIOSAware()
+            }) {
+                Label("Brain Dump Mode", systemImage: "note.text")
+            } }
+            
+            nearbyDocumentTransferMenu
+            iOSOverflowItem("welcomeTour") { Button(action: {
+                showWelcomeTour = true
+            }) {
+                Label("Welcome Tour", systemImage: "sparkles.rectangle.stack")
+            } }
+
+            iOSOverflowItem("translucentWindow") { Button(action: {
+                enableTranslucentWindow.toggle()
+                UserDefaults.standard.set(enableTranslucentWindow, forKey: "EnableTranslucentWindow")
+                NotificationCenter.default.post(name: .toggleTranslucencyRequested, object: enableTranslucentWindow)
+            }) {
+                Label("Translucent Window Background", systemImage: enableTranslucentWindow ? "rectangle.fill" : "rectangle")
+            } }
+
+#if os(iOS)
+            iOSOverflowItem("toolbarIconColor") { Button(action: {
+                toolbarIconsBlueIOS.toggle()
+            }) {
+                Label("Blue Toolbar Icons", systemImage: toolbarIconsBlueIOS ? "checkmark.circle.fill" : "circle")
+            } }
+#endif
+
+        } label: {
+            Image(systemName: isPhoneBottomToolbarMinimized ? "slider.horizontal.3" : "ellipsis.circle")
+        }
+        .help("More Actions")
+        .accessibilityLabel("More Actions")
+    }
+
+    // MARK: - iPhone Toolbar Composition
+
+    var iPhoneUnifiedToolbarRow: some View {
+        VStack(spacing: 8) {
+            if isPhoneToolbarExpanded {
+                HStack(spacing: 12) {
+                    toolbarPresetMenuControl
+                    Text(currentToolbarPreset.title)
+                        .font(.subheadline.weight(.semibold))
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 12)
+
+                ScrollView(.vertical) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 5), spacing: 8) {
+                        ForEach(iPhoneMoreActions, id: \.self) { action in
+                            iOSPrimaryToolbarActionControl(action)
+                                .frame(minWidth: 44, minHeight: 44)
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+                .frame(maxHeight: 220)
+            }
+
+            HStack(spacing: 0) {
+                ForEach(iPhoneCompactToolbarActions, id: \.self) { action in
+                    iOSPrimaryToolbarActionControl(action)
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                Button {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        isPhoneToolbarExpanded.toggle()
+                    }
+                } label: {
+                    Image(systemName: isPhoneToolbarExpanded ? "chevron.down" : "chevron.up")
+                }
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .accessibilityLabel(isPhoneToolbarExpanded ? "Collapse editor actions" : "Expand editor actions")
+            }
+            .padding(.horizontal, 4)
+        }
+            .padding(.vertical, 6)
+            .tint(iOSToolbarTintColor)
+    }
+
+#if os(iOS)
+    @ViewBuilder
+    private func mobileBottomToolbarItem<Content: View>(
+        _ title: String,
+        toolbarMinimized: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        let showsLabel = MobileToolbarPresentationPolicy.showsButtonLabels(
+            preferenceEnabled: toolbarButtonLabelsIOS,
+            toolbarMinimized: toolbarMinimized
+        )
+        ZStack(alignment: .bottom) {
+            content()
+                .font(.system(
+                    size: MobileToolbarPresentationPolicy.symbolSize(
+                        usesLargeSymbols: toolbarLargeSymbolsIOS
+                    ),
+                    weight: .medium
+                ))
+                .frame(width: 44, height: 44)
+                .offset(y: showsLabel ? -4 : 0)
+            if showsLabel {
+                Text(NSLocalizedString(MobileToolbarPresentationPolicy.compactTitle(title), comment: "Compact toolbar action"))
+                    .font(.system(size: 9, weight: .semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.72)
+                    .allowsTightening(true)
+                    .frame(width: 50, height: 13, alignment: .center)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .frame(
+            width: showsLabel ? MobileToolbarPresentationPolicy.labeledItemWidth : 44,
+            height: MobileToolbarPresentationPolicy.standardHeight
+        )
+    }
+
+    private func iPhoneBottomToolbarTitle(for action: IOSPrimaryToolbarAction) -> String {
+        ToolbarIconOption(rawValue: action.rawValue)?.title ?? action.rawValue
+    }
+
+    private func iPadBottomToolbarTitle(for action: IPadToolbarAction) -> String {
+        ToolbarIconOption(rawValue: action.rawValue)?.title ?? action.rawValue
+    }
+
+    @ViewBuilder
+    var iPhoneScrollableBottomToolbar: some View {
+        Group {
+            if isPhoneBottomToolbarMinimized {
+                HStack(spacing: 4) {
+                    mobileBottomToolbarItem("Settings", toolbarMinimized: true) {
+                        settingsControl
+                    }
+                    mobileBottomToolbarItem(
+                        languageLabel(for: currentLanguagePickerBinding.wrappedValue),
+                        toolbarMinimized: true
+                    ) {
+                        languagePickerControl
+                    }
+                    mobileBottomToolbarItem("More", toolbarMinimized: true) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                isPhoneBottomToolbarMinimized = false
+                            }
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                        .accessibilityLabel("Expand editor actions")
+                    }
+                }
+                .padding(.horizontal, 8)
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        mobileBottomToolbarItem(languageLabel(for: currentLanguagePickerBinding.wrappedValue)) {
+                            languagePickerControl
+                        }
+                        mobileBottomToolbarItem("Preset") {
+                            toolbarPresetMenuControl
+                        }
+                        ForEach(iPhoneScrollableToolbarActions, id: \.self) { action in
+                            mobileBottomToolbarItem(iPhoneBottomToolbarTitle(for: action)) {
+                                iOSPrimaryToolbarActionControl(action)
+                            }
+                        }
+                    }
+                    .padding(.horizontal, 12)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+                .defaultScrollAnchor(.leading)
+            }
+        }
+        .frame(maxWidth: isPhoneBottomToolbarMinimized ? nil : .infinity)
+        .frame(height: MobileToolbarPresentationPolicy.standardHeight)
+        .background {
+            IOSAdaptiveChromeBackground(enabled: shouldUseLiquidGlass)
+                .clipShape(Capsule())
+        }
+        .clipShape(Capsule())
+        .tint(iOSToolbarTintColor)
+        .foregroundStyle(iOSToolbarTintColor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Editor toolbar")
+        .accessibilityHint("Swipe horizontally to reveal more editor actions")
+    }
+
+    // Vertical bars show icons only; titles remain available to VoiceOver.
+    var iOSVerticalEdgeToolbar: some View {
+        // Size to the items, scrolling only when the column is shorter.
+        ViewThatFits(in: .vertical) {
+            iOSVerticalEdgeToolbarItems
+            ScrollView(.vertical, showsIndicators: false) {
+                iOSVerticalEdgeToolbarItems
+            }
+        }
+        .frame(width: MobileToolbarPresentationPolicy.standardHeight)
+        .background {
+            IOSAdaptiveChromeBackground(enabled: shouldUseLiquidGlass)
+                .clipShape(Capsule())
+        }
+        .clipShape(Capsule())
+        .tint(iOSToolbarTintColor)
+        .foregroundStyle(iOSToolbarTintColor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Editor toolbar")
+        .accessibilityHint("Swipe vertically to reveal more editor actions")
+    }
+
+    private var iOSVerticalEdgeToolbarItems: some View {
+        VStack(spacing: 4) {
+            mobileBottomToolbarItem(
+                languageLabel(for: currentLanguagePickerBinding.wrappedValue),
+                toolbarMinimized: true
+            ) {
+                languagePickerControl
+            }
+            mobileBottomToolbarItem("Preset", toolbarMinimized: true) {
+                toolbarPresetMenuControl
+            }
+            ForEach(iPhoneScrollableToolbarActions, id: \.self) { action in
+                mobileBottomToolbarItem(iPhoneBottomToolbarTitle(for: action), toolbarMinimized: true) {
+                    iOSPrimaryToolbarActionControl(action)
+                }
+            }
+        }
+        .padding(.vertical, 8)
+    }
+#endif
+
+#if os(visionOS)
+    @ViewBuilder
+    private func mobileBottomToolbarItem<Content: View>(
+        _ title: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+    }
+
+    private func iPadBottomToolbarTitle(for action: IPadToolbarAction) -> String {
+        ToolbarIconOption(rawValue: action.rawValue)?.title ?? action.rawValue
+    }
+#endif
+
+    @ViewBuilder
+    private var iPadDistributedToolbarControls: some View {
+        if usesIPadBottomToolbar {
+            mobileBottomToolbarItem(languageLabel(for: currentLanguagePickerBinding.wrappedValue)) {
+                languagePickerControl
+            }
+        } else {
+            languagePickerControl
+        }
+        ForEach(visibleIPadToolbarActions, id: \.self) { action in
+            if usesIPadBottomToolbar {
+                mobileBottomToolbarItem(iPadBottomToolbarTitle(for: action)) {
+                    iPadToolbarActionControl(action)
+                }
+            } else {
+                iPadToolbarActionControl(action)
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var iPadScrollableToolbarControls: some View {
+        HStack(spacing: 8) {
+            if usesIPadBottomToolbar {
+                mobileBottomToolbarItem("Table of Contents") {
+                    toggleSidebarControl
+                }
+                .padding(.leading, 8)
+            } else {
+                toggleSidebarControl
+                    .frame(minWidth: 44, minHeight: 44)
+                    .contentShape(Rectangle())
+                    .padding(.leading, 8)
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if usesIPadBottomToolbar {
+                        mobileBottomToolbarItem("Preset") {
+                            toolbarPresetMenuControl
+                        }
+                    } else {
+                        toolbarPresetMenuControl
+                    }
+                    iPadDistributedToolbarControls
+                }
+                .padding(.leading, 24)
+                .padding(.trailing, 8)
+                .padding(.vertical, 8)
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .defaultScrollAnchor(.leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            if !iPadOverflowActions.isEmpty {
+                if usesIPadBottomToolbar {
+                    mobileBottomToolbarItem("More") {
+                        iPadOverflowMenuControl
+                    }
+                    .padding(.trailing, 8)
+                } else {
+                    iPadOverflowMenuControl
+                        .padding(.trailing, 8)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(minHeight: usesIPadBottomToolbar ? MobileToolbarPresentationPolicy.standardHeight : 52)
+        .accessibilityLabel("Editor toolbar")
+        .accessibilityHint("Swipe horizontally to reveal more editor actions")
+    }
+
+    @ViewBuilder
+    func iPadUnifiedToolbarRow(availableWidth: CGFloat) -> some View {
+#if os(iOS)
+        Group {
+            if isPhoneBottomToolbarMinimized {
+                HStack(spacing: 4) {
+                    mobileBottomToolbarItem("Settings", toolbarMinimized: true) {
+                        settingsControl
+                    }
+                    mobileBottomToolbarItem(
+                        languageLabel(for: currentLanguagePickerBinding.wrappedValue),
+                        toolbarMinimized: true
+                    ) {
+                        languagePickerControl
+                    }
+                    mobileBottomToolbarItem("More", toolbarMinimized: true) {
+                        iPadOverflowMenuControl(actions: enabledIPadActionPriority.filter { $0 != .settings })
+                    }
+                }
+                .padding(.horizontal, 8)
+                .frame(height: MobileToolbarPresentationPolicy.standardHeight)
+            } else {
+                iPadScrollableToolbarControls
+            }
+        }
+        .frame(width: IPadBottomToolbarWidthPolicy.width(
+            availableWidth: availableWidth,
+            minimized: isPhoneBottomToolbarMinimized,
+            contentWidth: iPadBottomToolbarContentWidth
+        ))
+        .background {
+            IOSAdaptiveChromeBackground(enabled: shouldUseLiquidGlass)
+                .clipShape(Capsule())
+        }
+        .tint(iOSToolbarTintColor)
+        .foregroundStyle(iOSToolbarTintColor)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Editor toolbar")
+#else
+        GlassSurface(
+            enabled: enableTranslucentWindow || visionOSSystemGlassEnabled,
+            material: primaryGlassMaterial,
+            fallbackColor: iOSNonTranslucentSurfaceColor,
+            shape: .capsule,
+            chromeStyle: iOSToolbarChromeStyle
+        ) {
+            iPadScrollableToolbarControls
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+        .scaleEffect(toolbarDensityScale, anchor: .center)
+        .opacity(toolbarDensityOpacity)
+        .animation(.easeOut(duration: 0.18), value: toolbarDensityScale)
+        .animation(.easeOut(duration: 0.18), value: toolbarDensityOpacity)
+        .tint(iOSToolbarTintColor)
+#endif
+    }
+
+#if os(iOS)
+    private var iPadBottomToolbarContentWidth: CGFloat {
+        let itemWidth = toolbarButtonLabelsIOS ? MobileToolbarPresentationPolicy.labeledItemWidth : 44
+        let scrollingCount = visibleIPadToolbarActions.count + 2 // Preset and language.
+        let scrollingWidth = CGFloat(scrollingCount) * itemWidth + CGFloat(max(0, scrollingCount - 1)) * 6 + 32
+        let contentsWidth = itemWidth + 8
+        let overflowWidth: CGFloat = iPadOverflowActions.isEmpty ? 0 : itemWidth + 16
+        return contentsWidth + 8 + scrollingWidth + overflowWidth
+    }
+#endif
+
+#if os(visionOS)
+    @ViewBuilder
+    private var visionOSToolbarControls: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width > 0 ? proxy.size.width : visionOSToolbarWidth
+            let visibleActions = visibleVisionOSToolbarActions(for: width)
+            let overflowActions = visionOSOverflowActions(visibleActions: visibleActions)
+            let spacing = visionOSToolbarSpacing(
+                for: width,
+                visibleActionCount: visibleActions.count,
+                showsOverflow: !overflowActions.isEmpty
+            )
+
+            HStack(spacing: spacing) {
+                languagePickerControl
+
+                ForEach(visibleActions, id: \.self) { action in
+                    iPadToolbarActionControl(action)
+                        .frame(minWidth: 44, minHeight: 44)
+                        .contentShape(Rectangle())
+                }
+
+                Spacer(minLength: 0)
+
+                if !overflowActions.isEmpty {
+                    iPadOverflowMenuControl(actions: overflowActions)
+                }
+            }
+            .frame(width: width, height: 44, alignment: .center)
+        }
+        .frame(width: visionOSToolbarWidth, height: 48)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Editor toolbar")
+    }
+#endif
+#endif
+
+    // MARK: - Toolbar Labels and Scene Toolbar
+
+#if os(macOS)
+    @ViewBuilder
+    private var editorLayoutPresetControl: some View {
+        Menu {
+            ForEach(EditorLayoutPreset.allCases) { preset in
+                Button(action: { applyEditorLayoutPreset(preset) }) {
+                    Label(preset.title, systemImage: preset.symbol)
+                    if editorLayoutPreset == preset { Image(systemName: "checkmark") }
+                }
+            }
+            Divider()
+            Button("Preset Details…", systemImage: "info.circle") {
+                isEditorLayoutPresetPickerPresented = true
+            }
+        } label: {
+            Image(systemName: "rectangle.3.group")
+        }
+        .help("Editor Layout Presets")
+        .accessibilityLabel("Editor layout presets")
+        .accessibilityValue(editorLayoutPreset.title)
+        .popover(isPresented: $isEditorLayoutPresetPickerPresented, arrowEdge: .bottom) {
+            editorLayoutPresetChooser
+        }
+    }
+
+    private var editorLayoutPresetChooser: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Label("Editor Layout", systemImage: "rectangle.3.group")
+                .font(.headline)
+            Text("Choose a focused workspace. Presets change presentation only; your files and content stay untouched.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            ForEach(EditorLayoutPreset.allCases) { preset in
+                Button {
+                    applyEditorLayoutPreset(preset)
+                    isEditorLayoutPresetPickerPresented = false
+                } label: {
+                    HStack(alignment: .top, spacing: 10) {
+                        Image(systemName: preset.symbol)
+                            .font(.title3)
+                            .frame(width: 24)
+                            .foregroundStyle(editorLayoutPreset == preset ? Color.accentColor : .secondary)
+                        VStack(alignment: .leading, spacing: 4) {
+                            HStack {
+                                Text(preset.title)
+                                    .font(.subheadline.weight(.semibold))
+                                Spacer()
+                                if editorLayoutPreset == preset {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundStyle(Color.accentColor)
+                                }
+                            }
+                            Text(preset.summary)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            Text(preset.detailLines.joined(separator: "  •  "))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(2)
+                        }
+                    }
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        editorLayoutPreset == preset
+                            ? Color.accentColor.opacity(0.12)
+                            : Color.secondary.opacity(0.08),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(preset.title)
+                .accessibilityValue(preset.summary)
+                .accessibilityHint("Apply this editor layout")
+            }
+        }
+        .padding(16)
+        .frame(minWidth: 280, idealWidth: 360, maxWidth: 360)
+    }
+
+    @ViewBuilder
+    private var previewActionsControl: some View {
+        Menu {
+            Button(action: { togglePreviewFromToolbar() }) {
+                Label(isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)", systemImage: previewToolbarIconName)
+            }
+            .disabled(!isPreviewSupportedDocument)
+            Button(action: openPreviewInSeparateWindow) {
+                Label("Open in Separate Window", systemImage: "rectangle.on.rectangle")
+            }
+            .disabled(!isPreviewSupportedDocument)
+            Divider()
+            // FORK: side ⇄ bottom placement toggle. Two buttons so each
+            // destination is one click and the current pick is marked.
+            Button {
+                previewPlacementBottom = false
+            } label: {
+                HStack {
+                    Label("Place Preview on Right", systemImage: "rectangle.split.2x1")
+                    if !previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
+            Button {
+                previewPlacementBottom = true
+            } label: {
+                HStack {
+                    Label("Place Preview on Bottom", systemImage: "rectangle.split.1x2")
+                    if previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
+            if !isMacToolbarItemVisible("markdownProjectPreview") {
+                Divider()
+                Button(action: {
+                    toggleMarkdownProjectPreviewFromToolbar()
+                }) {
+                    Label(isMarkdownProjectPreviewPresented ? "Hide Project Cards" : "Show Project Cards", systemImage: "square.grid.2x2")
+                }
+                .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+            }
+        } label: {
+            Image(systemName: isPreviewVisible ? "eye.fill" : "eye")
+        }
+        .help("Preview options")
+        .accessibilityLabel("Preview options")
+    }
+#endif
+
+    private var gitChangesControl: some View {
+        Button(action: { showGitChangesEditor.toggle() }) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 16, weight: .semibold))
+                .symbolRenderingMode(.monochrome)
+                .foregroundStyle(showGitChangesEditor ? Color.accentColor : Color.primary)
+                .frame(minWidth: 24, minHeight: 24)
+        }
+        .help(showGitChangesEditor ? "Close Git Changes" : "Open Git Changes")
+        .accessibilityLabel(showGitChangesEditor ? "Close Git Changes" : "Open Git Changes")
+    }
+
+#if os(macOS)
+    @ViewBuilder
+    private func macToolbarControl(_ id: String) -> some View {
+        switch id {
+        case "collapse":
+            Button(action: { isToolbarCollapsed.toggle() }) {
+                Image(systemName: isToolbarCollapsed ? "chevron.down" : "chevron.up")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help(isToolbarCollapsed ? "Show Toolbar" : "Collapse Toolbar")
+            .accessibilityLabel("Toggle Toolbar")
+        case "settings":
+            Button(action: { openSettings() }) {
+                Label("Settings", systemImage: "gearshape").foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Settings (Cmd+,)")
+            .accessibilityLabel("Settings")
+            .accessibilityHint("Opens app settings")
+        case "help":
+            Button(action: { showEditorHelp = true }) {
+                Label("Toolbar Help", systemImage: "questionmark.circle").foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Toolbar Help")
+            .accessibilityLabel("Toolbar Help")
+            .accessibilityHint("Opens help for all toolbar actions")
+        case "openFile":
+            Button(action: { openFileFromToolbar() }) {
+                Label("Open", systemImage: "folder")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Open File… (Cmd+O)")
+        case "undo":
+            Button(action: { undoFromToolbar() }) {
+                Label("Undo", systemImage: "arrow.uturn.backward")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Undo (Cmd+Z)")
+        case "newTab":
+            Button(action: { viewModel.addNewTab() }) {
+                Label("New Tab", systemImage: "plus.square.on.square")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("New Tab (Cmd+T)")
+        case "closeAllTabs":
+            Button(action: { requestCloseAllTabsFromToolbar() }) {
+                Label("Close All Tabs", systemImage: "xmark.square")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Close All Tabs")
+        case "saveFile":
+            Button(action: {
+                saveCurrentTabFromToolbar()
+            }) {
+                Label("Save", systemImage: "square.and.arrow.down")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .disabled(viewModel.selectedTab == nil)
+            .help("Save File (Cmd+S)")
+        case "saveFileAs":
+            Button(action: { saveCurrentTabAsFromToolbar() }) {
+                Label("Save As", systemImage: "square.and.arrow.down.on.square")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .disabled(viewModel.selectedTab == nil)
+            .help("Save As… (Cmd+Shift+S)")
+        case "newWindow":
+            Button(action: {
+                openWindow(value: MacEditorWindowSessionStore.shared.createWindowID())
+            }) {
+                Label("New Window", systemImage: "macwindow.badge.plus")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("New Window (Cmd+N)")
+        case "codeSnapshot":
+            Button(action: { presentCodeSnapshotComposer() }) {
+                Label("Code Snapshot", systemImage: "camera.viewfinder")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .disabled(!canCreateCodeSnapshot)
+            .help("Create Code Snapshot from Selection")
+        case "markdownPreview":
+            Button(action: {
+                togglePreviewFromToolbar()
+            }) {
+                Label(previewTitle, systemImage: previewToolbarIconName)
+                    .foregroundStyle(isPreviewVisible ? Color.accentColor : macToolbarSymbolColor)
+            }
+            .disabled(!isPreviewSupportedDocument || isSafeModeActive)
+            .help(
+                isPreviewSupportedDocument
+                    ? (isPreviewVisible ? "Hide \(previewTitle)" : "Show \(previewTitle)")
+                    : "Preview is unavailable for this document"
+            )
+            .accessibilityLabel(previewTitle)
+            // FORK: right-click to switch between side and bottom placement.
+            .contextMenu {
+                Button {
+                    previewPlacementBottom = false
+                } label: {
+                    Label("Place Preview on Right", systemImage: "rectangle.split.2x1")
+                    if !previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+                Button {
+                    previewPlacementBottom = true
+                } label: {
+                    Label("Place Preview on Bottom", systemImage: "rectangle.split.1x2")
+                    if previewPlacementBottom { Image(systemName: "checkmark") }
+                }
+            }
+        case "markdownProjectPreview":
+            Button(action: { toggleMarkdownProjectPreviewFromToolbar() }) {
+                Label(
+                    isMarkdownProjectPreviewPresented ? "Hide Markdown Cards" : "Show Markdown Cards",
+                    systemImage: isMarkdownProjectPreviewPresented ? "square.grid.2x2.fill" : "square.grid.2x2"
+                )
+                .foregroundStyle(isMarkdownProjectPreviewPresented ? Color.accentColor : macToolbarSymbolColor)
+            }
+            .disabled(projectRootFolderURL == nil || !hasMarkdownOrPDFProjectPreviewFiles || isSafeModeActive)
+            .help(isMarkdownProjectPreviewPresented ? "Hide Markdown Cards" : "Show Markdown Cards")
+            .accessibilityLabel("Markdown Cards")
+            .accessibilityValue(isMarkdownProjectPreviewPresented ? "Shown" : "Hidden")
+            .accessibilityHint("Shows Markdown and PDF files from the current project as preview cards")
+        case "codeMinimap":
+            codeMinimapControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "toggleSidebar":
+            toggleSidebarControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "toggleProjectSidebar":
+            toggleProjectSidebarControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "brainDump":
+            brainDumpControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "findReplace":
+            Button(action: {
+                showFindReplace = true
+            }) {
+                Label("Find", systemImage: "magnifyingglass")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Find & Replace (Cmd+F)")
+        case "findInFiles":
+            Button(action: {
+                requestFindInFilesFromToolbar()
+            }) {
+                Label("Find in Files", systemImage: "text.magnifyingglass")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Find in Files (Cmd+Shift+F)")
+        case "splitEditor":
+            if !isMacToolbarItemVisible("compare") {
+                Button(action: { toggleSplitEditorFromToolbar() }) {
+                    Label("Side by Side", systemImage: "rectangle.split.2x1")
+                        .foregroundStyle(macToolbarSymbolColor)
+                }
+                .disabled(!canOpenSplitEditor && splitSecondaryTabID == nil)
+                .help(splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor")
+            }
+        case "gitChanges":
+            gitChangesControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "languageIndicator":
+            macLanguageIndicatorControl
+        case "editorLayout":
+            editorLayoutPresetControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "previewActions":
+            previewActionsControl
+                .foregroundStyle(macToolbarSymbolColor)
+        case "compare":
+            Menu {
+                Button(action: { compareCurrentTabAgainstDisk() }) {
+                    Label("Compare with Disk", systemImage: "doc.text.magnifyingglass")
+                }
+                .disabled(viewModel.selectedTab?.fileURL == nil)
+
+                Button(action: { presentCompareTabsPicker() }) {
+                    Label("Compare Open Tabs…", systemImage: "rectangle.split.2x1")
+                }
+                .disabled(viewModel.selectedTab == nil)
+
+                Button(action: { toggleSplitEditorFromToolbar() }) {
+                    Label(splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor", systemImage: "rectangle.split.2x1")
+                }
+                .disabled(!canOpenSplitEditor && splitSecondaryTabID == nil)
+
+                Button(action: { showFolderCompare = true }) {
+                    Label("Folder Compare…", systemImage: "folder.badge.gearshape")
+                }
+            } label: {
+                Label("Compare", systemImage: "rectangle.split.2x1")
+                    .foregroundStyle(macToolbarSymbolColor)
+            }
+            .help("Compare Files, Tabs, or Folders")
+            .accessibilityLabel("Compare")
+            .accessibilityHint("Opens compare actions for files, tabs, and folders")
+        case "toolbarPreset":
+            toolbarPresetMenuControl
+        case "providerBadge":
+            if isAutoCompletionEnabled {
+                Text(providerBadgeLabelText)
+                    .font(.caption)
+                    .foregroundColor(providerBadgeForegroundColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .minimumScaleFactor(0.9)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(providerBadgeBackgroundColor, in: Capsule())
+                    .padding(.leading, 6)
+                    .help(providerBadgeTooltip)
+                    .accessibilityLabel("Code completion provider")
+            }
+        default: EmptyView()
+        }
+    }
+#endif
+
+#if os(macOS)
+    private func nativeToolbarButton(_ id: String) -> MacDocumentToolbar.NativeButton? {
+        func make(_ symbol: String, _ title: String, _ help: String,
+                  enabled: Bool = true, selected: Bool = false,
+                  value: String? = nil, hint: String? = nil) -> MacDocumentToolbar.NativeButton {
+            .init(symbol: symbol,
+                title: NSLocalizedString(title, comment: "Toolbar accessibility label"),
+                help: NSLocalizedString(help, comment: "Toolbar help"), isEnabled: enabled,
+                tint: selected ? .controlAccentColor : NSColor(macToolbarSymbolColor),
+                accessibilityValue: value.map { NSLocalizedString($0, comment: "Toolbar state") },
+                accessibilityHint: hint.map { NSLocalizedString($0, comment: "Toolbar accessibility hint") })
+        }
+        switch id {
+        case "collapse": return make(isToolbarCollapsed ? "chevron.down" : "chevron.up", "Toggle Toolbar", isToolbarCollapsed ? "Show Toolbar" : "Collapse Toolbar")
+        case "settings": return make("gearshape", "Settings", "Settings (Cmd+,)", hint: "Opens app settings")
+        case "help": return make("questionmark.circle", "Toolbar Help", "Toolbar Help", hint: "Opens help for all toolbar actions")
+        case "openFile": return make("folder", "Open", "Open File… (Cmd+O)")
+        case "undo": return make("arrow.uturn.backward", "Undo", "Undo (Cmd+Z)")
+        case "newTab": return make("plus.square.on.square", "New Tab", "New Tab (Cmd+T)")
+        case "closeAllTabs": return make("xmark.square", "Close All Tabs", "Close All Tabs")
+        case "saveFile": return make("square.and.arrow.down", "Save", "Save File (Cmd+S)", enabled: viewModel.selectedTab != nil)
+        case "saveFileAs": return make("square.and.arrow.down.on.square", "Save As", "Save As… (Cmd+Shift+S)", enabled: viewModel.selectedTab != nil)
+        case "newWindow": return make("macwindow.badge.plus", "New Window", "New Window (Cmd+N)")
+        case "codeSnapshot": return make("camera.viewfinder", "Code Snapshot", "Create Code Snapshot from Selection", enabled: canCreateCodeSnapshot)
+        case "markdownPreview":
+            let help = !isPreviewSupportedDocument ? NSLocalizedString("Preview is unavailable for this document", comment: "Toolbar help")
+                : String.localizedStringWithFormat(NSLocalizedString(isPreviewVisible ? "Hide %@" : "Show %@", comment: "Toolbar help"), previewTitle)
+            return make(previewToolbarIconName, previewTitle, help,
+                enabled: isPreviewSupportedDocument && !isSafeModeActive, selected: isPreviewVisible)
+        case "markdownProjectPreview":
+            return make(isMarkdownProjectPreviewPresented ? "square.grid.2x2.fill" : "square.grid.2x2", "Markdown Cards",
+                isMarkdownProjectPreviewPresented ? "Hide Markdown Cards" : "Show Markdown Cards",
+                enabled: projectRootFolderURL != nil && hasMarkdownOrPDFProjectPreviewFiles && !isSafeModeActive,
+                selected: isMarkdownProjectPreviewPresented, value: isMarkdownProjectPreviewPresented ? "Shown" : "Hidden",
+                hint: "Shows Markdown and PDF files from the current project as preview cards")
+        case "codeMinimap":
+            guard supportsCodeMinimap(language: currentLanguage) else { return nil }
+            return make(showCodeMinimap ? "map.fill" : "map", "Code Minimap", showCodeMinimap ? "Hide Code Minimap" : "Show Code Minimap",
+                value: showCodeMinimap ? "Shown" : "Hidden", hint: "Toggles the code minimap for code files")
+        case "toggleSidebar": return make("sidebar.left", "Table of Contents", "Toggle Sidebar (Cmd+Opt+S)", value: viewModel.showSidebar ? "Shown" : "Hidden", hint: "Shows or hides the document table of contents")
+        case "toggleProjectSidebar": return make("sidebar.right", "Toggle Project Structure Sidebar", "Toggle Project Structure Sidebar")
+        case "brainDump": return make(viewModel.isBrainDumpMode ? "note.text.fill" : "note.text", "Brain Dump Mode", "Brain Dump Mode", value: viewModel.isBrainDumpMode ? "On" : "Off", hint: "Switches to a distraction-free scratch document")
+        case "findReplace": return make("magnifyingglass", "Find", "Find & Replace (Cmd+F)")
+        case "findInFiles": return make("text.magnifyingglass", "Find in Files", "Find in Files (Cmd+Shift+F)")
+        case "splitEditor": return make("rectangle.split.2x1", "Side by Side", splitSecondaryTabID == nil ? "Open Two Tabs Side by Side" : "Close Side by Side Editor", enabled: canOpenSplitEditor || splitSecondaryTabID != nil)
+        case "gitChanges":
+            var button = make("arrow.triangle.branch", showGitChangesEditor ? "Close Git Changes" : "Open Git Changes",
+                showGitChangesEditor ? "Close Git Changes" : "Open Git Changes", selected: showGitChangesEditor)
+            button.tint = showGitChangesEditor ? .controlAccentColor : .labelColor
+            button.pointSize = 16
+            button.weight = .semibold
+            return button
+        default: return nil
+        }
+    }
+
+    private func performNativeToolbarAction(_ id: String) {
+        switch id {
+        case "collapse": isToolbarCollapsed.toggle()
+        case "settings": openSettings()
+        case "help": showEditorHelp = true
+        case "openFile": openFileFromToolbar()
+        case "undo": undoFromToolbar()
+        case "newTab": viewModel.addNewTab()
+        case "closeAllTabs": requestCloseAllTabsFromToolbar()
+        case "saveFile": saveCurrentTabFromToolbar()
+        case "saveFileAs": saveCurrentTabAsFromToolbar()
+        case "newWindow": openWindow(value: MacEditorWindowSessionStore.shared.createWindowID())
+        case "codeSnapshot": presentCodeSnapshotComposer()
+        case "markdownPreview": togglePreviewFromToolbar()
+        case "markdownProjectPreview": toggleMarkdownProjectPreviewFromToolbar()
+        case "codeMinimap": showCodeMinimap.toggle()
+        case "toggleSidebar": toggleSidebarFromToolbar()
+        case "toggleProjectSidebar": toggleProjectSidebarFromToolbar()
+        case "brainDump": toggleBrainDumpModeIOSAware()
+        case "findReplace": showFindReplace = true
+        case "findInFiles": requestFindInFilesFromToolbar()
+        case "splitEditor": toggleSplitEditorFromToolbar()
+        case "gitChanges": showGitChangesEditor.toggle()
+        default: break
+        }
+    }
+
+    /// Shared by the (now hidden) NSToolbar bridge and the fork's in-editor
+    /// top bar, so item visibility/preset/collapse logic stays single-sourced.
+    var macDocumentToolbarGroups: [MacDocumentToolbar.Group] {
+        let custom = toolbarUseCustomMac || toolbarPresetMacRaw == ToolbarPreset.custom.rawValue
+        let defaults = ["openFile", "undo", "newTab", "closeAllTabs", "saveFile", "saveFileAs", "newWindow", "codeSnapshot", "markdownPreview", "markdownProjectPreview", "codeMinimap", "toggleSidebar", "toggleProjectSidebar", "brainDump", "findReplace", "findInFiles", "splitEditor", "gitChanges"]
+        let primary = custom
+            ? ToolbarActionSelection.orderedIDs(from: toolbarCustomIDsMac, fallback: [])
+            : defaults.filter(isMacToolbarItemVisible)
+        let secondary = custom ? [] : ["toolbarPreset"] + ["languageIndicator", "editorLayout", "previewActions", "compare"].filter(isMacToolbarItemVisible) + ["providerBadge"]
+        func visible(_ id: String) -> Bool {
+            if id == "providerBadge" { return isAutoCompletionEnabled }
+            if id == "splitEditor", isMacToolbarItemVisible("compare") { return false }
+            return ToolbarActionSelection.customizableMacActionIDs.contains(id)
+        }
+        // Shell redesign: the collapse toggle is obsolete — overflow handling
+        // in the title row replaces it, so the full set is always returned.
+        return [.init(id: "primary", items: ["settings", "help"] + primary.filter(visible)),
+                .init(id: "secondary", items: secondary.filter(visible))]
+    }
+
+    /// FORK: the window-level NSToolbar is kept bound but permanently hidden
+    /// (isVisible: false) — its items render in forkEditorTopBar inside the
+    /// editor column instead, so the sidebars can own the top of the frame.
+    func nativeDocumentToolbar(locale: Locale) -> some View {
+        let groups = macDocumentToolbarGroups
+        return MacDocumentToolbar(owner: viewModel, groups: groups, isVisible: false, label: { id in
+            let key: String
+            switch id {
+            case "collapse": key = "Toggle Toolbar"
+            case "settings": key = "Settings"
+            case "help": key = "Toolbar Help"
+            case "newWindow": key = "New Window"
+            case "toolbarPreset": key = "Toolbar Preset"
+            case "providerBadge": key = "Code completion provider"
+            default: key = ToolbarIconOption(rawValue: id)?.title ?? id
+            }
+            return NSLocalizedString(key, comment: "Toolbar accessibility label")
+        }, control: { id in
+            AnyView(macToolbarControl(id).labelStyle(.iconOnly).buttonStyle(.borderless)
+                .controlSize(.large).padding(.horizontal, 4)
+                .environment(\.colorScheme, effectiveEditorColorScheme)
+                .environment(\.locale, locale))
+        }, overflow: { id in
+            AnyView(nativeToolbarOverflowContent(id).environment(\.locale, locale))
+        }, nativeButton: nativeToolbarButton, performNativeAction: performNativeToolbarAction)
+        .frame(width: 0, height: 0)
+    }
+
+    /// FORK shell redesign: title row at the top of the editor card — document
+    /// identity on the left, a bounded set of inline actions plus a "⋯"
+    /// overflow menu on the right. Replaces both the NSToolbar and the old
+    /// cramped icon strip, so nothing ever gets clipped.
+    var forkTitleBar: some View {
+        HStack(spacing: 8) {
+            // Persistent: lives here, not inside the panel it hides, so it
+            // stays reachable when the outline is collapsed.
+            forkPaneToggle(symbol: "sidebar.left", help: "Toggle Sidebar (Cmd+Opt+S)",
+                           isOn: shouldUseSplitView) { toggleSidebarFromToolbar() }
+            // App identity only: the file name lives in its tab, nowhere else.
+            HStack(spacing: 7) {
+                Image(nsImage: NSApp.applicationIconImage)
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 28, height: 28)
+                Text("Neon Editor")
+                    .font(.system(size: 16, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .fixedSize()
+            .layoutPriority(2)
+            .accessibilityElement(children: .combine)
+            Spacer(minLength: 8)
+            forkTitleBarActions
+                .layoutPriority(1)
+            forkPaneToggle(symbol: "sidebar.right", help: "Toggle Project Sidebar",
+                           isOn: showProjectStructureSidebar) { toggleProjectSidebarFromToolbar() }
+        }
+        // With the outline collapsed this card is at the window's left edge,
+        // under the traffic lights.
+        .padding(.leading, shouldUseSplitView ? 10 : 78)
+        .padding(.trailing, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 42)
+        .clipped()
+        .background(macToolbarBackgroundStyle)
+    }
+
+    private func forkPaneToggle(symbol: String, help: String, isOn: Bool,
+                                action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 14, weight: .medium))
+                .frame(width: 28, height: 26)
+                .background(
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(.primary.opacity(isOn ? 0.08 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.borderless)
+        .foregroundStyle(.secondary)
+        .help(help)
+        .accessibilityLabel(help)
+        .accessibilityValue(isOn ? "Shown" : "Hidden")
+        .fixedSize()
+    }
+
+    /// The largest number of inline buttons that fits wins; whatever doesn't
+    /// fit moves to the "⋯" menu. The row can shrink but never clip.
+    private var forkTitleBarActions: some View {
+        let groups = macDocumentToolbarGroups
+        // Settings/help go to the overflow menu; the two pane toggles have
+        // their own permanent buttons at either end of the title row.
+        let excluded: Set<String> = ["collapse", "settings", "help", "toggleSidebar", "toggleProjectSidebar"]
+        let primary = (groups.first { $0.id == "primary" }?.items ?? []).filter { !excluded.contains($0) }
+        let secondary = groups.first { $0.id == "secondary" }?.items ?? []
+        return ViewThatFits(in: .horizontal) {
+            forkTitleBarActionRow(primary: primary, inlineCount: 6, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 3, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 0, secondary: secondary)
+            forkTitleBarActionRow(primary: primary, inlineCount: 0, secondary: [])
+        }
+    }
+
+    private func forkTitleBarActionRow(primary: [String], inlineCount: Int,
+                                       secondary: [String]) -> some View {
+        let inline = Array(primary.prefix(inlineCount))
+        let overflow = Array(primary.dropFirst(inlineCount)) + ["settings", "help"]
+        return HStack(spacing: 6) {
+            if !inline.isEmpty {
+                HStack(spacing: 1) {
+                    ForEach(inline, id: \.self) { forkTopBarItem($0) }
+                }
+                .padding(2)
+                .background(
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(.primary.opacity(0.05))
+                )
+            }
+            Menu {
+                ForEach(overflow, id: \.self) { forkOverflowMenuItem($0) }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 26, height: 24)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More actions")
+            if !secondary.isEmpty {
+                HStack(spacing: 2) {
+                    ForEach(secondary, id: \.self) { forkTopBarItem($0) }
+                }
+                .fixedSize()
+            }
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private func forkOverflowMenuItem(_ id: String) -> some View {
+        if let appearance = nativeToolbarButton(id) {
+            Button { performNativeToolbarAction(id) } label: {
+                Label(appearance.title, systemImage: appearance.symbol)
+            }
+            .disabled(!appearance.isEnabled)
+        }
+    }
+
+    @ViewBuilder
+    private func forkTopBarItem(_ id: String) -> some View {
+        if let appearance = nativeToolbarButton(id) {
+            Button { performNativeToolbarAction(id) } label: {
+                Image(systemName: appearance.symbol)
+                    .font(.system(size: max(appearance.pointSize - 3, 12),
+                                  weight: appearance.weight == .semibold ? .semibold : .regular))
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(Color(nsColor: appearance.tint))
+            .disabled(!appearance.isEnabled)
+            .opacity(appearance.isEnabled ? 1 : 0.35)
+            .help(appearance.help)
+            .accessibilityLabel(appearance.title)
+            .accessibilityValue(appearance.accessibilityValue ?? "")
+            .frame(minWidth: 26, minHeight: 24)
+        } else {
+            macToolbarControl(id)
+                .labelStyle(.iconOnly)
+                .buttonStyle(.borderless)
+                .controlSize(.regular)
+                .padding(.horizontal, 2)
+        }
+    }
+
+    @ViewBuilder
+    private func nativeToolbarOverflowContent(_ id: String) -> some View {
+        if id == "languageIndicator" {
+            Group {
+                Button("Language…", systemImage: "magnifyingglass") { presentLanguageSearchSheet() }
+                Divider()
+                ForEach(languageOptions, id: \.self) { option in
+                    Button { currentLanguagePickerBinding.wrappedValue = option } label: {
+                        Text(languageLabel(for: option))
+                        if currentLanguagePickerBinding.wrappedValue == option { Image(systemName: "checkmark") }
+                    }
+                }
+            }
+        } else {
+            macToolbarControl(id)
+        }
+    }
+
+#endif
+    @ToolbarContentBuilder
+    var editorToolbarContent: some ToolbarContent {
+#if os(visionOS)
+        ToolbarItem(placement: .primaryAction) {
+            visionOSToolbarControls
+        }
+#elseif os(iOS)
+        if isIPadToolbarLayout && !usesIPadBottomToolbar && !useIOSUnifiedTopHost {
+            if #available(iOS 26.0, *) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    GlassSurface(
+                        enabled: enableTranslucentWindow,
+                        material: primaryGlassMaterial,
+                        fallbackColor: iOSNonTranslucentSurfaceColor,
+                        shape: .capsule,
+                        chromeStyle: iOSToolbarChromeStyle
+                    ) {
+                        iPadScrollableToolbarControls
+                    }
+                    .scaleEffect(toolbarDensityScale, anchor: .center)
+                    .opacity(toolbarDensityOpacity)
+                    .animation(.easeOut(duration: 0.18), value: toolbarDensityScale)
+                    .animation(.easeOut(duration: 0.18), value: toolbarDensityOpacity)
+                    .tint(iOSToolbarTintColor)
+                }
+                .sharedBackgroundVisibility(.hidden)
+            } else {
+                ToolbarItem(placement: .topBarTrailing) {
+                    GlassSurface(
+                        enabled: enableTranslucentWindow,
+                        material: primaryGlassMaterial,
+                        fallbackColor: iOSNonTranslucentSurfaceColor,
+                        shape: .capsule,
+                        chromeStyle: iOSToolbarChromeStyle
+                    ) {
+                        iPadScrollableToolbarControls
+                    }
+                    .scaleEffect(toolbarDensityScale, anchor: .center)
+                    .opacity(toolbarDensityOpacity)
+                    .animation(.easeOut(duration: 0.18), value: toolbarDensityScale)
+                    .animation(.easeOut(duration: 0.18), value: toolbarDensityOpacity)
+                    .tint(iOSToolbarTintColor)
+                }
+            }
+        }
+#else
+        ToolbarItem(placement: .automatic) {
+            EmptyView()
+        }
+#endif
+    }
+}

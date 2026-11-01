@@ -56,7 +56,7 @@ Set these exact names:
 - `APPLE_TEAM_ID` (`CS727NF72U`)
 - `APPLE_APP_SPECIFIC_PASSWORD` (Apple app-specific password)
 
-`TAP_BOT_TOKEN` is limited to dispatching the personal `homebrew-tap` update. For verified Homebrew Cask updates, configure the `HOMEBREW_CASK_APP_CLIENT_ID` Actions variable and `HOMEBREW_CASK_APP_PRIVATE_KEY` Actions secret for a GitHub App installed only on this repository and its `homebrew-cask` fork. The workflow exchanges the key for a short-lived, fork-scoped installation token and prepares the update branch. GitHub Apps cannot open a pull request against `Homebrew/homebrew-cask` unless Homebrew installs the App, so submit that prepared branch from an authenticated contributor session; no personal access token is stored in Actions.
+The official Homebrew cask uses GitHub Releases livecheck. Homebrew's own update service may open version pull requests after a published GitHub release. Neon Vision Editor release workflows must not create official-cask branches or pull requests; they update only `h3pdesign/homebrew-tap`.
 
 Set `MACOS_CERT_P12` from terminal:
 
@@ -68,12 +68,14 @@ printf %s 'CS727NF72U' | gh secret set APPLE_TEAM_ID
 
 ## 6) Workflow Used
 
-- File: `.github/workflows/release-notarized.yml`
+- Primary file: `.github/workflows/release-github-only.yml`
 - Run manually with:
 
 ```bash
-gh workflow run release-notarized.yml -f tag=v0.8.9
+gh workflow run release-github-only.yml -f tag=v0.8.9 -f ref=main
 ```
+
+The primary workflow validates the release notes, closed milestone, and cross-platform build before it creates a previously missing tag. The fallback workflows accept only an existing tag and must not be used for the ordinary release path.
 
 The workflow performs:
 
@@ -83,10 +85,11 @@ The workflow performs:
 4. Submit to notarization (`notarytool`)
 5. Staple ticket
 6. Zip app and upload to GitHub release asset (`--clobber`)
+7. After publication, `.github/workflows/post-release-documentation-sync.yml` waits at least ten minutes, regenerates release documentation from `CHANGELOG.md`, validates it, and signed-commits any repaired drift to `main`.
 
 ## 6b) Self-Hosted Runner Setup (Optional fallback)
 
-Use this only when the GitHub-hosted notarized workflow is unavailable. The standard release path is `.github/workflows/release-notarized.yml` on GitHub-hosted runners.
+Use this only when the GitHub-hosted primary workflow is unavailable. The standard release path is `.github/workflows/release-github-only.yml` on GitHub-hosted runners.
 
 Where to run:
 
@@ -140,7 +143,7 @@ gh run watch <RUN_ID> --exit-status
 ## 7) Monitor and Inspect
 
 ```bash
-gh run list --workflow release-notarized.yml --limit 5
+gh run list --workflow release-github-only.yml --limit 5
 gh run watch <RUN_ID> --exit-status
 gh run view <RUN_ID> --log-failed
 ```

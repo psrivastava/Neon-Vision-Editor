@@ -1,18 +1,21 @@
 # App Store Review Notes
 
 ## In-App Purchase
-- Product type: Non-Consumable
-- Product ID: `h3p.neon-vision-editor.support.optional`
-- Display name: Support Neon Vision Editor
-- Price tier target: EUR 4.90
-- Purpose: Optional support purchase only
+- Product type: Consumable
+- Product ID: `002420160`
+- Display name: Support Tip for Neon Vision Editor
+- Price tier target: EUR 4.99 (the app always displays StoreKit's localized price)
+- Purpose: Optional support tip only; it can be purchased multiple times.
 
 ## Important Behavior
 - No app functionality is locked behind the purchase.
 - Users can use the full app without purchasing.
 - Purchase UI is in Settings -> Support.
-- "Restore Purchases" is available in the same Support dialog.
-- Support purchase is one-time and non-consumable (no subscription / no auto-renewal).
+- No restore action is required because this is consumable and grants no entitlement.
+- Support purchase has no subscription and no auto-renewal.
+- The purchase unlocks no features; all editor functionality remains available without payment.
+- The support screen handles loading, missing-product, StoreKit-unavailable, cancelled, and failed-purchase states.
+- The purchase price is loaded from StoreKit and localized for the user's storefront.
 - Privacy policy link is shown in-app in the Support tab and documented in `PRIVACY.md`.
 - AI completion is optional and off by default unless the user explicitly enables/selects a provider.
 - External AI providers use bring-your-own API keys stored in Keychain.
@@ -21,7 +24,9 @@
 
 ## AI Data Disclosure
 - The in-app Settings -> AI disclosure explains external provider behavior before users configure provider credentials.
-- No external AI request is made while AI completion is disabled.
+- External requests occur only when the user triggers configured AI completion or sends an AI chat request.
+- Jev context ranking is experimental and disabled by default. It requires a separate TypeSafe key in Keychain and confirmation naming both TypeSafe and the answering provider. Only the prompt and bounded Current File/Project Structure excerpts go to TypeSafe; selection and history are excluded. Apple Intelligence, Agent Mode, completion, and follow-up messages skip ranking. Uncertain results retain the original context; no background ranking occurs.
+- Review Jev under Settings -> AI -> Jev Context Ranking on macOS, or Settings -> Tools -> AI Settings on iPhone/iPad. The sheet discloses the separate API charge and contains the TypeSafe key field.
 - Apple Intelligence remains the local/default fallback when no external provider credentials are configured.
 
 ## macOS Sandbox / Files
@@ -31,5 +36,9 @@
 
 ## Test Notes
 - Local StoreKit config file included at:
-  - `Neon Vision Editor/SupportOptional.storekit`
-- Use a Sandbox account or local StoreKit testing for verification.
+  - `Project/Sources/Neon Vision Editor/SupportOptional.storekit`
+- Local StoreKit tests verify loading and purchase state transitions, but do not verify App Store Connect or App Review sandbox availability.
+- Before resubmitting, use a TestFlight build on iPhone and Apple Vision Pro to open Settings -> Support, confirm the localized price loads, and complete a sandbox support tip. Also check the welcome/support prompt purchase entry points.
+- For an Xcode-launched sandbox check, set the Run action's StoreKit Configuration to None; the shared schemes use the local configuration by default. TestFlight always uses Apple's sandbox.
+- A failed or interrupted lookup must recover when revisiting Support or selecting Retry App Store. Successful prices may be cached for five minutes.
+- visionOS purchases use the presenting SwiftUI view's StoreKit purchase action so the system can anchor purchase confirmation to the correct window.

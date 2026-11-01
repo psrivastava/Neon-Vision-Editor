@@ -5,25 +5,123 @@ name: Swift
 on:
   workflow_dispatch:
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "develop" ]
+    # Both jobs are required by branch protection. Workflow-level path filters
+    # leave excluded PRs waiting forever for checks that are never created.
+    # The jobs themselves may skip documentation-only changes.
+
+concurrency:
+  group: swift-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      run_swift: ${{ steps.classify.outputs.run_swift }}
+    steps:
+      - name: Check whether Swift validation is needed
+        id: classify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${PR_NUMBER}" ]] &&
+             files="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}/files?per_page=100")" &&
+             jq -se 'add | length > 0 and all(.[];
+               # Renames may remove executable inputs, so never skip those.
+               (.status == "added" or .status == "modified" or .status == "removed") and (
+                 .filename == "README.md" or .filename == "CHANGELOG.md" or
+                 .filename == "appcast.xml" or .filename == "release/prepared-release.json" or
+                 (.filename | startswith("docs/")) or (.filename | startswith("site/")))
+             )' <<< "${files}" >/dev/null; then
+            echo "run_swift=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_swift=true" >> "$GITHUB_OUTPUT"
+          fi
+
   build:
-    runs-on: macos-latest
+    needs: changes
+    if: ${{ !cancelled() && !startsWith(github.head_ref, 'release/') && needs.changes.outputs.run_swift != 'false' }}
+    # GitHub's xcode-27 image is currently a macOS 26 host with the complete
+    # OS 27 SDK family. This job verifies the SDK-gated Agent Mode sources.
+    runs-on: xcode-27
+    timeout-minutes: 30
+    env:
+      DERIVED_DATA_ROOT: ${{ github.workspace }}/.DerivedDataPR
 
     steps:
       - uses: actions/checkout@v5
 
-      - name: Show Xcode version
-        run: xcodebuild -version
+      - name: Verify Xcode 27 SDK family
+        env:
+          NVE_ALLOW_BETA_XCODE: 1
+        run: |
+          set -euo pipefail
+          source scripts/ci/select_xcode17.sh
+          require_xcode_major 27
+          require_sdk_major 27 macosx iphoneos iphonesimulator xros
+          xcodebuild -version
 
       - name: Build platform matrix
-        run: scripts/ci/build_platform_matrix.sh
+        env:
+          # The hosted xcode-27 image remains a preview until GitHub replaces
+          # its beta toolchain with the public Xcode 27 RC.
+          NVE_ALLOW_BETA_XCODE: 1
+        run: scripts/ci/build_platform_matrix.sh --keep-derived-data
+
+      # Reuse the runner that already resolved and built all platform packages.
+      # A second fresh xcode-27 runner has stalled during package resolution.
+      - name: Run critical runtime and performance tests
+        env:
+          RESULT_BUNDLE: ${{ runner.temp }}/VirtualEditorPerformance.xcresult
+        run: |
+          set -euo pipefail
+          xcodebuild \
+            -project "Neon Vision Editor.xcodeproj" \
+            -scheme "Neon Vision Editor" \
+            -destination "platform=macOS" \
+            -derivedDataPath "$DERIVED_DATA_ROOT/macos" \
+            -resultBundlePath "$RESULT_BUNDLE" \
+            CODE_SIGNING_ALLOWED=NO \
+            'OTHER_SWIFT_FLAGS=$(inherited) -Werror NoUseUnstructuredThrowingTask' \
+            -only-testing:"Neon Vision EditorTests/ReleaseRuntimePolicyTests" \
+            -only-testing:"Neon Vision EditorTests/AppDelegateExternalOpenTests" \
+            -only-testing:"Neon Vision EditorTests/ToolbarActionSelectionTests" \
+            -only-testing:"Neon Vision EditorTests/FileBackedTextDocumentTests" \
+            -only-testing:"Neon Vision EditorTests/ProjectTreePerformanceTests" \
+            -only-testing:"Neon Vision EditorTests/BoundedLRUCacheTests" \
+            -only-testing:"Neon Vision EditorTests/MarkdownPreviewContentUpdateTests" \
+            -only-testing:"Neon Vision EditorTests/VirtualEditorPerformanceTests" \
+            test
+
+      - name: Upload virtual editor performance results
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: virtual-editor-performance-${{ github.run_id }}
+          path: ${{ runner.temp }}/VirtualEditorPerformance.xcresult
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Verify icon payload in built app
+        run: |
+          set -euo pipefail
+          APP="$DERIVED_DATA_ROOT/macos/Build/Products/Debug/Neon Vision Editor.app"
+          scripts/ci/verify_icon_payload.sh "$APP"
+
+      - name: Remove temporary build products
+        if: ${{ always() }}
+        run: rm -rf -- "$GITHUB_WORKSPACE/.DerivedDataPR"
 
   macos_sequoia_syntax_regressions:
+    needs: changes
+    if: ${{ !cancelled() && !startsWith(github.head_ref, 'release/') && needs.changes.outputs.run_swift != 'false' }}
     name: macOS Sequoia syntax regressions
     runs-on: macos-15
 
@@ -46,7 +144,10 @@ jobs:
         run: |
           set -euo pipefail
           swiftc \
-            "Neon Vision Editor/Core/SyntaxHighlighting.swift" \
+            "Project/Sources/Neon Vision Editor/Core/NVELock.swift" \
+            "Project/Sources/Neon Vision Editor/Core/SyntaxHighlighting.swift" \
+            "Project/Sources/Neon Vision Editor/Core/HTMLSyntaxHighlighting.swift" \
+            "Project/Sources/Neon Vision Editor/UI/EditorTextView+RuntimePolicy.swift" \
             scripts/ci/run_syntax_highlighting_regressions.swift \
             -o "$RUNNER_TEMP/syntax-highlighting-regressions"
           "$RUNNER_TEMP/syntax-highlighting-regressions"

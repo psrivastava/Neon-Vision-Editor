@@ -1,0 +1,222 @@
+name: Post-release Documentation Self-Heal
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Stable release tag to reconcile, e.g. v1.4.5"
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: public-documentation-writer
+  queue: max
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    if: ${{ github.event_name == 'workflow_dispatch' || !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.METRIC_TOKEN }}
+
+      - name: Prepare automation branch
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="${RELEASE_TAG:-manual}"
+          tag="${tag#v}"
+          branch="automation/post-release-docs-${tag}"
+          git fetch origin main
+          git fetch origin "${branch}" || true
+          git checkout -B "${branch}" origin/main
+          echo "DOCS_BRANCH=${branch}" >> "$GITHUB_ENV"
+
+      - name: Wait for verified public release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        run: python3 scripts/ci/wait_for_public_release.py "$RELEASE_TAG"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Resolve current stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          tag="$RELEASE_TAG"
+          if [[ "$tag" != v* ]]; then
+            tag="v${tag}"
+          fi
+
+          latest="$(gh api "repos/${REPOSITORY}/releases/latest" --jq '.tag_name')"
+          if [[ "$tag" != "$latest" ]]; then
+            echo "Skipping ${tag}; ${latest} is now the latest stable release."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Read the build from the immutable release, never a newer main checkout.
+          build="$(git show "${tag}:Neon Vision Editor.xcodeproj/project.pbxproj" | awk '/CURRENT_PROJECT_VERSION = [0-9]+;/{gsub(/[^0-9]/, "", $0); print; exit}')"
+          if [[ ! "$build" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Could not resolve CURRENT_PROJECT_VERSION." >&2
+            exit 1
+          fi
+
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "build=${build}" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Regenerate and verify release documentation
+        if: steps.release.outputs.skip != 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_BUILD: ${{ steps.release.outputs.build }}
+        run: |
+          set -euo pipefail
+
+          scripts/prepare_release_docs.py "$RELEASE_TAG" --build "$RELEASE_BUILD" --published
+          scripts/prepare_release_docs.py "$RELEASE_TAG" --build "$RELEASE_BUILD" --check
+          scripts/ci/validate_release_metadata.sh "$RELEASE_TAG"
+          git diff --check
+
+      - name: Detect repaired documentation
+        if: steps.release.outputs.skip != 'true'
+        id: changes
+        run: |
+          set -euo pipefail
+          paths=(
+            release/prepared-release.json
+            README.md
+            docs/ARCHITECTURE.md
+            CHANGELOG.md
+            site/index.html
+            site/changelog.html
+            site/de/index.html
+            site/da/index.html
+            site/fr/index.html
+            site/es/index.html
+            site/ja/index.html
+            site/zh-Hans/index.html
+            "Project/Sources/Neon Vision Editor/UI/PanelsAndHelpers.swift"
+          )
+          if git diff --quiet -- "${paths[@]}"; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "Documentation is already current."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Configure signed commits
+        if: steps.release.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        env:
+          METRICS_SIGNING_SSH_KEY: ${{ secrets.METRICS_SIGNING_SSH_KEY }}
+          METRICS_SIGNING_NAME: ${{ secrets.METRICS_SIGNING_NAME }}
+          METRICS_SIGNING_EMAIL: ${{ secrets.METRICS_SIGNING_EMAIL }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${METRICS_SIGNING_SSH_KEY:-}" ]]; then
+            echo "Missing secret: METRICS_SIGNING_SSH_KEY" >&2
+            exit 1
+          fi
+
+          signing_key="$RUNNER_TEMP/post_release_docs_signing_key"
+          signing_public_key="${signing_key}.pub"
+          if printf '%s' "$METRICS_SIGNING_SSH_KEY" | grep -q "BEGIN .*PRIVATE KEY"; then
+            printf '%s\n' "$METRICS_SIGNING_SSH_KEY" > "$signing_key"
+          else
+            printf '%s' "$METRICS_SIGNING_SSH_KEY" | base64 -d > "$signing_key"
+          fi
+          perl -pi -e 's/\r$//' "$signing_key"
+          chmod 600 "$signing_key"
+          ssh-keygen -y -f "$signing_key" > "$signing_public_key"
+
+          git config user.name "${METRICS_SIGNING_NAME:-h3p}"
+          git config user.email "${METRICS_SIGNING_EMAIL:-apps@hpedersen.de}"
+          git config gpg.format ssh
+          git config user.signingkey "$signing_public_key"
+          git config commit.gpgsign true
+
+      - name: Commit repaired documentation
+        if: steps.release.outputs.skip != 'true' && steps.changes.outputs.changed == 'true'
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          # A PAT-authored PR starts CI without the GITHUB_TOKEN approval hold.
+          GH_TOKEN: ${{ secrets.METRIC_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          paths=(
+            release/prepared-release.json
+            README.md
+            docs/ARCHITECTURE.md
+            CHANGELOG.md
+            site/index.html
+            site/changelog.html
+            site/de/index.html
+            site/da/index.html
+            site/fr/index.html
+            site/es/index.html
+            site/ja/index.html
+            site/zh-Hans/index.html
+            "Project/Sources/Neon Vision Editor/UI/PanelsAndHelpers.swift"
+          )
+
+          # Older releases predate the allocation manifest.
+          for path in "${paths[@]}"; do
+            if [[ -e "$path" ]]; then git add -- "$path"; fi
+          done
+          git commit -S -m "docs: self-heal ${RELEASE_TAG} documentation"
+          git push --force-with-lease origin "HEAD:${DOCS_BRANCH}"
+
+          docs_sha="$(git rev-parse HEAD)"
+          docs_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${DOCS_BRANCH}" \
+            --json number,headRefOid --jq ".[] | select(.headRefOid == \"${docs_sha}\") | .number" | head -n1)"
+          if [[ -z "${docs_pr}" ]]; then
+            gh pr create --repo "${GITHUB_REPOSITORY}" --base main --head "${DOCS_BRANCH}" \
+              --title "docs: self-heal ${RELEASE_TAG} documentation" \
+              --body "Automated post-release documentation reconciliation."
+            docs_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${DOCS_BRANCH}" \
+              --json number,headRefOid --jq ".[] | select(.headRefOid == \"${docs_sha}\") | .number" | head -n1)"
+          fi
+          if [[ -z "${docs_pr}" ]]; then
+            echo "Could not resolve the open documentation PR for ${docs_sha}." >&2
+            exit 1
+          fi
+
+          # Third-party checks alone do not mean required checks registered.
+          # Wait on the immutable signed head, then merge with the same pin.
+          python3 scripts/ci/wait_for_required_checks.py "${docs_pr}" \
+            --repo "${GITHUB_REPOSITORY}" --head "${docs_sha}"
+
+          if ! gh pr merge "${docs_pr}" --repo "${GITHUB_REPOSITORY}" --merge --delete-branch --match-head-commit "${docs_sha}"; then
+            echo "Documentation PR could not be merged automatically; leaving it open." >&2
+            exit 1
+          fi
+          merged_at="$(gh pr view "${docs_pr}" --repo "${GITHUB_REPOSITORY}" --json mergedAt --jq .mergedAt)"
+          if [[ -z "$merged_at" ]]; then
+            echo "Documentation PR ${docs_pr} was not merged." >&2
+            exit 1
+          fi

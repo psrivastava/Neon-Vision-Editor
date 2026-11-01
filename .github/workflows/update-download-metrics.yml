@@ -7,16 +7,32 @@ on:
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
   refresh:
     runs-on: ubuntu-latest
+    concurrency:
+      group: public-documentation-writer
+      queue: max
+      cancel-in-progress: false
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
           fetch-depth: 0
+          # Protected main does not permit the default github-actions[bot]
+          # token to bypass PR and CodeQL requirements. This existing repository
+          # token belongs to the signed metrics automation identity instead.
+          token: ${{ secrets.METRIC_TOKEN }}
+
+      - name: Prepare metrics branch
+        run: |
+          set -euo pipefail
+          git fetch origin main
+          git fetch origin automation/daily-metrics || true
+          git checkout -B automation/daily-metrics origin/main
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -60,13 +76,71 @@ jobs:
           git config user.signingkey "$SIGNING_PUB_KEY_PATH"
           git config commit.gpgsign true
 
-      - name: Commit and push if changed
+      - name: Commit and update metrics pull request
+        env:
+          # Bot-created PRs put their initial CI runs behind manual approval.
+          # Use the existing trusted identity for PR creation as well as push.
+          GH_TOKEN: ${{ secrets.METRIC_TOKEN }}
+          METRICS_MERGE_TOKEN: ${{ secrets.METRIC_TOKEN }}
+          METRICS_BRANCH: automation/daily-metrics
         run: |
+          set -euo pipefail
           if git diff --quiet; then
             echo "No metrics changes."
+            metrics_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --head "${METRICS_BRANCH}" --json number --jq '.[0].number // empty')"
+            if [ -n "${metrics_pr}" ]; then
+              gh pr close "${metrics_pr}" --repo "${GITHUB_REPOSITORY}" --delete-branch
+            elif git ls-remote --exit-code --heads origin "${METRICS_BRANCH}" >/dev/null 2>&1; then
+              git push origin --delete "${METRICS_BRANCH}"
+            fi
             exit 0
           fi
 
           git add README.md docs/images/release-download-trend*.svg
           git commit -S -m "docs: refresh download metrics chart"
-          git push
+          git push --force-with-lease origin "HEAD:${METRICS_BRANCH}"
+
+          metrics_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${METRICS_BRANCH}" \
+            --json number --jq '.[0].number // empty')"
+          if [[ -n "${metrics_pr}" ]]; then
+            echo "Updated existing metrics pull request #${metrics_pr}."
+          else
+            # GitHub can lag briefly after the force-push. Give the existing
+            # branch PR time to appear before attempting creation, otherwise
+            # gh pr create races the already-open PR and exits with an error.
+            for attempt in {1..10}; do
+              metrics_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${METRICS_BRANCH}" \
+                --json number --jq '.[0].number // empty')"
+              [[ -n "${metrics_pr}" ]] && break
+              sleep 2
+            done
+
+            if [[ -z "${metrics_pr}" ]]; then
+              if ! gh pr create \
+                --repo "${GITHUB_REPOSITORY}" \
+                --base main \
+                --head "${METRICS_BRANCH}" \
+                --title "docs: refresh daily download metrics" \
+                --body "Automated refresh of README download and traffic metrics."; then
+                echo "PR creation raced another metrics workflow; resolving the existing PR." >&2
+              fi
+
+              for attempt in {1..10}; do
+                metrics_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --state open --base main --head "${METRICS_BRANCH}" \
+                  --json number --jq '.[0].number // empty')"
+                [[ -n "${metrics_pr}" ]] && break
+                sleep 2
+              done
+            fi
+          fi
+
+          if [[ -z "${metrics_pr}" ]]; then
+            echo "Could not resolve the open metrics PR for ${METRICS_BRANCH}." >&2
+            exit 1
+          fi
+
+          GH_TOKEN="${METRICS_MERGE_TOKEN}" gh pr merge "${metrics_pr}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --auto \
+            --merge \
+            --delete-branch

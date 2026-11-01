@@ -1,0 +1,4594 @@
+#if os(iOS) || os(visionOS)
+import Dispatch
+import SwiftUI
+import Foundation
+import OSLog
+import UIKit
+
+/// NSString's multiline measurement is costly for buffers with many paragraphs.
+/// Measure every logical line independently, reusing common generated lines.
+nonisolated func measuredEditorTextWidth(
+    _ text: String, attributes: [NSAttributedString.Key: Any]
+) -> CGFloat {
+    var maximum: CGFloat = 0
+    var widths: [String: CGFloat] = [:]
+    text.enumerateLines { line, stop in
+        guard !Task.isCancelled else {
+            stop = true
+            return
+        }
+        if let cached = widths[line] {
+            maximum = max(maximum, cached)
+        } else {
+            let width = (line as NSString).size(withAttributes: attributes).width
+            maximum = max(maximum, width)
+            if widths.count < 256 { widths[line] = width }
+        }
+    }
+    return maximum
+}
+
+// MARK: - iOS Editor Text View
+
+nonisolated func iPadShiftScrollFontSizeDelta(contentOffsetDeltaY: CGFloat) -> CGFloat {
+    -contentOffsetDeltaY * 0.04
+}
+
+#if os(iOS)
+enum EditorPointerSelectionPolicy {
+    static func shouldEnableTextDragInteraction(for idiom: UIUserInterfaceIdiom) -> Bool {
+        false
+    }
+}
+
+enum EditorPencilInputPolicy {
+    static func selectionAnchorPoint(current: CGPoint, translation: CGPoint) -> CGPoint {
+        CGPoint(x: current.x - translation.x, y: current.y - translation.y)
+    }
+
+    static func selectionRange(anchor: Int, current: Int, textLength: Int) -> NSRange {
+        let safeLength = max(0, textLength)
+        let safeAnchor = min(max(0, anchor), safeLength)
+        let safeCurrent = min(max(0, current), safeLength)
+        return NSRange(
+            location: min(safeAnchor, safeCurrent),
+            length: abs(safeAnchor - safeCurrent)
+        )
+    }
+
+    static func shouldPerformUndo(for preferredAction: UIPencilPreferredAction) -> Bool {
+        switch preferredAction {
+        case .ignore, .runSystemShortcut:
+            return false
+        case .switchEraser, .switchPrevious, .showColorPalette, .showInkAttributes, .showContextualPalette:
+            return true
+        @unknown default:
+            return false
+        }
+    }
+
+    static func shouldPerformUndo(for squeezePhase: UIPencilInteraction.Phase) -> Bool {
+        squeezePhase == .ended
+    }
+}
+#endif
+
+enum EditorLineStartIndex {
+    static func offsets(in text: String) -> [Int] {
+        var starts = [0]
+        starts.reserveCapacity(max(32, text.utf16.count / 24))
+        var offset = 0
+        for codeUnit in text.utf16 {
+            offset += 1
+            if codeUnit == 10 { starts.append(offset) }
+        }
+        return starts
+    }
+
+    static func applying(replacementRange: NSRange, replacement: String, to lineStarts: [Int]) -> [Int] {
+        guard !lineStarts.isEmpty else { return offsets(in: replacement) }
+        let replacedEnd = NSMaxRange(replacementRange)
+        let delta = replacement.utf16.count - replacementRange.length
+        var updated = lineStarts
+        let firstAffected = firstIndex(in: updated, greaterThan: replacementRange.location)
+        let firstUnaffected = firstIndex(in: updated, greaterThan: replacedEnd)
+        if firstAffected < firstUnaffected {
+            updated.removeSubrange(firstAffected..<firstUnaffected)
+        }
+        for index in firstAffected..<updated.count {
+            updated[index] += delta
+        }
+        var insertedStarts: [Int] = []
+        var replacementOffset = 0
+        for codeUnit in replacement.utf16 {
+            replacementOffset += 1
+            if codeUnit == 10 {
+                insertedStarts.append(replacementRange.location + replacementOffset)
+            }
+        }
+        updated.insert(contentsOf: insertedStarts, at: firstAffected)
+        return updated
+    }
+
+    private static func firstIndex(in values: [Int], greaterThan target: Int) -> Int {
+        var lower = 0
+        var upper = values.count
+        while lower < upper {
+            let midpoint = (lower + upper) / 2
+            if values[midpoint] <= target { lower = midpoint + 1 } else { upper = midpoint }
+        }
+        return lower
+    }
+}
+
+enum EditorEditMenuPolicy {
+    static func shouldUseDefaultMenu(for range: NSRange) -> Bool {
+        range.length == 0
+    }
+}
+
+enum EditorLargeTextFormatting {
+    static func updateRange(visibleRange: NSRange, textLength: Int, padding: Int = 8_000) -> NSRange {
+        guard textLength > 0 else { return NSRange(location: 0, length: 0) }
+        let safeLocation = min(max(0, visibleRange.location), textLength)
+        let safeEnd = min(max(safeLocation, NSMaxRange(visibleRange)), textLength)
+        let start = max(0, safeLocation - padding)
+        let end = min(textLength, safeEnd + padding)
+        return NSRange(location: start, length: end - start)
+    }
+}
+
+class EditorInputTextView: UITextView {
+    static let keyboardToolbarHeight: CGFloat = 46
+    var onConfiguredAppShortcut: ((EditorShortcutAction) -> Void)?
+    private struct NoWrapWidthCache {
+        let revision: Int
+        let visibleWidth: CGFloat
+        let tabWidth: Int
+        let fontName: String
+        let fontSize: CGFloat
+        let letterSpacing: CGFloat
+        let width: CGFloat
+    }
+
+    private let vimModeDefaultsKey = "EditorVimModeEnabled"
+    private let vimInterceptionDefaultsKey = "EditorVimInterceptionEnabled"
+    private let bracketTokens: [String] = ["(", ")", "{", "}", "[", "]", "<", ">", "'", "\"", "`", "()", "{}", "[]", "\"\"", "''"]
+    private var isVimInsertMode: Bool = true
+    private var pendingDeleteCurrentLineCommand = false
+    private var preferredShouldWrapText: Bool = true
+    private var preferredLineBreakMode: NSLineBreakMode = .byWordWrapping
+    weak var editorContainer: LineNumberedTextViewContainer?
+    private var preferredTextContainerWidth: CGFloat = 0
+    private var textMetricsRevision = 0
+    private var noWrapWidthCache: NoWrapWidthCache?
+    private var lineStartCache: (revision: Int, offsets: [Int])?
+    private var activeShiftPressIdentifiers: Set<ObjectIdentifier> = []
+#if os(iOS)
+    private var pencilHoverRecognizer: UIHoverGestureRecognizer?
+    private var pencilSelectionRecognizer: UIPanGestureRecognizer?
+    private var pencilInteraction: UIPencilInteraction?
+    private var pencilScribbleInteraction: UIScribbleInteraction?
+    private var pencilSelectionAnchorOffset: Int?
+    private lazy var pencilHoverCaretView: UIView = {
+        let view = UIView(frame: .zero)
+        view.isHidden = true
+        view.isUserInteractionEnabled = false
+        view.accessibilityElementsHidden = true
+        view.layer.cornerRadius = 1
+        return view
+    }()
+#endif
+    var isHardwareKeyboardShiftPressed: Bool {
+        !activeShiftPressIdentifiers.isEmpty
+    }
+    var markdownFormattingEnabled: Bool = false
+
+#if os(iOS)
+    func installPencilInputIfNeeded() {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return }
+
+        if pencilHoverCaretView.superview == nil {
+            addSubview(pencilHoverCaretView)
+        }
+
+        if pencilHoverRecognizer == nil {
+            let recognizer = UIHoverGestureRecognizer(target: self, action: #selector(handlePencilHover(_:)))
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+            recognizer.cancelsTouchesInView = false
+            addGestureRecognizer(recognizer)
+            pencilHoverRecognizer = recognizer
+        }
+
+        if pencilSelectionRecognizer == nil {
+            let recognizer = UIPanGestureRecognizer(target: self, action: #selector(handlePencilSelection(_:)))
+            recognizer.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.pencil.rawValue)]
+            recognizer.minimumNumberOfTouches = 1
+            recognizer.maximumNumberOfTouches = 1
+            recognizer.cancelsTouchesInView = true
+            recognizer.delegate = self
+            addGestureRecognizer(recognizer)
+            panGestureRecognizer.require(toFail: recognizer)
+            pencilSelectionRecognizer = recognizer
+        }
+
+        if pencilInteraction == nil {
+            let interaction = UIPencilInteraction(delegate: self)
+            addInteraction(interaction)
+            pencilInteraction = interaction
+        }
+
+        if pencilScribbleInteraction == nil {
+            let interaction = UIScribbleInteraction(delegate: self)
+            addInteraction(interaction)
+            pencilScribbleInteraction = interaction
+        }
+    }
+
+    @objc private func handlePencilHover(_ gesture: UIHoverGestureRecognizer) {
+        guard UIPencilInteraction.prefersHoverToolPreview else {
+            pencilHoverCaretView.isHidden = true
+            return
+        }
+
+        switch gesture.state {
+        case .began, .changed:
+            guard pencilSelectionAnchorOffset == nil,
+                  let position = closestPosition(to: gesture.location(in: self)) else {
+                pencilHoverCaretView.isHidden = true
+                return
+            }
+            var rect = caretRect(for: position)
+            guard rect.origin.x.isFinite,
+                  rect.origin.y.isFinite,
+                  rect.width.isFinite,
+                  rect.height.isFinite,
+                  !rect.isEmpty else {
+                pencilHoverCaretView.isHidden = true
+                return
+            }
+            rect.size.width = max(2, rect.width)
+            pencilHoverCaretView.backgroundColor = tintColor.withAlphaComponent(0.82)
+            pencilHoverCaretView.frame = rect.integral
+            pencilHoverCaretView.isHidden = false
+
+        case .ended, .cancelled, .failed:
+            pencilHoverCaretView.isHidden = true
+
+        default:
+            break
+        }
+    }
+
+    @objc private func handlePencilSelection(_ gesture: UIPanGestureRecognizer) {
+        let point = gesture.location(in: self)
+        switch gesture.state {
+        case .began:
+            pencilHoverCaretView.isHidden = true
+            let anchorPoint = EditorPencilInputPolicy.selectionAnchorPoint(
+                current: point,
+                translation: gesture.translation(in: self)
+            )
+            guard isSelectable, let offset = pencilTextOffset(at: anchorPoint) else { return }
+            pencilSelectionAnchorOffset = offset
+            _ = becomeFirstResponder()
+            selectedRange = EditorPencilInputPolicy.selectionRange(
+                anchor: offset,
+                current: offset,
+                textLength: textStorage.length
+            )
+
+        case .changed:
+            guard let anchor = pencilSelectionAnchorOffset,
+                  let current = pencilTextOffset(at: point) else { return }
+            let range = EditorPencilInputPolicy.selectionRange(
+                anchor: anchor,
+                current: current,
+                textLength: textStorage.length
+            )
+            if selectedRange != range {
+                selectedRange = range
+            }
+            scrollPencilSelectionEndpointToVisible(current)
+
+        case .ended, .cancelled, .failed:
+            pencilSelectionAnchorOffset = nil
+
+        default:
+            break
+        }
+    }
+
+    private func pencilTextOffset(at point: CGPoint) -> Int? {
+        guard let position = closestPosition(to: point) else { return nil }
+        return offset(from: beginningOfDocument, to: position)
+    }
+
+    private func scrollPencilSelectionEndpointToVisible(_ offset: Int) {
+        guard let position = position(from: beginningOfDocument, offset: offset) else { return }
+        let rect = caretRect(for: position).insetBy(dx: 0, dy: -24)
+        scrollRectToVisible(rect, animated: false)
+    }
+
+    private func performPencilUndo() {
+        guard isEditable, undoManager?.canUndo == true else { return }
+        undoManager?.undo()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil {
+            pencilHoverCaretView.isHidden = true
+            pencilSelectionAnchorOffset = nil
+        }
+    }
+#endif
+
+    func invalidateTextMetrics() {
+        textMetricsRevision &+= 1
+        noWrapWidthCache = nil
+        lineStartCache = nil
+    }
+
+    func applyTextMetricsMutation(range: NSRange, replacement: String) {
+        let cachedOffsets = lineStartCache.flatMap { cache in
+            cache.revision == textMetricsRevision ? cache.offsets : nil
+        }
+        textMetricsRevision &+= 1
+        noWrapWidthCache = nil
+        lineStartCache = cachedOffsets.map {
+            (
+                revision: textMetricsRevision,
+                offsets: EditorLineStartIndex.applying(
+                    replacementRange: range,
+                    replacement: replacement,
+                    to: $0
+                )
+            )
+        }
+    }
+
+    func cachedLineStartOffsets() -> [Int] {
+        if let lineStartCache, lineStartCache.revision == textMetricsRevision {
+            return lineStartCache.offsets
+        }
+        let offsets = EditorLineStartIndex.offsets(in: text ?? "")
+        lineStartCache = (textMetricsRevision, offsets)
+        return offsets
+    }
+
+    func cachedNoWrapWidth(visibleWidth: CGFloat, tabWidth: Int, font: UIFont, letterSpacing: CGFloat = 0, compute: () -> CGFloat) -> CGFloat {
+        if let cache = noWrapWidthCache,
+           cache.revision == textMetricsRevision,
+           abs(cache.visibleWidth - visibleWidth) < 0.5,
+           cache.tabWidth == tabWidth,
+           cache.fontName == font.fontName,
+           abs(cache.fontSize - font.pointSize) < 0.01,
+           cache.letterSpacing == letterSpacing {
+            return cache.width
+        }
+        let width = compute()
+        noWrapWidthCache = NoWrapWidthCache(
+            revision: textMetricsRevision,
+            visibleWidth: visibleWidth,
+            tabWidth: tabWidth,
+            fontName: font.fontName,
+            fontSize: font.pointSize,
+            letterSpacing: letterSpacing,
+            width: width
+        )
+        return width
+    }
+
+    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        for press in presses where press.key?.modifierFlags.contains(.shift) == true {
+            activeShiftPressIdentifiers.insert(ObjectIdentifier(press))
+        }
+        super.pressesBegan(presses, with: event)
+    }
+
+    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        activeShiftPressIdentifiers.subtract(Set(presses.map(ObjectIdentifier.init)))
+        super.pressesEnded(presses, with: event)
+    }
+
+    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        activeShiftPressIdentifiers.subtract(Set(presses.map(ObjectIdentifier.init)))
+        super.pressesCancelled(presses, with: event)
+    }
+    var rendersInvisibleCharacters: Bool = false {
+        didSet {
+            if oldValue != rendersInvisibleCharacters {
+                invisibleCharactersOverlayView?.rendersInvisibleCharacters = rendersInvisibleCharacters
+            }
+        }
+    }
+    var rendersIndentationGuides: Bool = false {
+        didSet {
+            if oldValue != rendersIndentationGuides {
+                invisibleCharactersOverlayView?.rendersIndentationGuides = rendersIndentationGuides
+            }
+        }
+    }
+    var indentationGuideWidth: Int = 4 {
+        didSet {
+            if oldValue != indentationGuideWidth {
+                invisibleCharactersOverlayView?.indentationWidth = indentationGuideWidth
+            }
+        }
+    }
+    weak var invisibleCharactersOverlayView: InvisibleCharacterOverlayView?
+    weak var currentLineHighlightOverlayView: CurrentLineHighlightOverlayView?
+    var highlightsCurrentLine: Bool = false {
+        didSet {
+            if oldValue != highlightsCurrentLine {
+                currentLineHighlightOverlayView?.isCurrentLineHighlightEnabled = highlightsCurrentLine
+                setNeedsDisplay()
+            }
+        }
+    }
+    var currentLineHighlightColor: UIColor = UIColor.systemBlue.withAlphaComponent(0.22) {
+        didSet {
+            if oldValue != currentLineHighlightColor {
+                currentLineHighlightOverlayView?.currentLineHighlightColor = currentLineHighlightColor
+                setNeedsDisplay()
+            }
+        }
+    }
+    var matchingBracketHighlightRanges: [NSRange] = [] {
+        didSet {
+            if oldValue != matchingBracketHighlightRanges {
+                setNeedsDisplay()
+            }
+        }
+    }
+
+    fileprivate func makeKeyboardAccessoryView(isEditorOverlay: Bool = false) -> UIView {
+#if os(iOS)
+        let liquidGlassEnabled = IOSAdaptiveChromePreference.isEnabled()
+        let usesNativeGlass: Bool
+        if #available(iOS 26.0, *) {
+            usesNativeGlass = liquidGlassEnabled
+        } else {
+            usesNativeGlass = false
+        }
+#else
+        let liquidGlassEnabled = false
+        let usesNativeGlass = false
+#endif
+        let host = UIView()
+        host.isOpaque = false
+        host.backgroundColor = !usesNativeGlass && UIAccessibility.isReduceTransparencyEnabled
+            ? keyboardAccessoryBackgroundColor : .clear
+        host.translatesAutoresizingMaskIntoConstraints = false
+
+        let frostedBackground = isEditorOverlay || usesNativeGlass || !liquidGlassEnabled
+            ? nil : UIVisualEffectView()
+        if let frostedBackground {
+            frostedBackground.isOpaque = false
+            if !UIAccessibility.isReduceTransparencyEnabled {
+                frostedBackground.effect = UIBlurEffect(style: .systemUltraThinMaterial)
+                frostedBackground.contentView.backgroundColor = keyboardAccessoryBackgroundColor.withAlphaComponent(0.2)
+            }
+            frostedBackground.translatesAutoresizingMaskIntoConstraints = false
+        }
+
+        let glass = UIVisualEffectView()
+        glass.isOpaque = false
+        glass.layer.cornerRadius = 21
+        glass.clipsToBounds = true
+#if os(iOS)
+        IOSAdaptiveChromePreference.apply(to: glass, enabled: liquidGlassEnabled)
+#else
+        if UIAccessibility.isReduceTransparencyEnabled {
+            glass.backgroundColor = .secondarySystemBackground
+        } else {
+            glass.effect = UIBlurEffect(style: .systemChromeMaterial)
+        }
+#endif
+        glass.translatesAutoresizingMaskIntoConstraints = false
+
+        let scroll = UIScrollView()
+        scroll.isOpaque = false
+        scroll.backgroundColor = .clear
+        scroll.showsHorizontalScrollIndicator = false
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+
+        let stack = UIStackView()
+        stack.axis = .horizontal
+        stack.spacing = 8
+        stack.alignment = .center
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let accessoryActions = keyboardShortcutAccessoryEnabled
+            ? KeyboardAccessoryAction.configuredActions(
+                rawValue: UserDefaults.standard.string(forKey: KeyboardAccessoryAction.storageKey)
+            ) : []
+        for action in accessoryActions {
+            let button = UIButton(type: .system)
+            button.accessibilityIdentifier = "keyboard-accessory-\(action.rawValue)"
+            button.accessibilityLabel = action.title
+            button.setImage(UIImage(systemName: action.symbolName), for: .normal)
+            button.tintColor = .label
+            button.addTarget(self, action: #selector(performKeyboardAccessoryAction(_:)), for: .touchUpInside)
+            stack.addArrangedSubview(button)
+        }
+
+        if !accessoryActions.isEmpty {
+            let divider = UIView()
+            divider.backgroundColor = UIColor.separator
+            divider.widthAnchor.constraint(equalToConstant: 1).isActive = true
+            divider.heightAnchor.constraint(equalToConstant: 22).isActive = true
+            stack.addArrangedSubview(divider)
+        }
+
+        for token in bracketTokens {
+            let button = UIButton(type: .system)
+            button.titleLabel?.font = UIFont.monospacedSystemFont(ofSize: 15, weight: .semibold)
+            button.accessibilityIdentifier = token
+            if #available(iOS 15.0, *) {
+                var config = UIButton.Configuration.plain()
+                config.title = token
+                config.baseForegroundColor = .label
+                config.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 10, bottom: 6, trailing: 10)
+                config.background.cornerRadius = 8
+                config.background.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.14)
+                button.configuration = config
+            } else {
+                button.setTitle(token, for: .normal)
+                button.setTitleColor(.label, for: .normal)
+                button.contentEdgeInsets = UIEdgeInsets(top: 6, left: 10, bottom: 6, right: 10)
+            }
+            button.tintColor = .label
+            button.layer.cornerRadius = 8
+            button.layer.masksToBounds = true
+            button.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.14)
+            button.addTarget(self, action: #selector(insertBracketToken(_:)), for: .touchUpInside)
+            stack.addArrangedSubview(button)
+        }
+
+        if let frostedBackground {
+            host.addSubview(frostedBackground)
+        }
+        host.addSubview(glass)
+        glass.contentView.addSubview(scroll)
+        scroll.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            host.heightAnchor.constraint(equalToConstant: Self.keyboardToolbarHeight),
+
+            glass.leadingAnchor.constraint(equalTo: host.leadingAnchor, constant: 8),
+            glass.trailingAnchor.constraint(equalTo: host.trailingAnchor, constant: -8),
+            glass.topAnchor.constraint(equalTo: host.topAnchor, constant: 2),
+            glass.bottomAnchor.constraint(equalTo: host.bottomAnchor, constant: -2),
+
+            scroll.leadingAnchor.constraint(equalTo: glass.contentView.leadingAnchor, constant: 10),
+            scroll.trailingAnchor.constraint(equalTo: glass.contentView.trailingAnchor, constant: -10),
+            scroll.topAnchor.constraint(equalTo: glass.contentView.topAnchor, constant: 4),
+            scroll.bottomAnchor.constraint(equalTo: glass.contentView.bottomAnchor, constant: -4),
+
+            stack.leadingAnchor.constraint(equalTo: scroll.contentLayoutGuide.leadingAnchor),
+            stack.trailingAnchor.constraint(equalTo: scroll.contentLayoutGuide.trailingAnchor),
+            stack.topAnchor.constraint(equalTo: scroll.contentLayoutGuide.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: scroll.contentLayoutGuide.bottomAnchor),
+            stack.heightAnchor.constraint(equalTo: scroll.frameLayoutGuide.heightAnchor)
+        ])
+        if let frostedBackground {
+            NSLayoutConstraint.activate([
+                frostedBackground.leadingAnchor.constraint(equalTo: host.leadingAnchor),
+                frostedBackground.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+                frostedBackground.topAnchor.constraint(equalTo: host.topAnchor),
+                frostedBackground.bottomAnchor.constraint(equalTo: host.bottomAnchor)
+            ])
+        }
+
+        return host
+    }
+    private var isBracketAccessoryVisible: Bool = true
+    private var keyboardAccessoryActionsStorageValue: String?
+    private var keyboardShortcutAccessoryEnabled: Bool = true
+#if os(iOS)
+    private var keyboardAccessoryLiquidGlassEnabled = IOSAdaptiveChromePreference.isEnabled()
+#else
+    private var keyboardAccessoryLiquidGlassEnabled = false
+#endif
+    private var keyboardAccessoryBackgroundColor: UIColor = .clear
+
+    override init(frame: CGRect, textContainer: NSTextContainer?) {
+        super.init(frame: frame, textContainer: textContainer)
+        installLineSelectionGesture()
+        #if !os(visionOS)
+        if UIDevice.current.userInterfaceIdiom != .phone {
+            inputAccessoryView = makeKeyboardAccessoryView()
+        }
+        #endif
+        syncVimModeFromDefaults()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVimModeStateDidChange(_:)),
+            name: .vimModeStateDidChange,
+            object: nil
+        )
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        installLineSelectionGesture()
+        #if !os(visionOS)
+        if UIDevice.current.userInterfaceIdiom != .phone {
+            inputAccessoryView = makeKeyboardAccessoryView()
+        }
+        #endif
+        syncVimModeFromDefaults()
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleVimModeStateDidChange(_:)),
+            name: .vimModeStateDidChange,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    private func installLineSelectionGesture() {
+        let tap = UITapGestureRecognizer(target: self, action: #selector(selectTappedLine(_:)))
+        tap.numberOfTapsRequired = 3
+        tap.delaysTouchesBegan = false
+        tap.delaysTouchesEnded = false
+        addGestureRecognizer(tap)
+        accessibilityCustomActions = [UIAccessibilityCustomAction(
+            name: "Select Line", target: self, selector: #selector(selectCurrentLogicalLine))]
+    }
+
+    @objc private func selectTappedLine(_ gesture: UITapGestureRecognizer) {
+        guard gesture.state == .ended, isSelectable,
+              let position = closestPosition(to: gesture.location(in: self)) else { return }
+        selectLogicalLine(at: offset(from: beginningOfDocument, to: position))
+    }
+
+    @objc private func selectCurrentLogicalLine() -> Bool {
+        guard isSelectable else { return false }
+        selectLogicalLine(at: selectedRange.location)
+        return true
+    }
+
+    func selectLogicalLine(at location: Int) {
+        guard isSelectable else { return }
+        let source = textStorage.string as NSString
+        let caret = min(max(0, location), source.length)
+        selectedRange = source.lineRange(for: NSRange(location: caret, length: 0))
+        delegate?.textViewDidChangeSelection?(self)
+    }
+
+    var editingLineHeight: CGFloat {
+        let paragraph = typingAttributes[.paragraphStyle] as? NSParagraphStyle
+        return (font?.lineHeight ?? 20) * max(1, paragraph?.lineHeightMultiple ?? 1)
+    }
+
+    func revealCaretWithContext(force: Bool = false) {
+        guard (isFirstResponder || force), selectedRange.length == 0,
+              let position = selectedTextRange?.end else { return }
+        var rect = caretRect(for: position)
+        rect.size.height += editingLineHeight * 3
+        // Commit the viewport before syntax styling captures/restores its anchor.
+        // UITextView's deferred scroll-to-rect can otherwise be lost to that restore.
+        let inset = adjustedContentInset
+        let viewport = editorViewport
+        var target = editorContentOffset
+        if rect.maxY > viewport.maxY - inset.bottom {
+            target.y = rect.maxY - viewport.height + inset.bottom
+        } else if rect.minY < viewport.minY + inset.top {
+            target.y = rect.minY - inset.top
+        }
+        if rect.maxX > viewport.maxX - inset.right {
+            target.x = rect.maxX - viewport.width + inset.right
+        } else if rect.minX < viewport.minX + inset.left {
+            target.x = rect.minX - inset.left
+        }
+        target.y = min(max(-inset.top, target.y), max(-inset.top, contentSize.height - bounds.height + inset.bottom))
+        target.x = min(max(-inset.left, target.x), max(-inset.left, contentSize.width - viewport.width + inset.right))
+        if target != editorContentOffset { setEditorContentOffset(target, animated: false) }
+    }
+
+    func expandUnwrappedEditingLineIfNeeded() {
+        guard !preferredShouldWrapText else { return }
+        let source = textStorage.string as NSString
+        let line = source.lineRange(for: NSRange(location: min(selectedRange.location, source.length), length: 0))
+        let width = (source.substring(with: line) as NSString).size(withAttributes: typingAttributes).width + 32
+        if width > preferredTextContainerWidth {
+            // Grow in capacity increments instead of resizing TextKit for every
+            // glyph. A resize can make UIKit recompute contentOffset while the
+            // user is typing, which presents as a jump on no-wrap documents.
+            let growth = max(256, preferredTextContainerWidth * 0.25)
+            preferredTextContainerWidth = max(width, preferredTextContainerWidth + growth)
+            enforcePreferredWrapLayout(preservingContentOffset: true)
+        }
+    }
+
+    func setBracketAccessoryVisible(_ visible: Bool) {
+        let actionsStorageValue = UserDefaults.standard.string(forKey: KeyboardAccessoryAction.storageKey)
+        let actionsEnabled = UserDefaults.standard.object(forKey: "SettingsKeyboardShortcutAccessoryBarIOS") as? Bool ?? true
+#if os(iOS)
+        let liquidGlassEnabled = IOSAdaptiveChromePreference.isEnabled()
+#else
+        let liquidGlassEnabled = false
+#endif
+        let needsUpdate = isBracketAccessoryVisible != visible ||
+            keyboardAccessoryActionsStorageValue != actionsStorageValue ||
+            keyboardShortcutAccessoryEnabled != actionsEnabled ||
+            keyboardAccessoryLiquidGlassEnabled != liquidGlassEnabled
+        isBracketAccessoryVisible = visible
+        keyboardAccessoryActionsStorageValue = actionsStorageValue
+        keyboardShortcutAccessoryEnabled = actionsEnabled
+        keyboardAccessoryLiquidGlassEnabled = liquidGlassEnabled
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            editorContainer?.setKeyboardAccessoryRequested(visible, rebuild: needsUpdate)
+            return
+        }
+        #endif
+        guard needsUpdate else { return }
+        #if !os(visionOS)
+        inputAccessoryView = visible ? makeKeyboardAccessoryView() : nil
+        #endif
+        if isFirstResponder {
+            reloadInputViews()
+        }
+    }
+
+    func setKeyboardAccessoryBackgroundColor(_ color: UIColor) {
+        keyboardAccessoryBackgroundColor = color
+        #if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            editorContainer?.updateKeyboardAccessoryColor(color)
+            return
+        }
+        #endif
+        #if !os(visionOS)
+#if os(iOS)
+        if #available(iOS 26.0, *) {
+            inputAccessoryView?.backgroundColor = .clear
+            return
+        }
+#endif
+        inputAccessoryView?.backgroundColor = UIAccessibility.isReduceTransparencyEnabled ? color : .clear
+        if let frostedBackground = inputAccessoryView?.subviews.first as? UIVisualEffectView {
+            frostedBackground.contentView.backgroundColor = UIAccessibility.isReduceTransparencyEnabled
+                ? .clear : color.withAlphaComponent(0.2)
+        }
+        #endif
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let becameFirstResponder = super.becomeFirstResponder()
+        #if os(iOS)
+        if becameFirstResponder {
+            editorContainer?.refreshKeyboardAccessoryOverlay()
+        }
+        #endif
+        return becameFirstResponder
+    }
+
+    override func resignFirstResponder() -> Bool {
+        let resigned = super.resignFirstResponder()
+        #if os(iOS)
+        if resigned {
+            editorContainer?.refreshKeyboardAccessoryOverlay()
+        }
+        #endif
+        return resigned
+    }
+
+    @objc private func performKeyboardAccessoryAction(_ sender: UIButton) {
+        guard let rawValue = sender.accessibilityIdentifier,
+              KeyboardAccessoryAction(rawValue: rawValue.replacingOccurrences(of: "keyboard-accessory-", with: "")) != nil else { return }
+        NotificationCenter.default.post(
+            name: .keyboardAccessoryActionRequested,
+            object: rawValue.replacingOccurrences(of: "keyboard-accessory-", with: "")
+        )
+    }
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        if action == #selector(paste(_:)) {
+            return isEditable && (UIPasteboard.general.hasStrings || UIPasteboard.general.hasURLs)
+        }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard KeyboardCommandView.supportsHardwareKeyboardCommands else {
+            return super.keyCommands
+        }
+        let baseCommands = hardwareKeyboardEditingCommands(merging: super.keyCommands) +
+            KeyboardCommandView.configuredAppCommands(action: #selector(handleConfiguredAppShortcut(_:)))
+        guard UserDefaults.standard.bool(forKey: vimInterceptionDefaultsKey),
+              UserDefaults.standard.bool(forKey: vimModeDefaultsKey) else {
+            return baseCommands
+        }
+
+        var commands = baseCommands
+        if isVimInsertMode {
+            commands.append(vimCommand(input: UIKeyCommand.inputEscape, action: #selector(vimEscapeToNormalMode), title: "Vim: Normal Mode"))
+            return commands
+        }
+
+        commands.append(vimCommand(input: "h", action: #selector(vimMoveLeft), title: "Vim: Move Left"))
+        commands.append(vimCommand(input: UIKeyCommand.inputLeftArrow, action: #selector(vimMoveLeft), title: "Vim: Move Left"))
+        commands.append(vimCommand(input: "j", action: #selector(vimMoveDown), title: "Vim: Move Down"))
+        commands.append(vimCommand(input: UIKeyCommand.inputDownArrow, action: #selector(vimMoveDown), title: "Vim: Move Down"))
+        commands.append(vimCommand(input: "k", action: #selector(vimMoveUp), title: "Vim: Move Up"))
+        commands.append(vimCommand(input: UIKeyCommand.inputUpArrow, action: #selector(vimMoveUp), title: "Vim: Move Up"))
+        commands.append(vimCommand(input: "l", action: #selector(vimMoveRight), title: "Vim: Move Right"))
+        commands.append(vimCommand(input: UIKeyCommand.inputRightArrow, action: #selector(vimMoveRight), title: "Vim: Move Right"))
+        commands.append(vimCommand(input: "w", action: #selector(vimMoveWordForward), title: "Vim: Next Word"))
+        commands.append(vimCommand(input: "b", action: #selector(vimMoveWordBackward), title: "Vim: Previous Word"))
+        commands.append(vimCommand(input: "0", action: #selector(vimMoveToLineStart), title: "Vim: Line Start"))
+        commands.append(vimCommand(input: UIKeyCommand.inputEscape, action: #selector(vimEscapeToNormalMode), title: "Vim: Stay in Normal Mode"))
+        commands.append(vimCommand(input: "x", action: #selector(vimDeleteForward), title: "Vim: Delete Character"))
+        commands.append(vimCommand(input: "i", action: #selector(vimEnterInsertMode), title: "Vim: Insert Mode"))
+        commands.append(vimCommand(input: "a", action: #selector(vimAppendInsertMode), title: "Vim: Append Mode"))
+        commands.append(vimCommand(input: "d", action: #selector(vimDeleteLineStep), title: "Vim: Delete Line"))
+        commands.append(vimCommand(input: "$", modifiers: [.shift], action: #selector(vimMoveToLineEnd), title: "Vim: Line End"))
+        return commands
+    }
+
+    @objc func handleConfiguredAppShortcut(_ command: UIKeyCommand) {
+        guard let action = KeyboardCommandView.configuredAction(for: command) else { return }
+        onConfiguredAppShortcut?(action)
+    }
+
+    private func hardwareKeyboardEditingCommands(merging existing: [UIKeyCommand]?) -> [UIKeyCommand] {
+        var commands = (existing ?? []).filter { command in
+            guard command.modifierFlags.contains(.command), let input = command.input?.lowercased() else {
+                return true
+            }
+            if command.modifierFlags.contains(.shift) {
+                return input != "z"
+            }
+            return !["a", "c", "x", "v", "z"].contains(input)
+        }
+        let selectAllCommand = UIKeyCommand(
+            input: "a",
+            modifierFlags: .command,
+            action: #selector(selectAllFromHardwareKeyboard)
+        )
+        selectAllCommand.discoverabilityTitle = "Select All"
+        let copyCommand = UIKeyCommand(
+            input: "c",
+            modifierFlags: .command,
+            action: #selector(copy(_:))
+        )
+        copyCommand.discoverabilityTitle = "Copy"
+        let cutCommand = UIKeyCommand(
+            input: "x",
+            modifierFlags: .command,
+            action: #selector(cut(_:))
+        )
+        cutCommand.discoverabilityTitle = "Cut"
+        let pasteCommand = UIKeyCommand(
+            input: "v",
+            modifierFlags: .command,
+            action: #selector(paste(_:))
+        )
+        pasteCommand.discoverabilityTitle = "Paste"
+        let undoCommand = UIKeyCommand(
+            input: "z",
+            modifierFlags: .command,
+            action: #selector(undoFromHardwareKeyboard)
+        )
+        undoCommand.discoverabilityTitle = "Undo"
+        if #available(iOS 15.0, *) {
+            undoCommand.wantsPriorityOverSystemBehavior = true
+        }
+        let redoCommand = UIKeyCommand(
+            input: "z",
+            modifierFlags: [.command, .shift],
+            action: #selector(redoFromHardwareKeyboard)
+        )
+        redoCommand.discoverabilityTitle = "Redo"
+        if #available(iOS 15.0, *) {
+            redoCommand.wantsPriorityOverSystemBehavior = true
+        }
+        let moveLineUpCommand = UIKeyCommand(
+            input: UIKeyCommand.inputUpArrow,
+            modifierFlags: .alternate,
+            action: #selector(moveLineUpFromHardwareKeyboard)
+        )
+        moveLineUpCommand.discoverabilityTitle = "Move Line Up"
+        let moveLineDownCommand = UIKeyCommand(
+            input: UIKeyCommand.inputDownArrow,
+            modifierFlags: .alternate,
+            action: #selector(moveLineDownFromHardwareKeyboard)
+        )
+        moveLineDownCommand.discoverabilityTitle = "Move Line Down"
+        let markdownCommands = markdownFormattingEnabled ? [
+            markdownFormattingCommand(input: "b", action: #selector(requestMarkdownBold), title: "Bold"),
+            markdownFormattingCommand(input: "i", action: #selector(requestMarkdownItalic), title: "Italic"),
+            markdownFormattingCommand(input: "k", action: #selector(requestMarkdownLink), title: "Link")
+        ] : []
+        commands.insert(
+            contentsOf: [
+                selectAllCommand, copyCommand, cutCommand, pasteCommand, undoCommand, redoCommand,
+                moveLineUpCommand, moveLineDownCommand
+            ] + markdownCommands,
+            at: 0
+        )
+        return commands
+    }
+
+    private func markdownFormattingCommand(input: String, action: Selector, title: String) -> UIKeyCommand {
+        let command = UIKeyCommand(input: input, modifierFlags: .command, action: action)
+        command.discoverabilityTitle = title
+        return command
+    }
+
+    @objc private func requestMarkdownBold() { NotificationCenter.default.post(name: .markdownFormattingRequested, object: "bold") }
+    @objc private func requestMarkdownItalic() { NotificationCenter.default.post(name: .markdownFormattingRequested, object: "italic") }
+    @objc private func requestMarkdownLink() { NotificationCenter.default.post(name: .markdownFormattingRequested, object: "link") }
+
+    @objc private func selectAllFromHardwareKeyboard() {
+        selectAll(nil)
+    }
+
+    @objc private func undoFromHardwareKeyboard() {
+        undoManager?.undo()
+    }
+
+    @objc private func redoFromHardwareKeyboard() {
+        undoManager?.redo()
+    }
+
+    @objc private func moveLineUpFromHardwareKeyboard() {
+        requestLineMove(.up)
+    }
+
+    @objc private func moveLineDownFromHardwareKeyboard() {
+        requestLineMove(.down)
+    }
+
+    private func requestLineMove(_ direction: EditorLineMoveDirection) {
+        NotificationCenter.default.post(
+            name: .moveSelectedLinesRequested,
+            object: direction.rawValue,
+            userInfo: [EditorCommandUserInfo.sourceTextView: self]
+        )
+    }
+
+    override func paste(_ sender: Any?) {
+        // Force plain-text fallback so simulator/device paste remains reliable
+        // even when the pasteboard advertises rich content first.
+        if let raw = UIPasteboard.general.string, !raw.isEmpty {
+            let sanitized = EditorTextSanitizer.sanitize(raw)
+            if let selection = selectedTextRange {
+                replace(selection, withText: sanitized)
+            } else {
+                insertText(sanitized)
+            }
+            return
+        }
+        super.paste(sender)
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        enforcePreferredWrapLayout(preservingContentOffset: true)
+        editorContainer?.lineNumberView.setNeedsDisplay()
+        if rendersInvisibleCharacters || rendersIndentationGuides {
+            invisibleCharactersOverlayView?.requestRedraw()
+        }
+    }
+
+    func rememberPreferredWrapLayout(
+        shouldWrapText: Bool,
+        containerWidth: CGFloat,
+        lineBreakMode: NSLineBreakMode? = nil
+    ) {
+        preferredShouldWrapText = shouldWrapText
+        preferredLineBreakMode = lineBreakMode ?? (shouldWrapText ? .byWordWrapping : .byClipping)
+        preferredTextContainerWidth = containerWidth
+        enforcePreferredWrapLayout()
+    }
+
+    private func enforcePreferredWrapLayout(preservingContentOffset: Bool = false) {
+        let desiredLineBreakMode = preferredLineBreakMode
+        let visibleWidth = max(1, editorViewport.width - textContainerInset.left - textContainerInset.right)
+        let targetWidth = preferredShouldWrapText ? visibleWidth : max(preferredTextContainerWidth, visibleWidth)
+        let priorOffset = preservingContentOffset ? contentOffset : nil
+        var didChangeContainerSize = false
+        if textContainer.lineBreakMode != desiredLineBreakMode {
+            textContainer.lineBreakMode = desiredLineBreakMode
+        }
+        if textContainer.widthTracksTextView != preferredShouldWrapText {
+            textContainer.widthTracksTextView = preferredShouldWrapText
+        }
+        if abs(textContainer.size.width - targetWidth) > 1 {
+            textContainer.size = CGSize(width: targetWidth, height: .greatestFiniteMagnitude)
+            didChangeContainerSize = true
+        }
+        let horizontalInsets = textContainerInset.left + textContainerInset.right
+        editorContainer?.updateHorizontalCanvas(wrapped: preferredShouldWrapText, width: targetWidth + horizontalInsets)
+        if didChangeContainerSize, let priorOffset, priorOffset != contentOffset {
+            setContentOffset(priorOffset, animated: false)
+        }
+    }
+
+    override func scrollRangeToVisible(_ range: NSRange) {
+        super.scrollRangeToVisible(range)
+        guard let position = position(from: beginningOfDocument, offset: range.location) else { return }
+        let caret = caretRect(for: position)
+        let viewport = editorViewport
+        var offset = editorContentOffset
+        if caret.minX < viewport.minX { offset.x = caret.minX }
+        else if caret.maxX > viewport.maxX { offset.x = caret.maxX - viewport.width }
+        setEditorContentOffset(offset, animated: false)
+    }
+}
+
+extension UITextView {
+    var editorViewport: CGRect {
+        guard let container = (self as? EditorInputTextView)?.editorContainer else { return bounds }
+        return CGRect(origin: editorContentOffset, size: container.horizontalScrollView.bounds.size)
+    }
+
+    var editorContentOffset: CGPoint {
+        CGPoint(x: (self as? EditorInputTextView)?.editorContainer?.horizontalScrollView.contentOffset.x ?? contentOffset.x,
+                y: contentOffset.y)
+    }
+
+    func setEditorContentOffset(_ offset: CGPoint, animated: Bool) {
+        guard let container = (self as? EditorInputTextView)?.editorContainer else {
+            setContentOffset(offset, animated: animated)
+            return
+        }
+        container.layoutIfNeeded()
+        let scrollView = container.horizontalScrollView
+        let maximumX = max(0, scrollView.contentSize.width - scrollView.bounds.width)
+        scrollView.setContentOffset(CGPoint(x: min(max(0, offset.x), maximumX), y: 0), animated: animated)
+        setContentOffset(CGPoint(x: 0, y: offset.y), animated: animated)
+    }
+}
+
+#if os(iOS)
+extension EditorInputTextView: UIPencilInteractionDelegate, UIScribbleInteractionDelegate, UIGestureRecognizerDelegate {
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveTap tap: UIPencilInteraction.Tap) {
+        guard EditorPencilInputPolicy.shouldPerformUndo(for: UIPencilInteraction.preferredTapAction) else { return }
+        performPencilUndo()
+    }
+
+    func pencilInteraction(_ interaction: UIPencilInteraction, didReceiveSqueeze squeeze: UIPencilInteraction.Squeeze) {
+        guard EditorPencilInputPolicy.shouldPerformUndo(for: UIPencilInteraction.preferredSqueezeAction),
+              EditorPencilInputPolicy.shouldPerformUndo(for: squeeze.phase) else { return }
+        performPencilUndo()
+    }
+
+    func scribbleInteraction(_ interaction: UIScribbleInteraction, shouldBeginAt location: CGPoint) -> Bool {
+        false
+    }
+}
+#endif
+
+// MARK: - Invisible Character Overlay
+
+final class InvisibleCharacterOverlayView: UIView {
+    private enum RenderLimits {
+        static let verticalPadding: CGFloat = 80
+        static let maxIndentationLineFragments = 260
+    }
+
+    weak var textView: UITextView?
+    private var pendingRedraw: DispatchWorkItem?
+    private var lastRedrawUptime: TimeInterval = 0
+    var rendersInvisibleCharacters: Bool = false {
+        didSet {
+            isHidden = !rendersInvisibleCharacters && !rendersIndentationGuides
+            requestRedraw(immediate: true)
+        }
+    }
+    var rendersIndentationGuides: Bool = false {
+        didSet {
+            isHidden = !rendersInvisibleCharacters && !rendersIndentationGuides
+            requestRedraw(immediate: true)
+        }
+    }
+    var indentationWidth: Int = 4 {
+        didSet { requestRedraw(immediate: true) }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+        isHidden = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+        isHidden = true
+    }
+
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+        drawIndentationGuides()
+        drawInvisibleCharacterMarkers()
+    }
+
+    func requestRedraw(immediate: Bool = false) {
+        guard !isHidden else { return }
+        pendingRedraw?.cancel()
+        pendingRedraw = nil
+
+        let now = ProcessInfo.processInfo.systemUptime
+        let interval = redrawInterval
+        if immediate || now - lastRedrawUptime >= interval {
+            lastRedrawUptime = now
+            setNeedsDisplay()
+            return
+        }
+
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.pendingRedraw = nil
+            self.lastRedrawUptime = ProcessInfo.processInfo.systemUptime
+            self.setNeedsDisplay()
+        }
+        pendingRedraw = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + (interval - (now - lastRedrawUptime)), execute: work)
+    }
+
+    private var redrawInterval: TimeInterval {
+        guard isPhoneLayout,
+              let textView,
+              textView.isDragging || textView.isDecelerating || textView.isTracking else {
+            return 1.0 / 30.0
+        }
+        return 1.0 / 18.0
+    }
+
+    private var maxInvisibleMarkerUTF16Length: Int {
+        isPhoneLayout ? 4_000 : 8_000
+    }
+
+    private var maxInvisibleMarkersPerDraw: Int {
+        isPhoneLayout ? 1_600 : 3_200
+    }
+
+    private var isPhoneLayout: Bool {
+#if os(iOS)
+        UIDevice.current.userInterfaceIdiom == .phone
+#else
+        false
+#endif
+    }
+
+    private func drawIndentationGuides() {
+        guard rendersIndentationGuides, let textView else { return }
+        guard textView.textStorage.length > 0 else { return }
+
+        let layoutManager = textView.layoutManager
+        let textContainer = textView.textContainer
+        let visibleRect = textView.editorViewport
+            .insetBy(dx: 0, dy: -RenderLimits.verticalPadding)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        guard glyphRange.length > 0 else { return }
+
+        let text = textView.textStorage.string as NSString
+        let textLength = text.length
+        let guideWidth = max(1, indentationWidth)
+        let font = textView.font ?? UIFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        let columnWidth = NSString(string: " ").size(withAttributes: [.font: font]).width
+        let color = (textView.textColor ?? UIColor.label).withAlphaComponent(0.14)
+        guard let context = UIGraphicsGetCurrentContext() else { return }
+        context.saveGState()
+        context.setStrokeColor(color.cgColor)
+        context.setLineWidth(1 / max(1, textView.traitCollection.displayScale))
+
+        var renderedFragments = 0
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, lineGlyphRange, stop in
+            guard renderedFragments < RenderLimits.maxIndentationLineFragments else {
+                stop.pointee = true
+                return
+            }
+            renderedFragments += 1
+            let charIndex = layoutManager.characterIndexForGlyph(at: lineGlyphRange.location)
+            guard charIndex < textLength else { return }
+            let lineRange = text.lineRange(for: NSRange(location: charIndex, length: 0))
+            let lineEnd = min(textLength, lineRange.location + lineRange.length)
+            var column = 0
+            var index = lineRange.location
+            while index < lineEnd {
+                let unit = text.character(at: index)
+                if unit == 32 {
+                    column += 1
+                } else if unit == 9 {
+                    column += guideWidth
+                } else {
+                    break
+                }
+                index += 1
+            }
+            guard column >= guideWidth else { return }
+            for guideColumn in stride(from: guideWidth, through: column, by: guideWidth) {
+                let x = textView.textContainerInset.left + (CGFloat(guideColumn) * columnWidth) - textView.editorContentOffset.x
+                let y1 = textView.textContainerInset.top + usedRect.minY - textView.editorContentOffset.y
+                let y2 = textView.textContainerInset.top + usedRect.maxY - textView.editorContentOffset.y
+                context.move(to: CGPoint(x: x, y: y1))
+                context.addLine(to: CGPoint(x: x, y: y2))
+            }
+        }
+        context.strokePath()
+        context.restoreGState()
+    }
+
+    private func drawInvisibleCharacterMarkers() {
+        guard rendersInvisibleCharacters, let textView else { return }
+        guard textView.textStorage.length > 0 else { return }
+
+        let layoutManager = textView.layoutManager
+        let textContainer = textView.textContainer
+        let visibleRect = textView.editorViewport
+            .insetBy(dx: 0, dy: -RenderLimits.verticalPadding)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textContainer)
+        guard glyphRange.length > 0 else { return }
+
+        let characterRange = layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+        let text = textView.textStorage.string as NSString
+        let end = min(text.length, NSMaxRange(characterRange))
+        guard characterRange.location < end else { return }
+        guard end - characterRange.location <= maxInvisibleMarkerUTF16Length else { return }
+
+        let markerFont = UIFont.monospacedSystemFont(ofSize: max(9, (textView.font?.pointSize ?? 14) * 0.78), weight: .regular)
+        let markerColor = (textView.textColor ?? UIColor.label).withAlphaComponent(0.38)
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: markerFont,
+            .foregroundColor: markerColor
+        ]
+        let spaceMarker = NSString(string: "·")
+        let tabMarker = NSString(string: "→")
+        let newlineMarker = NSString(string: "¶")
+        let spaceMarkerSize = spaceMarker.size(withAttributes: attributes)
+        let tabMarkerSize = tabMarker.size(withAttributes: attributes)
+        let newlineMarkerSize = newlineMarker.size(withAttributes: attributes)
+
+        var renderedMarkers = 0
+        for index in characterRange.location..<end {
+            guard renderedMarkers < maxInvisibleMarkersPerDraw else { break }
+            switch text.character(at: index) {
+            case 32:
+                drawInlineInvisibleMarker(spaceMarker, atCharacterIndex: index, size: spaceMarkerSize, attributes: attributes)
+                renderedMarkers += 1
+            case 9:
+                drawInlineInvisibleMarker(tabMarker, atCharacterIndex: index, size: tabMarkerSize, attributes: attributes)
+                renderedMarkers += 1
+            case 10:
+                drawLineEndInvisibleMarker(newlineMarker, nearCharacterIndex: index, size: newlineMarkerSize, attributes: attributes)
+                renderedMarkers += 1
+            default:
+                continue
+            }
+        }
+    }
+
+    private func drawInlineInvisibleMarker(
+        _ marker: NSString,
+        atCharacterIndex index: Int,
+        size markerSize: CGSize,
+        attributes: [NSAttributedString.Key: Any]
+    ) {
+        guard let textView else { return }
+        let layoutManager = textView.layoutManager
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: index, length: 1),
+            actualCharacterRange: nil
+        )
+        guard glyphRange.length > 0 else { return }
+
+        let glyphIndex = glyphRange.location
+        let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let glyphLocation = layoutManager.location(forGlyphAt: glyphIndex)
+        let drawPoint = CGPoint(
+            x: textView.textContainerInset.left + glyphLocation.x - textView.editorContentOffset.x,
+            y: textView.textContainerInset.top + lineRect.minY + ((lineRect.height - markerSize.height) / 2) - textView.editorContentOffset.y
+        )
+        marker.draw(at: drawPoint, withAttributes: attributes)
+    }
+
+    private func drawLineEndInvisibleMarker(
+        _ marker: NSString,
+        nearCharacterIndex index: Int,
+        size markerSize: CGSize,
+        attributes: [NSAttributedString.Key: Any]
+    ) {
+        guard let textView else { return }
+        let layoutManager = textView.layoutManager
+        let textLength = textView.textStorage.length
+        let anchorIndex = max(0, min(index == 0 ? 0 : index - 1, max(0, textLength - 1)))
+        let glyphRange = layoutManager.glyphRange(
+            forCharacterRange: NSRange(location: anchorIndex, length: min(1, textLength - anchorIndex)),
+            actualCharacterRange: nil
+        )
+        guard glyphRange.length > 0 else { return }
+
+        let glyphIndex = glyphRange.location
+        let lineRect = layoutManager.lineFragmentUsedRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let drawPoint = CGPoint(
+            x: textView.textContainerInset.left + lineRect.maxX + 2 - textView.editorContentOffset.x,
+            y: textView.textContainerInset.top + lineRect.minY + ((lineRect.height - markerSize.height) / 2) - textView.editorContentOffset.y
+        )
+        marker.draw(at: drawPoint, withAttributes: attributes)
+    }
+}
+
+// MARK: - Editing Commands and Vim Helpers
+
+extension EditorInputTextView {
+    @objc private func insertBracketToken(_ sender: UIButton) {
+        guard isEditable, let token = sender.accessibilityIdentifier else { return }
+        _ = becomeFirstResponder()
+
+        let selection = selectedRange
+        if let pair = pairForToken(token) {
+            textStorage.replaceCharacters(in: selection, with: pair.open + pair.close)
+            selectedRange = NSRange(location: selection.location + pair.open.count, length: 0)
+            delegate?.textViewDidChange?(self)
+            return
+        }
+
+        textStorage.replaceCharacters(in: selection, with: token)
+        selectedRange = NSRange(location: selection.location + token.count, length: 0)
+        delegate?.textViewDidChange?(self)
+    }
+
+    private func pairForToken(_ token: String) -> (open: String, close: String)? {
+        switch token {
+        case "()": return ("(", ")")
+        case "{}": return ("{", "}")
+        case "[]": return ("[", "]")
+        case "\"\"": return ("\"", "\"")
+        case "''": return ("'", "'")
+        default: return nil
+        }
+    }
+
+    private func vimCommand(
+        input: String,
+        modifiers: UIKeyModifierFlags = [],
+        action: Selector,
+        title: String
+    ) -> UIKeyCommand {
+        let command = UIKeyCommand(input: input, modifierFlags: modifiers, action: action)
+        command.discoverabilityTitle = title
+        if #available(iOS 15.0, *) {
+            command.wantsPriorityOverSystemBehavior = true
+        }
+        return command
+    }
+
+    private func syncVimModeFromDefaults() {
+        let enabled = UserDefaults.standard.bool(forKey: vimModeDefaultsKey)
+        let interceptionEnabled = UserDefaults.standard.bool(forKey: vimInterceptionDefaultsKey)
+        if !enabled || !interceptionEnabled {
+            pendingDeleteCurrentLineCommand = false
+            if !isVimInsertMode {
+                setVimInsertMode(true)
+            }
+        }
+    }
+
+    private func setVimInsertMode(_ isInsertMode: Bool) {
+        isVimInsertMode = isInsertMode
+        pendingDeleteCurrentLineCommand = false
+        NotificationCenter.default.post(
+            name: .vimModeStateDidChange,
+            object: nil,
+            userInfo: ["insertMode": isInsertMode]
+        )
+    }
+
+    @objc private func handleVimModeStateDidChange(_ notification: Notification) {
+        if let insertMode = notification.userInfo?["insertMode"] as? Bool {
+            isVimInsertMode = insertMode
+            pendingDeleteCurrentLineCommand = false
+        } else {
+            syncVimModeFromDefaults()
+        }
+    }
+
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+        drawMatchingBracketHighlights()
+    }
+
+    private func drawMatchingBracketHighlights() {
+        guard textStorage.length <= 250_000, !matchingBracketHighlightRanges.isEmpty else { return }
+        layoutManager.ensureLayout(for: textContainer)
+        let textLength = textStorage.length
+        let fillColor = UIColor.systemOrange.withAlphaComponent(0.24)
+        let strokeColor = UIColor.systemOrange.withAlphaComponent(0.78)
+        for range in matchingBracketHighlightRanges where range.location != NSNotFound && NSMaxRange(range) <= textLength {
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+            guard glyphRange.length > 0 else { continue }
+            var rect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textContainer)
+            rect.origin.x += textContainerInset.left - contentOffset.x - 1
+            rect.origin.y += textContainerInset.top - contentOffset.y - 1
+            rect.size.width += 2
+            rect.size.height += 2
+            let path = UIBezierPath(roundedRect: rect, cornerRadius: 3)
+            fillColor.setFill()
+            path.fill()
+            strokeColor.setStroke()
+            path.lineWidth = 1 / max(1, traitCollection.displayScale)
+            path.stroke()
+        }
+    }
+
+    private func vimText() -> NSString {
+        (text ?? "") as NSString
+    }
+
+    private func collapseSelection() -> NSRange {
+        let current = selectedRange
+        if current.length == 0 {
+            return current
+        }
+        let collapsed = NSRange(location: current.location, length: 0)
+        selectedRange = collapsed
+        delegate?.textViewDidChangeSelection?(self)
+        return collapsed
+    }
+
+    private func moveCaret(to location: Int) {
+        let length = vimText().length
+        selectedRange = NSRange(location: max(0, min(location, length)), length: 0)
+        scrollRangeToVisible(selectedRange)
+        delegate?.textViewDidChangeSelection?(self)
+    }
+
+    private func currentLineRange(for range: NSRange? = nil) -> NSRange {
+        let target = range ?? collapseSelection()
+        return vimText().lineRange(for: NSRange(location: target.location, length: 0))
+    }
+
+    private func currentColumn(in lineRange: NSRange, location: Int) -> Int {
+        max(0, location - lineRange.location)
+    }
+
+    private func lineStartLocations() -> [Int] {
+        cachedLineStartOffsets()
+    }
+
+    private func wordCharacterSetContains(_ scalar: UnicodeScalar) -> Bool {
+        CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
+    }
+
+    private func moveWordForwardLocation(from location: Int) -> Int {
+        let nsText = vimText()
+        let length = nsText.length
+        var index = min(max(0, location), length)
+        while index < length {
+            let codeUnit = nsText.character(at: index)
+            guard let scalar = UnicodeScalar(codeUnit) else {
+                index += 1
+                continue
+            }
+            if wordCharacterSetContains(scalar) {
+                break
+            }
+            index += 1
+        }
+        while index < length {
+            let codeUnit = nsText.character(at: index)
+            guard let scalar = UnicodeScalar(codeUnit) else {
+                index += 1
+                continue
+            }
+            if !wordCharacterSetContains(scalar) {
+                break
+            }
+            index += 1
+        }
+        while index < length {
+            let codeUnit = nsText.character(at: index)
+            guard let scalar = UnicodeScalar(codeUnit) else {
+                index += 1
+                continue
+            }
+            if wordCharacterSetContains(scalar) {
+                break
+            }
+            index += 1
+        }
+        return min(index, length)
+    }
+
+    private func moveWordBackwardLocation(from location: Int) -> Int {
+        let nsText = vimText()
+        var index = max(0, min(location, nsText.length))
+        if index > 0 {
+            index -= 1
+        }
+        while index > 0 {
+            let codeUnit = nsText.character(at: index)
+            guard let scalar = UnicodeScalar(codeUnit) else {
+                index -= 1
+                continue
+            }
+            if wordCharacterSetContains(scalar) {
+                break
+            }
+            index -= 1
+        }
+        while index > 0 {
+            let previous = nsText.character(at: index - 1)
+            guard let scalar = UnicodeScalar(previous) else {
+                index -= 1
+                continue
+            }
+            if !wordCharacterSetContains(scalar) {
+                break
+            }
+            index -= 1
+        }
+        return index
+    }
+
+    private func deleteText(in range: NSRange) {
+        guard range.length > 0 else { return }
+        textStorage.replaceCharacters(in: range, with: "")
+        selectedRange = NSRange(location: min(range.location, vimText().length), length: 0)
+        delegate?.textViewDidChange?(self)
+        delegate?.textViewDidChangeSelection?(self)
+    }
+
+    @objc private func vimEscapeToNormalMode() {
+        if isVimInsertMode {
+            setVimInsertMode(false)
+        }
+    }
+
+    @objc private func vimEnterInsertMode() {
+        setVimInsertMode(true)
+    }
+
+    @objc private func vimAppendInsertMode() {
+        let current = collapseSelection()
+        if current.location < vimText().length {
+            moveCaret(to: current.location + 1)
+        }
+        setVimInsertMode(true)
+    }
+
+    @objc private func vimMoveLeft() {
+        let current = collapseSelection()
+        moveCaret(to: current.location - 1)
+    }
+
+    @objc private func vimMoveRight() {
+        let current = collapseSelection()
+        moveCaret(to: current.location + 1)
+    }
+
+    @objc private func vimMoveUp() {
+        let current = collapseSelection()
+        let starts = lineStartLocations()
+        guard let lineIndex = starts.lastIndex(where: { $0 <= current.location }), lineIndex > 0 else { return }
+        let currentLine = currentLineRange(for: current)
+        let column = currentColumn(in: currentLine, location: current.location)
+        let previousStart = starts[lineIndex - 1]
+        let previousLine = vimText().lineRange(for: NSRange(location: previousStart, length: 0))
+        let previousLineEnd = max(previousLine.location, previousLine.location + max(0, previousLine.length - 1))
+        moveCaret(to: min(previousStart + column, previousLineEnd))
+    }
+
+    @objc private func vimMoveDown() {
+        let current = collapseSelection()
+        let starts = lineStartLocations()
+        guard let lineIndex = starts.lastIndex(where: { $0 <= current.location }), lineIndex + 1 < starts.count else { return }
+        let currentLine = currentLineRange(for: current)
+        let column = currentColumn(in: currentLine, location: current.location)
+        let nextStart = starts[lineIndex + 1]
+        let nextLine = vimText().lineRange(for: NSRange(location: nextStart, length: 0))
+        let nextLineEnd = max(nextLine.location, nextLine.location + max(0, nextLine.length - 1))
+        moveCaret(to: min(nextStart + column, nextLineEnd))
+    }
+
+    @objc private func vimMoveWordForward() {
+        moveCaret(to: moveWordForwardLocation(from: collapseSelection().location))
+    }
+
+    @objc private func vimMoveWordBackward() {
+        moveCaret(to: moveWordBackwardLocation(from: collapseSelection().location))
+    }
+
+    @objc private func vimMoveToLineStart() {
+        let lineRange = currentLineRange()
+        moveCaret(to: lineRange.location)
+    }
+
+    @objc private func vimMoveToLineEnd() {
+        let lineRange = currentLineRange()
+        let lineEnd = max(lineRange.location, lineRange.location + max(0, lineRange.length - 1))
+        moveCaret(to: lineEnd)
+    }
+
+    @objc private func vimDeleteForward() {
+        let current = collapseSelection()
+        guard current.location < vimText().length else { return }
+        deleteText(in: NSRange(location: current.location, length: 1))
+    }
+
+    @objc private func vimDeleteLineStep() {
+        if pendingDeleteCurrentLineCommand {
+            pendingDeleteCurrentLineCommand = false
+            let lineRange = currentLineRange()
+            deleteText(in: lineRange)
+            return
+        }
+        pendingDeleteCurrentLineCommand = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.pendingDeleteCurrentLineCommand = false
+        }
+    }
+}
+
+final class CurrentLineHighlightOverlayView: UIView {
+    weak var textView: EditorInputTextView?
+    var isCurrentLineHighlightEnabled: Bool = false {
+        didSet {
+            if oldValue != isCurrentLineHighlightEnabled {
+                setNeedsDisplay()
+            }
+        }
+    }
+    var currentLineHighlightColor: UIColor = UIColor.systemBlue.withAlphaComponent(0.22) {
+        didSet {
+            if oldValue != currentLineHighlightColor {
+                setNeedsDisplay()
+            }
+        }
+    }
+
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isOpaque = false
+        backgroundColor = .clear
+        isUserInteractionEnabled = false
+        contentMode = .redraw
+    }
+
+    override func draw(_ rect: CGRect) {
+        super.draw(rect)
+        drawCurrentLineHighlight()
+    }
+
+    private func drawCurrentLineHighlight() {
+        guard isCurrentLineHighlightEnabled,
+              let textView,
+              textView.isFirstResponder,
+              textView.textStorage.length <= 250_000 else { return }
+
+        let inset = textView.textContainerInset
+        let highlightX = max(0, inset.left - textView.editorContentOffset.x)
+        let visibleWidth = max(0, bounds.width - highlightX - inset.right)
+        let textLength = textView.textStorage.length
+
+        if textLength == 0 {
+            let height = textView.font?.lineHeight ?? UIFont.monospacedSystemFont(ofSize: 14, weight: .regular).lineHeight
+            currentLineHighlightColor.setFill()
+            UIRectFill(CGRect(x: highlightX, y: inset.top - textView.editorContentOffset.y, width: visibleWidth, height: height))
+            return
+        }
+
+        textView.layoutManager.ensureLayout(for: textView.textContainer)
+        let clampedLocation = min(max(0, textView.selectedRange.location), textLength)
+        let nsText = textView.textStorage.string as NSString
+        if clampedLocation == textLength && nsText.length > 0 && nsText.character(at: nsText.length - 1) == 10 {
+            let extraLineRect = textView.layoutManager.extraLineFragmentRect
+            if !extraLineRect.isEmpty {
+                currentLineHighlightColor.setFill()
+                UIRectFill(CGRect(
+                    x: highlightX,
+                    y: extraLineRect.minY + inset.top - textView.editorContentOffset.y,
+                    width: visibleWidth,
+                    height: max(extraLineRect.height, textView.font?.lineHeight ?? 0)
+                ))
+                return
+            }
+        }
+
+        let characterLocation = min(clampedLocation, textLength - 1)
+        let glyphIndex = textView.layoutManager.glyphIndexForCharacter(at: characterLocation)
+        guard glyphIndex < textView.layoutManager.numberOfGlyphs else { return }
+        let lineRect = textView.layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        currentLineHighlightColor.setFill()
+        UIRectFill(CGRect(
+            x: highlightX,
+            y: lineRect.minY + inset.top - textView.editorContentOffset.y,
+            width: visibleWidth,
+            height: lineRect.height
+        ))
+    }
+}
+
+// MARK: - Line Number Views
+
+final class LineNumberGutterView: UIView {
+    weak var textView: UITextView?
+    var lineStarts: [Int] = [0]
+    var font: UIFont = UIFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular)
+    var textColor: UIColor = .secondaryLabel
+
+    override func draw(_ rect: CGRect) {
+        guard let textView else { return }
+        let layoutManager = textView.layoutManager
+        guard !lineStarts.isEmpty else { return }
+
+        // TextKit rectangles are in text-container coordinates, not scroll-view coordinates.
+        let visibleRect = CGRect(
+            x: 0, y: textView.editorContentOffset.y - textView.textContainerInset.top - 80,
+            width: textView.textContainer.size.width, height: textView.bounds.height + 160)
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .right
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: textColor,
+            .paragraphStyle: paragraph
+        ]
+        let rightPadding: CGFloat = 6
+        let textContainerTop = textView.textContainerInset.top
+        let contentOffsetY = textView.editorContentOffset.y
+        if glyphRange.length == 0 {
+            // Empty documents and the final empty paragraph have no glyphs.
+            let extra = layoutManager.extraLineFragmentRect
+            let y = (extra.isEmpty ? 0 : extra.minY) + textContainerTop - contentOffsetY
+            NSString(string: String(lineStarts.count)).draw(
+                in: CGRect(x: 0, y: y, width: bounds.width - rightPadding, height: font.lineHeight),
+                withAttributes: attrs)
+            return
+        }
+        let stickyTopY = textContainerTop + 1
+        let visibleStartChar = layoutManager.characterIndexForGlyph(at: glyphRange.location)
+        let stickyLineIndex = lineNumberForCharacterIndex(visibleStartChar)
+        let stickyLineStart = lineStarts[stickyLineIndex]
+        let shouldShowStickyLineNumber = stickyLineStart < visibleStartChar
+        var drawnLineIndices = Set<Int>()
+
+        layoutManager.enumerateLineFragments(forGlyphRange: glyphRange) { _, usedRect, _, glyphRange, _ in
+            let charIndex = layoutManager.characterIndexForGlyph(at: glyphRange.location)
+            let lineIndex = self.lineNumberForCharacterIndex(charIndex)
+            if shouldShowStickyLineNumber && lineIndex == stickyLineIndex {
+                return
+            }
+            if drawnLineIndices.contains(lineIndex) {
+                return
+            }
+            drawnLineIndices.insert(lineIndex)
+
+            let lineNumber = lineIndex + 1
+            let drawY = usedRect.minY + textContainerTop - contentOffsetY
+            let drawRect = CGRect(x: 0, y: drawY, width: self.bounds.width - rightPadding, height: usedRect.height)
+            NSString(string: String(lineNumber)).draw(in: drawRect, withAttributes: attrs)
+        }
+
+        if shouldShowStickyLineNumber {
+            let lineNumber = stickyLineIndex + 1
+            let drawRect = CGRect(x: 0, y: stickyTopY, width: bounds.width - rightPadding, height: font.lineHeight)
+            NSString(string: String(lineNumber)).draw(in: drawRect, withAttributes: attrs)
+        }
+        if !layoutManager.extraLineFragmentRect.isEmpty,
+           !drawnLineIndices.contains(lineStarts.count - 1) {
+            let y = layoutManager.extraLineFragmentRect.minY + textContainerTop - contentOffsetY
+            NSString(string: String(lineStarts.count)).draw(
+                in: CGRect(x: 0, y: y, width: bounds.width - rightPadding, height: font.lineHeight),
+                withAttributes: attrs)
+        }
+    }
+
+    private func lineNumberForCharacterIndex(_ index: Int) -> Int {
+        var low = 0
+        var high = lineStarts.count - 1
+        while low <= high {
+            let mid = (low + high) / 2
+            if lineStarts[mid] <= index {
+                low = mid + 1
+            } else {
+                high = mid - 1
+            }
+        }
+        return max(0, min(high, lineStarts.count - 1))
+    }
+}
+
+// MARK: - iOS Editor Container
+
+final class LineNumberedTextViewContainer: UIView, UIScrollViewDelegate {
+    let lineNumberView = LineNumberGutterView()
+    let textView: EditorInputTextView
+    let horizontalScrollView = UIScrollView()
+    private var textCanvasWidthConstraint: NSLayoutConstraint?
+    private var wrapsText = true
+    private var textCanvasWidth: CGFloat = 0
+    let currentLineHighlightOverlayView = CurrentLineHighlightOverlayView()
+    let invisibleCharactersOverlayView = InvisibleCharacterOverlayView()
+    private let divider = UIView()
+    private var lineNumberWidthConstraint: NSLayoutConstraint?
+    private var cachedLineStarts: [Int] = [0]
+    private var cachedFontPointSize: CGFloat = 0
+    private var cachedLineNumberWidth: CGFloat = 46
+    private var cachedTextLength: Int = 0
+#if os(iOS)
+    private var keyboardAccessoryRequested = false
+    private var softwareKeyboardVisible = false
+    private(set) var keyboardAccessoryOverlay: UIView?
+#endif
+
+    override init(frame: CGRect) {
+        textView = EditorInputTextView()
+        super.init(frame: frame)
+        configureViews()
+    }
+
+    init(textView: EditorInputTextView) {
+        self.textView = textView
+        super.init(frame: .zero)
+        configureViews()
+    }
+
+    required init?(coder: NSCoder) {
+        textView = EditorInputTextView()
+        super.init(coder: coder)
+        configureViews()
+    }
+
+    func hideSyntheticLineGutter() {
+        lineNumberView.isHidden = true
+        divider.isHidden = true
+        lineNumberWidthConstraint?.constant = 0
+    }
+
+    private func configureViews() {
+        lineNumberView.translatesAutoresizingMaskIntoConstraints = false
+        textView.translatesAutoresizingMaskIntoConstraints = false
+        textView.editorContainer = self
+        horizontalScrollView.translatesAutoresizingMaskIntoConstraints = false
+        horizontalScrollView.contentInsetAdjustmentBehavior = .never
+        horizontalScrollView.alwaysBounceVertical = false
+        horizontalScrollView.isDirectionalLockEnabled = true
+        horizontalScrollView.showsVerticalScrollIndicator = false
+        horizontalScrollView.delegate = self
+#if os(iOS)
+        horizontalScrollView.keyboardDismissMode = UIDevice.current.userInterfaceIdiom == .phone ? .onDrag : .none
+#endif
+        textView.isDirectionalLockEnabled = true
+        currentLineHighlightOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        invisibleCharactersOverlayView.translatesAutoresizingMaskIntoConstraints = false
+        lineNumberView.textView = textView
+        currentLineHighlightOverlayView.textView = textView
+        textView.currentLineHighlightOverlayView = currentLineHighlightOverlayView
+        invisibleCharactersOverlayView.textView = textView
+        textView.invisibleCharactersOverlayView = invisibleCharactersOverlayView
+
+        lineNumberView.backgroundColor = UIColor.secondarySystemBackground.withAlphaComponent(0.65)
+        lineNumberView.textColor = UIColor.label.withAlphaComponent(0.70)
+        lineNumberView.isUserInteractionEnabled = false
+
+        textView.contentInsetAdjustmentBehavior = .never
+        syncEditorInsets()
+
+        divider.translatesAutoresizingMaskIntoConstraints = false
+        divider.backgroundColor = UIColor.separator.withAlphaComponent(0.6)
+
+        addSubview(lineNumberView)
+        addSubview(divider)
+        addSubview(currentLineHighlightOverlayView)
+        addSubview(horizontalScrollView)
+        horizontalScrollView.addSubview(textView)
+        addSubview(invisibleCharactersOverlayView)
+
+        let dividerWidthConstraint = divider.widthAnchor.constraint(equalToConstant: 1)
+        dividerWidthConstraint.priority = .defaultHigh
+
+        NSLayoutConstraint.activate([
+            lineNumberView.leadingAnchor.constraint(equalTo: leadingAnchor),
+            lineNumberView.topAnchor.constraint(equalTo: topAnchor),
+            lineNumberView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            divider.leadingAnchor.constraint(equalTo: lineNumberView.trailingAnchor),
+            divider.topAnchor.constraint(equalTo: topAnchor),
+            divider.bottomAnchor.constraint(equalTo: bottomAnchor),
+            dividerWidthConstraint,
+
+            currentLineHighlightOverlayView.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            currentLineHighlightOverlayView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            currentLineHighlightOverlayView.topAnchor.constraint(equalTo: topAnchor),
+            currentLineHighlightOverlayView.bottomAnchor.constraint(equalTo: bottomAnchor),
+
+            horizontalScrollView.leadingAnchor.constraint(equalTo: divider.trailingAnchor),
+            horizontalScrollView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            horizontalScrollView.topAnchor.constraint(equalTo: topAnchor),
+            horizontalScrollView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            textView.leadingAnchor.constraint(equalTo: horizontalScrollView.contentLayoutGuide.leadingAnchor),
+            textView.trailingAnchor.constraint(equalTo: horizontalScrollView.contentLayoutGuide.trailingAnchor),
+            textView.topAnchor.constraint(equalTo: horizontalScrollView.contentLayoutGuide.topAnchor),
+            textView.bottomAnchor.constraint(equalTo: horizontalScrollView.contentLayoutGuide.bottomAnchor),
+            textView.heightAnchor.constraint(equalTo: horizontalScrollView.frameLayoutGuide.heightAnchor),
+
+            invisibleCharactersOverlayView.leadingAnchor.constraint(equalTo: horizontalScrollView.leadingAnchor),
+            invisibleCharactersOverlayView.trailingAnchor.constraint(equalTo: horizontalScrollView.trailingAnchor),
+            invisibleCharactersOverlayView.topAnchor.constraint(equalTo: horizontalScrollView.topAnchor),
+            invisibleCharactersOverlayView.bottomAnchor.constraint(equalTo: horizontalScrollView.bottomAnchor)
+        ])
+
+        let canvasWidth = textView.widthAnchor.constraint(equalToConstant: 1)
+        canvasWidth.isActive = true
+        textCanvasWidthConstraint = canvasWidth
+
+        let widthConstraint = lineNumberView.widthAnchor.constraint(equalToConstant: 46)
+        widthConstraint.isActive = true
+        lineNumberWidthConstraint = widthConstraint
+    }
+
+#if os(iOS)
+    func setKeyboardAccessoryRequested(_ requested: Bool, rebuild: Bool) {
+        keyboardAccessoryRequested = requested
+        if rebuild {
+            keyboardAccessoryOverlay?.removeFromSuperview()
+            keyboardAccessoryOverlay = nil
+        }
+        refreshKeyboardAccessoryOverlay()
+    }
+
+    func setSoftwareKeyboardVisible(_ visible: Bool) {
+        softwareKeyboardVisible = visible
+        refreshKeyboardAccessoryOverlay()
+    }
+
+    func updateKeyboardAccessoryColor(_ color: UIColor) {
+        guard let overlay = keyboardAccessoryOverlay else { return }
+        if #available(iOS 26.0, *) {
+            overlay.backgroundColor = .clear
+        } else {
+            overlay.backgroundColor = UIAccessibility.isReduceTransparencyEnabled ? color : .clear
+        }
+    }
+
+    func refreshKeyboardAccessoryOverlay() {
+        let shouldShow = keyboardAccessoryRequested && softwareKeyboardVisible && textView.isFirstResponder
+        guard shouldShow else {
+            keyboardAccessoryOverlay?.isHidden = true
+            return
+        }
+        if keyboardAccessoryOverlay == nil {
+            let overlay = textView.makeKeyboardAccessoryView(isEditorOverlay: true)
+            addSubview(overlay)
+            NSLayoutConstraint.activate([
+                overlay.leadingAnchor.constraint(equalTo: leadingAnchor),
+                overlay.trailingAnchor.constraint(equalTo: trailingAnchor),
+                overlay.bottomAnchor.constraint(equalTo: keyboardLayoutGuide.topAnchor)
+            ])
+            keyboardAccessoryOverlay = overlay
+        }
+        keyboardAccessoryOverlay?.isHidden = false
+    }
+#endif
+
+    func applyLineNumberColors(editorBackground: UIColor, textColor: UIColor, translucentBackgroundEnabled: Bool) {
+        backgroundColor = translucentBackgroundEnabled ? .clear : editorBackground
+        // The gutter is part of the editor surface, not a system sidebar.
+        // Painting secondarySystemBackground here made it remain opaque white
+        // in iPad translucent mode while the text canvas correctly showed the
+        // window material.
+        lineNumberView.backgroundColor = translucentBackgroundEnabled ? .clear : editorBackground
+        divider.backgroundColor = translucentBackgroundEnabled
+            ? textColor.withAlphaComponent(0.16)
+            : UIColor.separator.withAlphaComponent(0.6)
+        lineNumberView.textColor = textColor.withAlphaComponent(0.70)
+    }
+
+    override func layoutSubviews() {
+        updateHorizontalCanvas(wrapped: wrapsText, width: textCanvasWidth)
+        super.layoutSubviews()
+        syncEditorInsets()
+        lineNumberView.setNeedsDisplay()
+        currentLineHighlightOverlayView.setNeedsDisplay()
+    }
+
+    func updateHorizontalCanvas(wrapped: Bool, width: CGFloat) {
+        wrapsText = wrapped
+        textCanvasWidth = width
+        let viewportWidth = max(1, bounds.width - (lineNumberWidthConstraint?.constant ?? 46) - 1)
+        let canvasWidth = wrapped ? viewportWidth : max(viewportWidth, width)
+        if textCanvasWidthConstraint?.constant != canvasWidth {
+            textCanvasWidthConstraint?.constant = canvasWidth
+        }
+        horizontalScrollView.isScrollEnabled = !wrapped
+        horizontalScrollView.showsHorizontalScrollIndicator = !wrapped
+        if wrapped, horizontalScrollView.contentOffset.x != 0 {
+            horizontalScrollView.setContentOffset(.zero, animated: false)
+        }
+    }
+
+    func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        syncEditorInsets()
+        textView.delegate?.scrollViewDidScroll?(textView)
+    }
+
+    private func syncEditorInsets() {
+        let desiredTextInsets = UIEdgeInsets(top: 8, left: 8, bottom: 8 + textView.editingLineHeight * 3, right: 8)
+        if textView.textContainerInset != desiredTextInsets {
+            textView.textContainerInset = desiredTextInsets
+        }
+        if textView.contentInset != .zero {
+            textView.contentInset = .zero
+        }
+        let indicatorInsets = UIEdgeInsets(top: 0, left: 0, bottom: 0,
+            right: max(0, textView.bounds.width - textView.editorViewport.maxX))
+        if textView.verticalScrollIndicatorInsets != indicatorInsets {
+            textView.verticalScrollIndicatorInsets = indicatorInsets
+        }
+        if textView.horizontalScrollIndicatorInsets != .zero {
+            textView.horizontalScrollIndicatorInsets = .zero
+        }
+    }
+
+    func updateLineNumbers(for text: String, fontSize: CGFloat) {
+        var needsDisplayRefresh = false
+        let numberFont = UIFont.monospacedDigitSystemFont(ofSize: max(11, fontSize - 1), weight: .regular)
+        if abs(cachedFontPointSize - numberFont.pointSize) > 0.01 {
+            lineNumberView.font = numberFont
+            cachedFontPointSize = numberFont.pointSize
+            needsDisplayRefresh = true
+        }
+        let lineStarts = EditorLineStartIndex.offsets(in: text)
+        if lineStarts != cachedLineStarts {
+            cachedLineStarts = lineStarts
+            lineNumberView.lineStarts = lineStarts
+            cachedTextLength = text.utf16.count
+            needsDisplayRefresh = true
+        }
+        let lineCount = max(1, lineStarts.count)
+        let digits = max(2, String(lineCount).count)
+        let glyphWidth = NSString(string: "8").size(withAttributes: [.font: numberFont]).width
+        let targetWidth = ceil((glyphWidth * CGFloat(digits)) + 14)
+        if abs(cachedLineNumberWidth - targetWidth) > 0.5 {
+            cachedLineNumberWidth = targetWidth
+            lineNumberWidthConstraint?.constant = targetWidth
+            setNeedsLayout()
+            layoutIfNeeded()
+            needsDisplayRefresh = true
+        }
+        if needsDisplayRefresh {
+            lineNumberView.setNeedsDisplay()
+        }
+    }
+
+    func updateLineNumbersAfterInteractiveEdit(for text: String, fontSize: CGFloat) {
+        let textLength = text.utf16.count
+        guard textLength <= 250_000 || abs(textLength - cachedTextLength) > 2_000 else {
+            lineNumberView.setNeedsDisplay()
+            return
+        }
+        updateLineNumbers(for: text, fontSize: fontSize)
+    }
+
+    func updateLineNumbers(
+        afterReplacing range: NSRange,
+        with replacement: String,
+        resultingText: String,
+        fontSize: CGFloat
+    ) {
+        cachedLineStarts = EditorLineStartIndex.applying(
+            replacementRange: range,
+            replacement: replacement,
+            to: cachedLineStarts
+        )
+        lineNumberView.lineStarts = cachedLineStarts
+        cachedTextLength = resultingText.utf16.count
+        let numberFont = UIFont.monospacedDigitSystemFont(ofSize: max(11, fontSize - 1), weight: .regular)
+        if abs(cachedFontPointSize - numberFont.pointSize) > 0.01 {
+            lineNumberView.font = numberFont
+            cachedFontPointSize = numberFont.pointSize
+        }
+        let digits = max(2, String(max(1, cachedLineStarts.count)).count)
+        let glyphWidth = NSString(string: "8").size(withAttributes: [.font: numberFont]).width
+        let targetWidth = ceil((glyphWidth * CGFloat(digits)) + 14)
+        if abs(cachedLineNumberWidth - targetWidth) > 0.5 {
+            cachedLineNumberWidth = targetWidth
+            lineNumberWidthConstraint?.constant = targetWidth
+            setNeedsLayout()
+        }
+        lineNumberView.setNeedsDisplay()
+    }
+}
+
+// MARK: - iOS SwiftUI Bridge
+
+struct CustomTextEditor: UIViewRepresentable {
+    @Binding var text: String
+    let document: (any EditorDocument)?
+
+    let documentID: UUID?
+    let documentResourceID: String
+    let storedCaretLocation: Int?
+    let externalEditRevision: Int
+    let language: String
+    let colorScheme: ColorScheme
+    let ignoreBackgroundOverrides: Bool
+    let fontSize: CGFloat
+    @Binding var isLineWrapEnabled: Bool
+    let isLargeFileMode: Bool
+    let showsCodeMinimap: Bool
+    let translucentBackgroundEnabled: Bool
+    let showKeyboardAccessoryBar: Bool
+    let softwareKeyboardVisible: Bool
+    let showLineNumbers: Bool
+    let formattingPreferences: EditorFormattingPreferences
+    let showInvisibleCharacters: Bool
+    let highlightCurrentLine: Bool
+    let highlightMatchingBrackets: Bool
+    let showIndentationGuides: Bool
+    let showScopeGuides: Bool
+    let highlightScopeBackground: Bool
+    let indentStyle: String
+    let indentWidth: Int
+    let autoIndentEnabled: Bool
+    let autoCloseBracketsEnabled: Bool
+    let highlightRefreshToken: Int
+    let isTabLoadingContent: Bool
+    let isReadOnly: Bool
+    let onFontSizeChange: ((CGFloat) -> Void)?
+    let onTextMutation: ((EditorTextMutation) -> Void)?
+    let onShortcutAction: ((EditorShortcutAction) -> Void)?
+
+    /// Persisted caret locations are observations of UIKit, not navigation
+    /// commands. Replaying them within the same resource can rewind a newer
+    /// insertion point or collapse a selection. Explicit navigation has its own
+    /// move-to-line/range commands; activation/loading completion restores a bookmark.
+    static func shouldRestoreStoredCaret(
+        didSwitchDocumentResource: Bool,
+        didFinishTabLoad: Bool = false
+    ) -> Bool {
+        didSwitchDocumentResource || didFinishTabLoad
+    }
+
+    private var fontName: String {
+        UserDefaults.standard.string(forKey: SettingsPreferenceKey.editorFontName) ?? ""
+    }
+
+    private var useSystemFont: Bool {
+        UserDefaults.standard.bool(forKey: SettingsPreferenceKey.useSystemFont)
+    }
+
+    private var lineHeightMultiple: CGFloat {
+        let stored = UserDefaults.standard.double(forKey: SettingsPreferenceKey.lineHeight)
+        return CGFloat(stored > 0 ? stored : 1.0)
+    }
+
+    private var letterSpacing: CGFloat {
+        CGFloat(UserDefaults.standard.double(forKey: SettingsPreferenceKey.letterSpacing))
+    }
+
+    private func applyTextAssistancePreferences(_ textView: UITextView) {
+        let profile = EditorWritingAssistanceProfile.resolved(language: language)
+        textView.autocorrectionType = profile.autocorrection ? .yes : .no
+        textView.autocapitalizationType = profile.autocapitalization ? .sentences : .none
+        textView.spellCheckingType = profile.spellChecking ? .yes : .no
+    }
+
+    private func resolvedUIFont(size: CGFloat? = nil) -> UIFont {
+        let targetSize = size ?? fontSize
+        if useSystemFont {
+            return UIFont.systemFont(ofSize: targetSize)
+        }
+        if let named = UIFont(name: fontName, size: targetSize) {
+            return named
+        }
+        return UIFont.monospacedSystemFont(ofSize: targetSize, weight: .regular)
+    }
+
+    private func currentLineHighlightColor(theme: EditorTheme, colorScheme: ColorScheme) -> UIColor {
+        UIColor(theme.selection).withAlphaComponent(colorScheme == .dark ? 0.24 : 0.16)
+    }
+
+    private func applyInvisibleCharacterPreference(_ textView: UITextView) {
+        let shouldShow = showInvisibleCharacters
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: "SettingsShowInvisibleCharacters") != shouldShow {
+            defaults.set(shouldShow, forKey: "SettingsShowInvisibleCharacters")
+        }
+        if defaults.bool(forKey: "NSShowAllInvisibles") != shouldShow {
+            defaults.set(shouldShow, forKey: "NSShowAllInvisibles")
+        }
+        if defaults.bool(forKey: "NSShowControlCharacters") != shouldShow {
+            defaults.set(shouldShow, forKey: "NSShowControlCharacters")
+        }
+        if let editorTextView = textView as? EditorInputTextView {
+            if editorTextView.rendersInvisibleCharacters != shouldShow {
+                editorTextView.rendersInvisibleCharacters = shouldShow
+            }
+            if editorTextView.rendersIndentationGuides != showIndentationGuides {
+                editorTextView.rendersIndentationGuides = showIndentationGuides
+            }
+            let guideWidth = max(1, indentWidth)
+            if editorTextView.indentationGuideWidth != guideWidth {
+                editorTextView.indentationGuideWidth = guideWidth
+            }
+        }
+    }
+
+    private func configurePointerSelectionBehavior(_ textView: UITextView) {
+#if os(visionOS)
+        // Keep the system pointer selection interaction in control of drags.
+        // Text transfers otherwise take precedence over selecting editor text.
+        textView.textDragInteraction?.isEnabled = false
+#else
+        // Keep UIKit's native pointer/text-selection interaction in control of
+        // mouse drags on both iPad and iPhone. Text drag transfers otherwise
+        // claim the drag before the caret/selection interaction can update.
+        textView.textDragInteraction?.isEnabled = EditorPointerSelectionPolicy.shouldEnableTextDragInteraction(
+            for: UIDevice.current.userInterfaceIdiom
+        )
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            textView.keyboardDismissMode = .none
+        } else {
+            // A phone editor should release the software keyboard as soon as
+            // the document is scrolled. `.interactive` only follows a downward
+            // drag and leaves it visible for ordinary reading scrolls.
+            textView.keyboardDismissMode = .onDrag
+        }
+        #endif
+    }
+
+    private func applyWrapMode(
+        _ shouldWrapText: Bool,
+        textView: UITextView,
+        preserveOffset: Bool = true,
+        recomputeNoWrapWidth: Bool = false,
+        knownNoWrapVisualColumns: Int? = nil
+    ) {
+        let desiredLineBreakMode: NSLineBreakMode = shouldWrapText
+            ? (isLineWrapEnabled ? .byWordWrapping : .byCharWrapping)
+            : .byClipping
+        textView.accessibilityHint = shouldWrapText && !isLineWrapEnabled
+            ? NSLocalizedString("Long lines wrap automatically to keep editing responsive.", comment: "Editor safety wrap accessibility hint")
+            : nil
+        let visibleWidth = max(1, textView.editorViewport.width - textView.textContainerInset.left - textView.textContainerInset.right)
+        let targetContainerWidth: CGFloat
+        if shouldWrapText {
+            targetContainerWidth = visibleWidth
+        } else if let knownNoWrapVisualColumns {
+            targetContainerWidth = noWrapContainerWidth(
+                forVisualColumnCount: knownNoWrapVisualColumns,
+                textView: textView,
+                visibleWidth: visibleWidth
+            )
+        } else if !recomputeNoWrapWidth,
+                  textView.textContainer.lineBreakMode == .byClipping,
+                  !textView.textContainer.widthTracksTextView,
+                  textView.textContainer.size.width >= visibleWidth {
+            // Keep the existing no-wrap capacity during ordinary edits. The
+            // full-document measurement is reserved for initial installs and
+            // resource switches; resizing TextKit on every character causes
+            // UIKit to reposition the viewport.
+            let existingWidth = textView.textContainer.size.width
+            (textView as? EditorInputTextView)?.rememberPreferredWrapLayout(
+                shouldWrapText: false,
+                containerWidth: existingWidth
+            )
+            textView.isScrollEnabled = true
+            textView.alwaysBounceHorizontal = false
+            textView.showsHorizontalScrollIndicator = false
+            enforceNoWrapContentWidth(textView, containerWidth: existingWidth)
+            return
+        } else {
+            targetContainerWidth = noWrapContainerWidth(for: textView, visibleWidth: visibleWidth)
+        }
+        let targetContainerSize = CGSize(width: targetContainerWidth, height: .greatestFiniteMagnitude)
+        let needsUpdate =
+            textView.textContainer.lineBreakMode != desiredLineBreakMode ||
+            textView.textContainer.widthTracksTextView != shouldWrapText ||
+            abs(textView.textContainer.size.width - targetContainerSize.width) > 1
+        textView.isScrollEnabled = true
+        textView.alwaysBounceHorizontal = false
+        textView.showsHorizontalScrollIndicator = false
+        if !shouldWrapText {
+            enforceNoWrapContentWidth(textView, containerWidth: targetContainerWidth)
+        }
+        guard needsUpdate else {
+            (textView as? EditorInputTextView)?.rememberPreferredWrapLayout(
+                shouldWrapText: shouldWrapText,
+                containerWidth: targetContainerWidth,
+                lineBreakMode: desiredLineBreakMode
+            )
+            return
+        }
+
+        let priorOffset = textView.editorContentOffset
+        textView.textContainer.lineBreakMode = desiredLineBreakMode
+        textView.textContainer.widthTracksTextView = shouldWrapText
+        textView.textContainer.size = targetContainerSize
+        (textView as? EditorInputTextView)?.rememberPreferredWrapLayout(
+            shouldWrapText: shouldWrapText,
+            containerWidth: targetContainerWidth,
+            lineBreakMode: desiredLineBreakMode
+        )
+        if textView.textStorage.length <= 300_000 {
+            textView.layoutManager.ensureLayout(for: textView.textContainer)
+        }
+        if !shouldWrapText {
+            enforceNoWrapContentWidth(textView, containerWidth: targetContainerWidth)
+        }
+        guard preserveOffset else { return }
+        let inset = textView.adjustedContentInset
+        let minY = -inset.top
+        let maxY = max(minY, textView.contentSize.height - textView.bounds.height + inset.bottom)
+        let clampedY = min(max(priorOffset.y, minY), maxY)
+        let maxX = max(0, targetContainerWidth + textView.textContainerInset.left + textView.textContainerInset.right - textView.editorViewport.width)
+        let clampedX = shouldWrapText ? 0 : min(max(priorOffset.x, 0), maxX)
+        textView.setEditorContentOffset(CGPoint(x: clampedX, y: clampedY), animated: false)
+    }
+
+    private func enforceNoWrapContentWidth(_ textView: UITextView, containerWidth: CGFloat) {
+        let horizontalInsets = textView.textContainerInset.left + textView.textContainerInset.right
+        // Expanding UIScrollView.contentSize alone does not expand UITextView's
+        // drawing canvas. Its frame must cover the laid-out line, with the
+        // viewport owned by the horizontal scroll view.
+        (textView as? EditorInputTextView)?.editorContainer?.updateHorizontalCanvas(
+            wrapped: false, width: containerWidth + horizontalInsets)
+    }
+
+    private func noWrapContainerWidth(for textView: UITextView, visibleWidth: CGFloat) -> CGFloat {
+        let text = textView.text ?? ""
+        let minimumScrollableWidth = noWrapMinimumScrollableWidth(visibleWidth: visibleWidth)
+        guard !text.isEmpty else { return minimumScrollableWidth }
+        let tabWidth = max(1, indentWidth)
+        let font = textView.font ?? resolvedUIFont()
+        guard let editorTextView = textView as? EditorInputTextView else { return minimumScrollableWidth }
+        return editorTextView.cachedNoWrapWidth(visibleWidth: visibleWidth, tabWidth: tabWidth, font: font, letterSpacing: letterSpacing) {
+            // Measure actual glyph advances, including fallback fonts, tabs and kerning.
+            // Character counts cannot bound CJK/emoji or proportional-font line widths.
+            var attributes = textView.typingAttributes
+            attributes[.font] = font
+            attributes[.kern] = letterSpacing
+            let measuredWidth = ceil(measuredEditorTextWidth(text, attributes: attributes)) + 32
+            return max(minimumScrollableWidth, measuredWidth)
+        }
+    }
+
+    private func noWrapContainerWidth(
+        forVisualColumnCount visualColumnCount: Int,
+        textView: UITextView,
+        visibleWidth: CGFloat
+    ) -> CGFloat {
+        let minimumScrollableWidth = noWrapMinimumScrollableWidth(visibleWidth: visibleWidth)
+        guard visualColumnCount > 0 else { return minimumScrollableWidth }
+        let font = textView.font ?? resolvedUIFont()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .kern: letterSpacing
+        ]
+        // Count UTF-16 columns conservatively, then use the widest common
+        // advance across the active font and its CJK/emoji fallbacks. This is
+        // intentionally bounded work after a chunked install: the document was
+        // already scanned while appending and is not measured a second time.
+        let widestAdvance = ["W", "漢", "😀"]
+            .map { ceil(($0 as NSString).size(withAttributes: attributes).width) }
+            .max() ?? ceil(font.pointSize)
+        let measuredWidth = (CGFloat(visualColumnCount) * max(1, widestAdvance)) + 32
+        return max(minimumScrollableWidth, measuredWidth)
+    }
+
+    private func noWrapMinimumScrollableWidth(visibleWidth: CGFloat) -> CGFloat {
+        // An empty or short document should not expose an arbitrary horizontal
+        // canvas. Long lines expand the cached width from their measured glyph
+        // advances as soon as they need more room.
+        return visibleWidth
+    }
+
+    private func shouldWrapText(for source: String) -> Bool {
+        isLineWrapEnabled || shouldUseMobileSafetyWrap(
+            text: source as NSString,
+            requestedWrap: isLineWrapEnabled
+        )
+    }
+
+    func makeUIView(context: Context) -> LineNumberedTextViewContainer {
+        let container = LineNumberedTextViewContainer()
+        let textView = container.textView
+        let theme = currentEditorTheme(
+            colorScheme: colorScheme,
+            formatting: formattingPreferences,
+            ignoreBackgroundOverrides: ignoreBackgroundOverrides
+        )
+
+        textView.delegate = context.coordinator
+        textView.onConfiguredAppShortcut = onShortcutAction
+        textView.isEditable = !isReadOnly
+        textView.isSelectable = true
+        // Chunked installs can begin from the first main-run-loop turn. Enable
+        // non-contiguous TextKit layout before any text is appended; setting it
+        // later in updateUIView makes every growing chunk lay out the complete
+        // single-line document synchronously (especially pathological Unicode
+        // JSON), starving the run loop and making the editor appear frozen.
+        textView.layoutManager.allowsNonContiguousLayout = true
+        textView.markdownFormattingEnabled = language.lowercased() == "markdown"
+        let initialFont = resolvedUIFont()
+        textView.font = initialFont
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineHeightMultiple = max(0.9, lineHeightMultiple)
+        let baseColor = UIColor(theme.text)
+        var typing = textView.typingAttributes
+        typing[.paragraphStyle] = paragraphStyle
+        typing[.foregroundColor] = baseColor
+        typing[.font] = textView.font ?? initialFont
+        typing[.kern] = letterSpacing
+        textView.typingAttributes = typing
+        let initialLength = (text as NSString).length
+        if shouldUseChunkedLargeFileInstall(
+            isLargeFileMode: isLargeFileMode,
+            textLength: initialLength,
+            language: language,
+            text: text as NSString
+        ) {
+            textView.text = ""
+        } else {
+            textView.text = text
+        }
+        textView.invalidateTextMetrics()
+        if text.count <= 200_000 {
+            textView.textStorage.beginEditing()
+            textView.textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: NSRange(location: 0, length: textView.textStorage.length))
+            textView.textStorage.addAttribute(.kern, value: letterSpacing, range: NSRange(location: 0, length: textView.textStorage.length))
+            textView.textStorage.endEditing()
+        }
+        applyTextAssistancePreferences(textView)
+        textView.smartDashesType = .no
+        textView.smartQuotesType = .no
+        textView.smartInsertDeleteType = .no
+        textView.allowsEditingTextAttributes = false
+        if #available(iOS 18.0, *) {
+            textView.writingToolsBehavior = .none
+        }
+        applyInvisibleCharacterPreference(textView)
+        textView.isOpaque = false
+        textView.backgroundColor = .clear
+        textView.highlightsCurrentLine = highlightCurrentLine && !isLargeFileMode
+        textView.currentLineHighlightColor = currentLineHighlightColor(theme: theme, colorScheme: colorScheme)
+        container.applyLineNumberColors(
+            editorBackground: UIColor(theme.background),
+            textColor: UIColor(theme.text),
+            translucentBackgroundEnabled: translucentBackgroundEnabled
+        )
+        textView.setBracketAccessoryVisible(showKeyboardAccessoryBar)
+        textView.setKeyboardAccessoryBackgroundColor(UIColor(theme.background))
+#if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            container.setSoftwareKeyboardVisible(softwareKeyboardVisible)
+        }
+#endif
+        configurePointerSelectionBehavior(textView)
+#if os(iOS)
+        textView.installPencilInputIfNeeded()
+#endif
+        context.coordinator.installFontSizePinchRecognizer(on: textView)
+        // A pathological logical line overrides No Wrap on mobile so TextKit
+        // cannot monopolize the main thread while shaping the entire line.
+        let shouldWrapText = shouldWrapText(for: text)
+        applyWrapMode(shouldWrapText, textView: textView, preserveOffset: false, recomputeNoWrapWidth: true)
+        context.coordinator.lastShouldWrapText = shouldWrapText
+
+        if !showLineNumbers {
+            container.lineNumberView.isHidden = true
+        } else {
+            container.lineNumberView.isHidden = false
+            container.updateLineNumbers(for: text, fontSize: fontSize)
+        }
+        context.coordinator.container = container
+        context.coordinator.textView = textView
+        if shouldUseChunkedLargeFileInstall(
+            isLargeFileMode: isLargeFileMode,
+            textLength: initialLength,
+            language: language,
+            text: text as NSString
+        ) {
+            context.coordinator.largeTextInstallTarget = text
+            DispatchQueue.main.async {
+                guard context.coordinator.largeTextInstallTarget == text else { return }
+                _ = context.coordinator.installLargeTextIfNeeded(
+                    on: textView,
+                    target: text,
+                    preserveSelection: false,
+                    preserveViewport: false,
+                    restoredCaretLocation: storedCaretLocation
+                )
+            }
+        } else {
+            context.coordinator.scheduleHighlightIfNeeded(currentText: text, immediate: true)
+        }
+        return container
+    }
+
+    // Preserve the UIKit control across SwiftUI updates. Resource switches restore a
+    // stored caret; configuration changes keep the current selection and viewport and
+    // must not claim first responder status just because a tab changed.
+    func updateUIView(_ uiView: LineNumberedTextViewContainer, context: Context) {
+        let textView = uiView.textView
+        textView.onConfiguredAppShortcut = onShortcutAction
+        context.coordinator.parent = self
+        textView.isSelectable = true
+        let didSwitchDocumentResource = context.coordinator.lastDocumentResourceID != documentResourceID
+        let didFinishTabLoad = (context.coordinator.lastTabLoadingContent == true) && !isTabLoadingContent
+        let didReceiveExternalEdit = context.coordinator.lastExternalEditRevision != externalEditRevision
+        let didTransitionDocumentState = didSwitchDocumentResource || didFinishTabLoad || didReceiveExternalEdit
+        let shouldRestoreCaret = !isTabLoadingContent && Self.shouldRestoreStoredCaret(
+            didSwitchDocumentResource: didSwitchDocumentResource,
+            didFinishTabLoad: didFinishTabLoad
+        )
+        let preserveViewportDuringContentInstall = shouldPreserveEditorViewportDuringContentInstall(
+            didSwitchDocumentResource: didSwitchDocumentResource,
+            didFinishTabLoad: didFinishTabLoad
+        )
+        let shouldPublishMinimapViewport = didTransitionDocumentState ||
+            (showsCodeMinimap && context.coordinator.lastShowsCodeMinimap != true)
+        let isInteractivePhoneEditing =
+            UIDevice.current.userInterfaceIdiom == .phone &&
+            textView.isFirstResponder &&
+            !didTransitionDocumentState &&
+            !isTabLoadingContent
+        if didSwitchDocumentResource {
+            context.coordinator.cancelPendingBindingSync()
+            context.coordinator.clearPendingTextMutation()
+            context.coordinator.invalidateHighlightCache()
+        }
+        textView.isEditable = !isReadOnly && !context.coordinator.isInstallingLargeText
+        context.coordinator.lastDocumentResourceID = documentResourceID
+        context.coordinator.lastTabLoadingContent = isTabLoadingContent
+        context.coordinator.lastExternalEditRevision = externalEditRevision
+        context.coordinator.lastShowsCodeMinimap = showsCodeMinimap
+        let targetLength = (text as NSString).length
+        let shouldSkipLargeFileResync =
+            isLargeFileMode &&
+            targetLength >= EditorRuntimeLimits.syntaxMinimalUTF16Length &&
+            !didSwitchDocumentResource &&
+            !didFinishTabLoad &&
+            !didReceiveExternalEdit &&
+            !context.coordinator.hasPendingBindingSync
+        if textView.text != text && context.coordinator.largeTextInstallTarget != text {
+            if !shouldSkipLargeFileResync {
+                let shouldPreferEditorBuffer =
+                    textView.isFirstResponder &&
+                    !isTabLoadingContent &&
+                    !didSwitchDocumentResource &&
+                    !didFinishTabLoad &&
+                    !didReceiveExternalEdit
+                if shouldPreferEditorBuffer {
+                    context.coordinator.syncBindingTextImmediately(textView.text)
+                } else {
+                    context.coordinator.cancelPendingBindingSync()
+                    let priorSelection = textView.selectedRange
+                    let priorOffset = textView.editorContentOffset
+                    let didInstallLargeText = context.coordinator.installLargeTextIfNeeded(
+                        on: textView,
+                        target: text,
+                        preserveSelection: !didSwitchDocumentResource,
+                        preserveViewport: preserveViewportDuringContentInstall,
+                        restoredCaretLocation: shouldRestoreCaret ? storedCaretLocation : nil
+                    )
+                    if !didInstallLargeText {
+                        textView.text = text
+                        textView.invalidateTextMetrics()
+                        let length = (textView.text as NSString).length
+                        if didSwitchDocumentResource {
+                            textView.selectedRange = NSRange(location: 0, length: 0)
+                            textView.setEditorContentOffset(.zero, animated: false)
+                        } else {
+                            let clampedLocation = min(priorSelection.location, length)
+                            let clampedLength = min(priorSelection.length, max(0, length - clampedLocation))
+                            textView.selectedRange = NSRange(location: clampedLocation, length: clampedLength)
+                            textView.setEditorContentOffset(priorOffset, animated: false)
+                        }
+                    }
+                }
+            }
+        }
+        let targetFont = resolvedUIFont()
+        if textView.font?.fontName != targetFont.fontName || textView.font?.pointSize != targetFont.pointSize {
+            textView.font = targetFont
+        }
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineHeightMultiple = max(0.9, lineHeightMultiple)
+        textView.typingAttributes[.paragraphStyle] = paragraphStyle
+        textView.typingAttributes[.kern] = letterSpacing
+        applyTextAssistancePreferences(textView)
+        if !isInteractivePhoneEditing,
+           context.coordinator.lastLineHeight != lineHeightMultiple
+            || context.coordinator.lastLetterSpacing != letterSpacing {
+            let len = textView.textStorage.length
+            if len > 0 {
+                let formattingRange: NSRange
+                if len <= 200_000 {
+                    formattingRange = NSRange(location: 0, length: len)
+                } else {
+                    let visibleGlyphs = textView.layoutManager.glyphRange(
+                        forBoundingRect: textView.editorViewport.insetBy(dx: 0, dy: -textView.bounds.height),
+                        in: textView.textContainer
+                    )
+                    let visibleCharacters = textView.layoutManager.characterRange(
+                        forGlyphRange: visibleGlyphs,
+                        actualGlyphRange: nil
+                    )
+                    formattingRange = EditorLargeTextFormatting.updateRange(
+                        visibleRange: visibleCharacters,
+                        textLength: len
+                    )
+                }
+                let undoWasEnabled = textView.undoManager?.isUndoRegistrationEnabled ?? false
+                if undoWasEnabled {
+                    textView.undoManager?.disableUndoRegistration()
+                }
+                textView.textStorage.beginEditing()
+                textView.textStorage.addAttribute(.paragraphStyle, value: paragraphStyle, range: formattingRange)
+                textView.textStorage.addAttribute(.kern, value: letterSpacing, range: formattingRange)
+                textView.textStorage.endEditing()
+                if undoWasEnabled {
+                    textView.undoManager?.enableUndoRegistration()
+                }
+            }
+            context.coordinator.lastLineHeight = lineHeightMultiple
+            context.coordinator.lastLetterSpacing = letterSpacing
+        }
+        let theme = currentEditorTheme(
+            colorScheme: colorScheme,
+            formatting: formattingPreferences,
+            ignoreBackgroundOverrides: ignoreBackgroundOverrides
+        )
+        let baseColor = UIColor(theme.text)
+        textView.tintColor = UIColor(theme.cursor)
+        textView.markdownFormattingEnabled = language.lowercased() == "markdown"
+        textView.isOpaque = false
+        textView.backgroundColor = .clear
+        textView.highlightsCurrentLine = highlightCurrentLine && !isLargeFileMode
+        textView.currentLineHighlightColor = currentLineHighlightColor(theme: theme, colorScheme: colorScheme)
+        uiView.applyLineNumberColors(
+            editorBackground: UIColor(theme.background),
+            textColor: UIColor(theme.text),
+            translucentBackgroundEnabled: translucentBackgroundEnabled
+        )
+        textView.setBracketAccessoryVisible(showKeyboardAccessoryBar)
+        textView.setKeyboardAccessoryBackgroundColor(UIColor(theme.background))
+#if os(iOS)
+        if UIDevice.current.userInterfaceIdiom == .phone {
+            uiView.setSoftwareKeyboardVisible(softwareKeyboardVisible)
+        }
+#endif
+        let shouldWrapText = shouldWrapText(for: text)
+        let desiredLineBreakMode: NSLineBreakMode = shouldWrapText
+            ? (isLineWrapEnabled ? .byWordWrapping : .byCharWrapping)
+            : .byClipping
+        let didChangeWrapMode = context.coordinator.lastShouldWrapText != shouldWrapText ||
+            textView.textContainer.lineBreakMode != desiredLineBreakMode
+        if !isInteractivePhoneEditing || didChangeWrapMode {
+            applyWrapMode(
+                shouldWrapText,
+                textView: textView,
+                recomputeNoWrapWidth: didTransitionDocumentState
+            )
+        }
+        context.coordinator.lastShouldWrapText = shouldWrapText
+        textView.layoutManager.allowsNonContiguousLayout = true
+        configurePointerSelectionBehavior(textView)
+        if #available(iOS 18.0, *) {
+            if textView.writingToolsBehavior != .none {
+                textView.writingToolsBehavior = .none
+            }
+        }
+        applyInvisibleCharacterPreference(textView)
+        textView.typingAttributes[.foregroundColor] = baseColor
+        if !showLineNumbers {
+            uiView.lineNumberView.isHidden = true
+        } else {
+            uiView.lineNumberView.isHidden = false
+            if isInteractivePhoneEditing {
+                uiView.lineNumberView.setNeedsDisplay()
+            } else if didTransitionDocumentState {
+                uiView.updateLineNumbers(for: text, fontSize: fontSize)
+            } else {
+                uiView.updateLineNumbersAfterInteractiveEdit(for: text, fontSize: fontSize)
+            }
+        }
+        context.coordinator.syncLineNumberScroll()
+        // A chunk installer owns selection until all UTF-16 ranges exist. Its
+        // completion restores the bookmark instead of clamping it to a partial buffer.
+        if shouldRestoreCaret, !context.coordinator.isInstallingLargeText, let storedCaretLocation {
+            context.coordinator.restoreCaret(storedCaretLocation, in: textView)
+        }
+        if didTransitionDocumentState {
+            context.coordinator.scheduleHighlightIfNeeded(currentText: textView.text ?? text, immediate: true)
+        } else if !isInteractivePhoneEditing {
+            context.coordinator.scheduleHighlightIfNeeded(currentText: text)
+        }
+        if shouldPublishMinimapViewport {
+            textView.layoutIfNeeded()
+            context.coordinator.postMinimapViewportIfNeeded(textView: textView, scrollView: textView, force: true)
+            context.coordinator.scheduleDeferredMinimapViewportPost(for: textView)
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    @MainActor
+    class Coordinator: NSObject, UITextViewDelegate, UIGestureRecognizerDelegate {
+        private struct ReplacementBatchMutation: Sendable {
+            let range: NSRange
+            let replacement: String
+        }
+
+        var parent: CustomTextEditor
+        weak var container: LineNumberedTextViewContainer?
+        weak var textView: EditorInputTextView?
+        private let highlightQueue = DispatchQueue(label: "NeonVision.iOS.SyntaxHighlight", qos: .userInitiated)
+        private var pendingHighlight: DispatchWorkItem?
+        private var pendingHighlightCancellation: SyntaxHighlightCancellationToken?
+        private var pendingBindingSync: DispatchWorkItem?
+
+        private func cancelPendingHighlight() {
+            pendingHighlight?.cancel()
+            pendingHighlightCancellation?.cancel()
+            pendingHighlight = nil
+            pendingHighlightCancellation = nil
+        }
+        private var pendingTextMutation: (range: NSRange, replacement: String)?
+        private var pendingEditedRange: NSRange?
+        fileprivate var isInstallingLargeText = false
+        fileprivate var largeTextInstallTarget: String?
+        private var largeTextInstallGeneration: Int = 0
+        private var largeTextWidthTask: Task<Void, Never>?
+        var hasPendingLargeTextWork: Bool {
+            largeTextInstallTarget != nil || isInstallingLargeText || largeTextWidthTask != nil
+        }
+        private var lastHighlightedText: String = ""
+        private var lastLanguage: String?
+        private var lastColorScheme: ColorScheme?
+        var lastLineHeight: CGFloat?
+        var lastLetterSpacing: CGFloat?
+        private var lastHighlightToken: Int = 0
+        private var lastSelectionLocation: Int = -1
+        private var lastHighlightViewportAnchor: Int = -1
+        private var lastTranslucencyEnabled: Bool?
+        private var lastFormattingPreferences: EditorFormattingPreferences?
+        private var lastLineNumberContentOffsetY: CGFloat = .greatestFiniteMagnitude
+        private var lastMinimapViewportTop: Double = -1
+        private var lastMinimapViewportHeight: Double = -1
+        private var pendingDeferredMinimapViewportPost = false
+        private var pendingMinimapViewportTopFraction: Double?
+        private var pendingMinimapViewportReconciliation: DispatchWorkItem?
+        private var minimapViewportReconciliationGeneration = 0
+        private var remainingMinimapViewportReconciliationPasses = 0
+        private var isReconcilingMinimapViewport = false
+        private var isApplyingHighlight = false
+        private var highlightGeneration: Int = 0
+        private var lastCaretStatusLocation: Int = -1
+        private var lastCaretStatusLine: Int = Int.min
+        private var lastCaretStatusColumn: Int = Int.min
+        private var selectionUpdateGeneration: Int = 0
+        private var fontSizePinchRecognizer: UIPinchGestureRecognizer?
+        private var pinchStartFontSize: CGFloat?
+        private var lastPinchFontSize: CGFloat?
+        private var lastScrollOffsetY: CGFloat?
+        private var lastUserScrollOffsetY: CGFloat?
+        private var accumulatedUserScrollDelta: CGFloat = 0
+        private var pendingShiftScrollFontSizeDelta: CGFloat = 0
+        private var isRestoringShiftScrollOffset = false
+        private var findHighlightBackgrounds: [(range: NSRange, value: Any?)] = []
+        var lastDocumentResourceID: String?
+        var lastTabLoadingContent: Bool?
+        var lastExternalEditRevision: Int?
+        var lastShowsCodeMinimap: Bool?
+        var lastShouldWrapText: Bool?
+        var hasPendingBindingSync: Bool { pendingBindingSync != nil }
+
+        private var isPhoneActivelyEditing: Bool {
+            UIDevice.current.userInterfaceIdiom == .phone && (textView?.isFirstResponder ?? false)
+        }
+
+        init(_ parent: CustomTextEditor) {
+            self.parent = parent
+            super.init()
+            NotificationCenter.default.addObserver(self, selector: #selector(moveToLine(_:)), name: .moveCursorToLine, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(moveToRange(_:)), name: .moveCursorToRange, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(updateFindHighlights(_:)), name: .updateEditorFindHighlights, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(replaceRange(_:)), name: .replaceEditorRangeRequested, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(replaceRanges(_:)), name: .replaceEditorRangesRequested, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(moveSelectedLines(_:)), name: .moveSelectedLinesRequested, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(scrollViewportToFraction(_:)), name: .scrollEditorViewportToFraction, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(requestEditorViewport(_:)), name: .requestEditorViewport, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(updateKeyboardAccessoryVisibility(_:)), name: .keyboardAccessoryBarVisibilityChanged, object: nil)
+        }
+
+        deinit {
+            largeTextWidthTask?.cancel()
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        func installFontSizePinchRecognizer(on textView: UITextView) {
+            guard fontSizePinchRecognizer == nil else { return }
+            let recognizer = UIPinchGestureRecognizer(
+                target: self,
+                action: #selector(handleFontSizePinch(_:))
+            )
+            recognizer.cancelsTouchesInView = false
+            recognizer.delegate = self
+            textView.addGestureRecognizer(recognizer)
+            fontSizePinchRecognizer = recognizer
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            gestureRecognizer === fontSizePinchRecognizer || otherGestureRecognizer === fontSizePinchRecognizer
+        }
+
+        @objc func handleFontSizePinch(_ gesture: UIPinchGestureRecognizer) {
+            switch gesture.state {
+            case .began:
+                let startingFontSize = parent.fontSize
+                pinchStartFontSize = startingFontSize
+                lastPinchFontSize = startingFontSize
+
+            case .changed:
+                guard let pinchStartFontSize else { return }
+                let requestedFontSize = pinchStartFontSize + ((gesture.scale - 1) * 10).rounded()
+                let clampedFontSize = min(28, max(10, requestedFontSize))
+                guard clampedFontSize != lastPinchFontSize else { return }
+                lastPinchFontSize = clampedFontSize
+                parent.onFontSizeChange?(clampedFontSize)
+
+            case .ended, .cancelled, .failed:
+                pinchStartFontSize = nil
+                lastPinchFontSize = nil
+
+            default:
+                break
+            }
+        }
+
+        private func shouldRenderLineNumbers() -> Bool {
+            guard let lineView = container?.lineNumberView else { return false }
+            return parent.showLineNumbers && !lineView.isHidden && !isInstallingLargeText
+        }
+
+        func invalidateHighlightCache() {
+            largeTextWidthTask?.cancel()
+            largeTextWidthTask = nil
+            lastHighlightedText = ""
+            lastLanguage = nil
+            lastColorScheme = nil
+            lastLineHeight = nil
+            lastHighlightToken = 0
+            lastSelectionLocation = -1
+            lastHighlightViewportAnchor = -1
+            lastTranslucencyEnabled = nil
+            lastFormattingPreferences = nil
+            lastLineNumberContentOffsetY = .greatestFiniteMagnitude
+            lastCaretStatusLocation = -1
+            lastCaretStatusLine = Int.min
+            lastCaretStatusColumn = Int.min
+            selectionUpdateGeneration &+= 1
+            largeTextInstallGeneration &+= 1
+            isInstallingLargeText = false
+            largeTextInstallTarget = nil
+        }
+
+        private func currentViewportAnchor(textLength: Int, language: String) -> Int {
+            guard let textView,
+                  shouldRefreshViewportSyntaxOnScroll(
+                    language: language,
+                    textLength: textLength
+                  ) else { return -1 }
+            let visibleRect = textView.editorViewport.insetBy(dx: 0, dy: -80)
+            let glyphRange = textView.layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
+            let charRange = textView.layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            guard charRange.length > 0 else { return -1 }
+            return charRange.location
+        }
+
+        private func syncBindingText(_ text: String, immediate: Bool = false) {
+            if parent.isTabLoadingContent || isInstallingLargeText {
+                return
+            }
+            pendingBindingSync?.cancel()
+            pendingBindingSync = nil
+            if immediate || (text as NSString).length < EditorRuntimeLimits.bindingDebounceUTF16Length {
+                parent.text = text
+                return
+            }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                self.pendingBindingSync = nil
+                if self.textView?.text == text {
+                    self.parent.text = text
+                }
+            }
+            pendingBindingSync = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + EditorRuntimeLimits.bindingDebounceDelay, execute: work)
+        }
+
+        func cancelPendingBindingSync() {
+            pendingBindingSync?.cancel()
+            pendingBindingSync = nil
+        }
+
+        func clearPendingTextMutation() {
+            pendingTextMutation = nil
+            pendingEditedRange = nil
+        }
+
+        func syncBindingTextImmediately(_ text: String) {
+            guard !isInstallingLargeText else { return }
+            syncBindingText(text, immediate: true)
+        }
+
+        fileprivate func installLargeTextIfNeeded(
+            on textView: EditorInputTextView,
+            target: String,
+            preserveSelection: Bool = true,
+            preserveViewport: Bool = true,
+            restoredCaretLocation: Int? = nil
+        ) -> Bool {
+            let targetLength = (target as NSString).length
+            guard shouldUseChunkedLargeFileInstall(
+                isLargeFileMode: parent.isLargeFileMode,
+                textLength: targetLength,
+                language: parent.language,
+                text: target as NSString
+            ) else { return false }
+
+            largeTextInstallGeneration &+= 1
+            let generation = largeTextInstallGeneration
+            largeTextWidthTask?.cancel()
+            largeTextWidthTask = nil
+            isInstallingLargeText = true
+            largeTextInstallTarget = target
+            cancelPendingHighlight()
+
+            let previousSelection = textView.selectedRange
+            let priorOffset = textView.editorContentOffset
+            let wasFirstResponder = textView.isFirstResponder
+            let installDocumentID = parent.documentID
+            let installDocumentResourceID = parent.documentResourceID
+            let tabWidth = max(1, parent.indentWidth)
+            var currentVisualColumn = 0
+            var maximumVisualColumns = 0
+            textView.isEditable = false
+            // Keep this invariant local to the installation path as well. A
+            // reused text view may arrive here before its next SwiftUI update.
+            textView.layoutManager.allowsNonContiguousLayout = true
+            textView.text = ""
+            textView.invalidateTextMetrics()
+
+            let nsTarget = target as NSString
+
+            func applyChunk(from location: Int) {
+                guard generation == self.largeTextInstallGeneration,
+                      self.textView === textView,
+                      self.parent.documentID == installDocumentID,
+                      self.parent.documentResourceID == installDocumentResourceID else {
+                    if generation == self.largeTextInstallGeneration {
+                        self.isInstallingLargeText = false
+                        self.largeTextInstallTarget = nil
+                    }
+                    return
+                }
+                let remaining = targetLength - location
+                guard remaining > 0 else {
+                    self.isInstallingLargeText = false
+                    self.largeTextInstallTarget = nil
+                    textView.invalidateTextMetrics()
+                    maximumVisualColumns = max(maximumVisualColumns, currentVisualColumn)
+                    if !parent.shouldWrapText(for: target) {
+                        parent.applyWrapMode(
+                            false,
+                            textView: textView,
+                            preserveOffset: false,
+                            knownNoWrapVisualColumns: maximumVisualColumns
+                        )
+                    }
+                    textView.isEditable = !parent.isReadOnly
+                    if let restoredCaretLocation {
+                        self.restoreCaret(restoredCaretLocation, in: textView)
+                    } else if preserveSelection {
+                        let safeLocation = min(max(0, previousSelection.location), targetLength)
+                        let safeLength = min(max(0, previousSelection.length), max(0, targetLength - safeLocation))
+                        textView.selectedRange = NSRange(location: safeLocation, length: safeLength)
+                    } else {
+                        textView.selectedRange = NSRange(location: 0, length: 0)
+                    }
+                    if preserveViewport {
+                        textView.setEditorContentOffset(priorOffset, animated: false)
+                    }
+                    if wasFirstResponder && preserveSelection {
+                        _ = textView.becomeFirstResponder()
+                    }
+                    self.updateCaretStatus()
+                    self.scheduleHighlightIfNeeded(currentText: target, immediate: true)
+                    guard !parent.shouldWrapText(for: target) else { return }
+                    // Measuring a multi-megabyte unwrapped line is expensive too.
+                    // Finish horizontal sizing off-thread after the text is usable.
+                    let fontName = textView.font?.fontName ?? ""
+                    let fontSize = textView.font?.pointSize ?? parent.fontSize
+                    let letterSpacing = parent.letterSpacing
+                    largeTextWidthTask = Task { [weak self, weak textView] in
+                        defer {
+                            if let self, generation == self.largeTextInstallGeneration {
+                                self.largeTextWidthTask = nil
+                            }
+                        }
+                        let worker = Task.detached(priority: .utility) {
+                            let font = UIFont(name: fontName, size: fontSize)
+                                ?? UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+                            return ceil(measuredEditorTextWidth(target, attributes: [
+                                .font: font, .kern: letterSpacing
+                            ])) + 32
+                        }
+                        let measuredWidth = await withTaskCancellationHandler {
+                            await worker.value
+                        } onCancel: {
+                            worker.cancel()
+                        }
+                        guard !Task.isCancelled, let self, let textView,
+                              generation == self.largeTextInstallGeneration,
+                              self.parent.documentID == installDocumentID,
+                              self.parent.documentResourceID == installDocumentResourceID,
+                              textView.font?.fontName == fontName,
+                              textView.font?.pointSize == fontSize,
+                              self.parent.letterSpacing == letterSpacing,
+                              textView.text == target,
+                              textView.textContainer.lineBreakMode == .byClipping else { return }
+                        let width = max(textView.textContainer.size.width, measuredWidth)
+                        textView.textContainer.size.width = width
+                        textView.rememberPreferredWrapLayout(shouldWrapText: false, containerWidth: width)
+                        self.parent.enforceNoWrapContentWidth(textView, containerWidth: width)
+                        textView.showsHorizontalScrollIndicator = width > textView.bounds.width
+                    }
+                    return
+                }
+
+                var chunkLength = min(LargeFileInstallRuntime.chunkUTF16, remaining)
+                if location + chunkLength < targetLength,
+                   (0xDC00...0xDFFF).contains(nsTarget.character(at: location + chunkLength)) {
+                    chunkLength -= 1
+                }
+                let chunk = nsTarget.substring(with: NSRange(location: location, length: chunkLength))
+                for codeUnit in chunk.utf16 {
+                    switch codeUnit {
+                    case 10, 13:
+                        maximumVisualColumns = max(maximumVisualColumns, currentVisualColumn)
+                        currentVisualColumn = 0
+                    case 9:
+                        currentVisualColumn += tabWidth - (currentVisualColumn % tabWidth)
+                    default:
+                        currentVisualColumn += 1
+                    }
+                }
+                let storage = textView.textStorage
+                storage.beginEditing()
+                storage.append(NSAttributedString(string: chunk, attributes: textView.typingAttributes))
+                storage.endEditing()
+                DispatchQueue.main.async {
+                    applyChunk(from: location + chunkLength)
+                }
+            }
+
+            applyChunk(from: 0)
+            return true
+        }
+
+        func restoreCaret(_ location: Int, in textView: UITextView) {
+            let length = ((textView.text ?? "") as NSString).length
+            let range = NSRange(location: min(max(0, location), length), length: 0)
+            textView.selectedRange = range
+            textView.scrollRangeToVisible(range)
+            // Caret persistence stores a document position, not a horizontal
+            // viewport. UIKit's scrollRangeToVisible otherwise opens an
+            // unwrapped document in the middle of a long line, making its
+            // beginning look clipped. Preserve the vertical reveal only.
+            let inset = textView.adjustedContentInset
+            let minY = -inset.top
+            let maxY = max(minY, textView.contentSize.height - textView.bounds.height + inset.bottom)
+            let clampedY = min(max(textView.editorContentOffset.y, minY), maxY)
+            textView.setEditorContentOffset(CGPoint(x: 0, y: clampedY), animated: false)
+            updateCaretStatus()
+        }
+
+        private func setPendingTextMutation(range: NSRange, replacement: String) {
+            guard !parent.isTabLoadingContent, parent.documentID != nil else {
+                pendingTextMutation = nil
+                return
+            }
+            pendingTextMutation = (range: range, replacement: replacement)
+        }
+
+        private func applyPendingTextMutationIfPossible() -> Bool {
+            defer { pendingTextMutation = nil }
+            guard !parent.isTabLoadingContent,
+                  let pendingTextMutation,
+                  let documentID = parent.documentID,
+                  let onTextMutation = parent.onTextMutation else {
+                return false
+            }
+            onTextMutation(
+                EditorTextMutation(
+                    documentID: documentID,
+                    range: pendingTextMutation.range,
+                    replacement: pendingTextMutation.replacement
+                )
+            )
+            return true
+        }
+
+        @objc private func updateKeyboardAccessoryVisibility(_ notification: Notification) {
+            guard let textView else { return }
+            let isVisible: Bool
+            if let explicit = notification.object as? Bool {
+                isVisible = explicit
+            } else {
+                isVisible = UserDefaults.standard.object(forKey: "SettingsShowKeyboardAccessoryBarIOS") as? Bool ?? true
+            }
+            textView.setBracketAccessoryVisible(isVisible)
+            if isVisible && !textView.isFirstResponder {
+                _ = textView.becomeFirstResponder()
+            }
+            if UIDevice.current.userInterfaceIdiom != .phone {
+                textView.reloadInputViews()
+            }
+        }
+
+        @objc private func moveSelectedLines(_ notification: Notification) {
+            if let sourceTextView = notification.userInfo?[EditorCommandUserInfo.sourceTextView] as? UITextView,
+               sourceTextView !== textView {
+                return
+            }
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let rawDirection = notification.object as? String,
+                  let direction = EditorLineMoveDirection(rawValue: rawDirection),
+                  let textView,
+                  textView.isEditable,
+                  let result = editorLineMove(
+                      in: textView.text ?? "",
+                      selectedRange: textView.selectedRange,
+                      direction: direction
+                  ) else {
+                return
+            }
+
+            setPendingTextMutation(range: result.replacementRange, replacement: result.replacement)
+            performProgrammaticReplacement(
+                in: textView,
+                range: result.replacementRange,
+                replacement: result.replacement,
+                selectedRange: result.selectedRange
+            )
+            textView.scrollRangeToVisible(result.selectedRange)
+        }
+
+        @objc private func moveToRange(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView else { return }
+            guard let location = notification.userInfo?[EditorCommandUserInfo.rangeLocation] as? Int,
+                  let length = notification.userInfo?[EditorCommandUserInfo.rangeLength] as? Int else { return }
+            let textLength = (textView.text as NSString?)?.length ?? 0
+            guard location >= 0, length >= 0, location + length <= textLength else { return }
+            let range = NSRange(location: location, length: length)
+            let shouldFocusEditor = EditorNavigationFocusPolicy.shouldFocusEditor(
+                explicitValue: notification.userInfo?[EditorCommandUserInfo.focusEditor] as? Bool
+            )
+            let shouldCenterSelection = notification.userInfo?[EditorCommandUserInfo.centerSelection] as? Bool ?? false
+            DispatchQueue.main.async {
+                if shouldFocusEditor {
+                    _ = textView.becomeFirstResponder()
+                }
+                textView.selectedRange = range
+                if shouldCenterSelection {
+                    self.centerEditorLine(at: range, in: textView)
+                } else {
+                    textView.scrollRangeToVisible(range)
+                }
+                self.updateCaretStatus()
+            }
+        }
+
+        @objc private func updateFindHighlights(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView else { return }
+            let textStorage = textView.textStorage
+            textStorage.beginEditing()
+            defer { textStorage.endEditing() }
+            for snapshot in findHighlightBackgrounds {
+                guard NSMaxRange(snapshot.range) <= textStorage.length else { continue }
+                textStorage.removeAttribute(.backgroundColor, range: snapshot.range)
+                if let value = snapshot.value {
+                    textStorage.addAttribute(.backgroundColor, value: value, range: snapshot.range)
+                }
+            }
+            let textLength = (textView.text as NSString?)?.length ?? 0
+            let ranges = (notification.userInfo?[EditorCommandUserInfo.findMatchRanges] as? [NSValue] ?? [])
+                .map(\.rangeValue)
+                .filter { $0.location >= 0 && $0.length > 0 && NSMaxRange($0) <= textLength }
+            var backgroundSnapshots: [(range: NSRange, value: Any?)] = []
+            for range in ranges {
+                textStorage.enumerateAttribute(.backgroundColor, in: range) { value, effectiveRange, _ in
+                    backgroundSnapshots.append((effectiveRange, value))
+                }
+            }
+            for range in ranges {
+                textStorage.addAttribute(
+                    .backgroundColor,
+                    value: UIColor.systemYellow.withAlphaComponent(0.28),
+                    range: range
+                )
+            }
+            if let selected = (notification.userInfo?[EditorCommandUserInfo.selectedFindMatchRange] as? NSValue)?.rangeValue,
+               selected.location >= 0, selected.length > 0, NSMaxRange(selected) <= textLength {
+                textStorage.addAttribute(
+                    .backgroundColor,
+                    value: UIColor.systemBlue.withAlphaComponent(0.42),
+                    range: selected
+                )
+            }
+            findHighlightBackgrounds = backgroundSnapshots
+            textView.setNeedsDisplay()
+        }
+
+        @objc private func replaceRange(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView,
+                  textView.isEditable,
+                  let location = notification.userInfo?[EditorCommandUserInfo.rangeLocation] as? Int,
+                  let length = notification.userInfo?[EditorCommandUserInfo.rangeLength] as? Int,
+                  let replacement = notification.userInfo?[EditorCommandUserInfo.replacementText] as? String else {
+                return
+            }
+            let range = NSRange(location: location, length: length)
+            guard location >= 0,
+                  length >= 0,
+                  NSMaxRange(range) <= (textView.text as NSString?)?.length ?? 0,
+                  textView.delegate?.textView?(
+                    textView,
+                    shouldChangeTextIn: range,
+                    replacementText: replacement
+                  ) != false else {
+                return
+            }
+            setPendingTextMutation(range: range, replacement: replacement)
+            let insertedRange = NSRange(location: location, length: (replacement as NSString).length)
+            performProgrammaticReplacement(
+                in: textView,
+                range: range,
+                replacement: replacement,
+                selectedRange: insertedRange
+            )
+            textView.scrollRangeToVisible(insertedRange)
+        }
+
+        @objc private func replaceRanges(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView,
+                  textView.isEditable,
+                  let documentID = parent.documentID,
+                  let rangeValues = notification.userInfo?[EditorCommandUserInfo.replacementRanges] as? [NSValue],
+                  let replacements = notification.userInfo?[EditorCommandUserInfo.replacementTexts] as? [String],
+                  rangeValues.count == replacements.count,
+                  !rangeValues.isEmpty else { return }
+
+            let mutations = zip(rangeValues.map(\.rangeValue), replacements).map {
+                ReplacementBatchMutation(range: $0.0, replacement: $0.1)
+            }
+            applyReplacementBatch(mutations, to: textView, documentID: documentID)
+        }
+
+        private func applyReplacementBatch(
+            _ mutations: [ReplacementBatchMutation],
+            to textView: EditorInputTextView,
+            documentID: UUID
+        ) {
+            guard let onTextMutation = parent.onTextMutation else { return }
+            let originalLength = textView.textStorage.length
+            var priorEnd = 0
+            for mutation in mutations {
+                guard mutation.range.location >= priorEnd,
+                      mutation.range.length >= 0,
+                      NSMaxRange(mutation.range) <= originalLength else { return }
+                priorEnd = NSMaxRange(mutation.range)
+            }
+
+            let original = textView.text as NSString
+            var cumulativeDelta = 0
+            let inverseMutations = mutations.map { mutation in
+                let replacementLength = (mutation.replacement as NSString).length
+                let inverse = ReplacementBatchMutation(
+                    range: NSRange(
+                        location: mutation.range.location + cumulativeDelta,
+                        length: replacementLength
+                    ),
+                    replacement: original.substring(with: mutation.range)
+                )
+                cumulativeDelta += replacementLength - mutation.range.length
+                return inverse
+            }
+
+            cancelPendingBindingSync()
+            cancelPendingHighlight()
+            let priorSelection = textView.selectedRange
+            let priorOffset = textView.editorContentOffset
+            textView.textStorage.beginEditing()
+            for snapshot in findHighlightBackgrounds {
+                guard NSMaxRange(snapshot.range) <= textView.textStorage.length else { continue }
+                textView.textStorage.removeAttribute(.backgroundColor, range: snapshot.range)
+                if let value = snapshot.value {
+                    textView.textStorage.addAttribute(.backgroundColor, value: value, range: snapshot.range)
+                }
+            }
+            findHighlightBackgrounds = []
+            for mutation in mutations.reversed() {
+                textView.textStorage.replaceCharacters(in: mutation.range, with: mutation.replacement)
+            }
+            textView.textStorage.endEditing()
+
+            for mutation in mutations.reversed() {
+                onTextMutation(
+                    EditorTextMutation(
+                        documentID: documentID,
+                        range: mutation.range,
+                        replacement: mutation.replacement
+                    )
+                )
+            }
+            textView.undoManager?.registerUndo(withTarget: self) { target in
+                guard let undoTextView = target.textView,
+                      target.parent.documentID == documentID else { return }
+                target.applyReplacementBatch(
+                    inverseMutations,
+                    to: undoTextView,
+                    documentID: documentID
+                )
+            }
+            textView.undoManager?.setActionName("Replace All")
+
+            let resultingLength = textView.textStorage.length
+            let selectedLocation = min(priorSelection.location, resultingLength)
+            textView.selectedRange = NSRange(
+                location: selectedLocation,
+                length: min(priorSelection.length, max(0, resultingLength - selectedLocation))
+            )
+            textView.setEditorContentOffset(priorOffset, animated: false)
+            textView.invalidateTextMetrics()
+            container?.updateLineNumbers(for: textView.text, fontSize: parent.fontSize)
+            pendingEditedRange = (textView.text as NSString).lineRange(
+                for: NSRange(location: selectedLocation, length: 0)
+            )
+            updateCaretStatus()
+            scheduleHighlightIfNeeded(currentText: textView.text)
+            textView.invisibleCharactersOverlayView?.requestRedraw(immediate: true)
+            textView.revealCaretWithContext()
+        }
+
+        @objc private func moveToLine(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let lineOneBased = notification.object as? Int, lineOneBased > 0 else { return }
+            guard let textView else { return }
+            let nsText = (textView.text ?? "") as NSString
+            guard nsText.length > 0 else { return }
+
+            let targetLine = max(1, lineOneBased)
+            var currentLine = 1
+            var location = 0
+            while location < nsText.length, currentLine < targetLine {
+                let codeUnit = nsText.character(at: location)
+                location += 1
+                if codeUnit == 10 {
+                    currentLine += 1
+                }
+            }
+            location = max(0, min(location, nsText.length))
+            let target = NSRange(location: location, length: 0)
+            let shouldFocusEditor = EditorNavigationFocusPolicy.shouldFocusEditor(
+                explicitValue: notification.userInfo?[EditorCommandUserInfo.focusEditor] as? Bool
+            )
+            if shouldFocusEditor {
+                _ = textView.becomeFirstResponder()
+            } else if textView.isFirstResponder {
+                _ = textView.resignFirstResponder()
+            }
+            textView.selectedRange = target
+            centerEditorLine(at: target, in: textView)
+            updateCaretStatus()
+            scheduleHighlightIfNeeded(currentText: textView.text ?? "", immediate: true)
+        }
+
+        private func centerEditorLine(at range: NSRange, in textView: UITextView) {
+            textView.layoutIfNeeded()
+            let layoutManager = textView.layoutManager
+            let textLength = (textView.text as NSString?)?.length ?? 0
+            let lineProbe = NSRange(
+                location: min(max(0, range.location), textLength),
+                length: range.location < textLength ? 1 : 0
+            )
+            let glyphRange = layoutManager.glyphRange(forCharacterRange: lineProbe, actualCharacterRange: nil)
+            let lineRect = layoutManager.boundingRect(forGlyphRange: glyphRange, in: textView.textContainer)
+            let targetY = lineRect.midY + textView.textContainerInset.top - textView.bounds.height / 2
+            let minimumY = -textView.adjustedContentInset.top
+            let maximumY = max(
+                minimumY,
+                textView.contentSize.height - textView.bounds.height + textView.adjustedContentInset.bottom
+            )
+            textView.setEditorContentOffset(
+                CGPoint(x: textView.editorContentOffset.x, y: min(max(targetY, minimumY), maximumY)),
+                animated: false
+            )
+        }
+
+        @objc private func scrollViewportToFraction(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView,
+                  let topFraction = notification.userInfo?[EditorCommandUserInfo.viewportTopFraction] as? Double else { return }
+
+            textView.layoutIfNeeded()
+            beginMinimapViewportReconciliation(topFraction: topFraction, textView: textView)
+            reconcileMinimapViewportIfNeeded(textView: textView)
+            postMinimapViewportIfNeeded(textView: textView, scrollView: textView, force: true)
+        }
+
+        private func beginMinimapViewportReconciliation(topFraction: Double, textView: UITextView) {
+            pendingMinimapViewportTopFraction = min(max(0, topFraction), 1)
+            remainingMinimapViewportReconciliationPasses = 8
+            minimapViewportReconciliationGeneration &+= 1
+            pendingMinimapViewportReconciliation?.cancel()
+            scheduleMinimapViewportReconciliation(
+                for: textView,
+                generation: minimapViewportReconciliationGeneration
+            )
+        }
+
+        private func reconcileMinimapViewportIfNeeded(textView: UITextView) {
+            guard !isReconcilingMinimapViewport,
+                  let requestedTopFraction = pendingMinimapViewportTopFraction else { return }
+            let inset = textView.adjustedContentInset
+            guard let reconciledY = codeMinimapReconciledContentOffset(
+                requestedTopFraction: requestedTopFraction,
+                currentOffsetY: Double(textView.editorContentOffset.y),
+                boundsHeight: Double(textView.bounds.height),
+                contentHeight: Double(textView.contentSize.height),
+                adjustedTopInset: Double(inset.top),
+                adjustedBottomInset: Double(inset.bottom)
+            ) else { return }
+            isReconcilingMinimapViewport = true
+            textView.setEditorContentOffset(
+                CGPoint(x: textView.editorContentOffset.x, y: CGFloat(reconciledY)),
+                animated: false
+            )
+            isReconcilingMinimapViewport = false
+        }
+
+        private func scheduleMinimapViewportReconciliation(for textView: UITextView, generation: Int) {
+            let workItem = DispatchWorkItem { [weak self, weak textView] in
+                guard let self,
+                      let textView,
+                      generation == self.minimapViewportReconciliationGeneration,
+                      self.pendingMinimapViewportTopFraction != nil else { return }
+                textView.layoutIfNeeded()
+                self.reconcileMinimapViewportIfNeeded(textView: textView)
+                self.postMinimapViewportIfNeeded(textView: textView, scrollView: textView, force: true)
+                self.remainingMinimapViewportReconciliationPasses -= 1
+                if self.remainingMinimapViewportReconciliationPasses > 0 {
+                    self.scheduleMinimapViewportReconciliation(for: textView, generation: generation)
+                } else {
+                    self.pendingMinimapViewportTopFraction = nil
+                    self.pendingMinimapViewportReconciliation = nil
+                }
+            }
+            pendingMinimapViewportReconciliation = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.025, execute: workItem)
+        }
+
+        private func cancelMinimapViewportReconciliation() {
+            pendingMinimapViewportReconciliation?.cancel()
+            pendingMinimapViewportReconciliation = nil
+            pendingMinimapViewportTopFraction = nil
+            remainingMinimapViewportReconciliationPasses = 0
+            minimapViewportReconciliationGeneration &+= 1
+        }
+
+        @objc private func requestEditorViewport(_ notification: Notification) {
+            if let targetDocumentID = notification.userInfo?[EditorCommandUserInfo.documentID] as? String,
+               parent.documentID?.uuidString != targetDocumentID {
+                return
+            }
+            guard let textView else { return }
+            textView.layoutIfNeeded()
+            postMinimapViewportIfNeeded(textView: textView, scrollView: textView, force: true)
+        }
+
+        func scheduleHighlightIfNeeded(currentText: String? = nil, immediate: Bool = false, deferred: Bool = false) {
+            guard Thread.isMainThread else {
+                DispatchQueue.main.async { [weak self] in
+                    self?.scheduleHighlightIfNeeded(currentText: currentText, immediate: immediate, deferred: deferred)
+                }
+                return
+            }
+            guard let textView, !isInstallingLargeText else { return }
+            let text = currentText ?? textView.text ?? ""
+            let lang = parent.language
+            let scheme = parent.colorScheme
+            let lineHeight = parent.lineHeightMultiple
+            let token = parent.highlightRefreshToken
+            let formatting = parent.formattingPreferences
+            let translucencyEnabled = parent.translucentBackgroundEnabled
+            let useSystemFont = parent.useSystemFont
+            let fontName = parent.fontName
+            let fontSize = parent.fontSize
+            let selectionLocation = textView.selectedRange.location
+            let textLength = (text as NSString).length
+            let nsText = text as NSString
+            // Styling any range in one enormous paragraph makes TextKit 1
+            // invalidate and synchronously lay out the whole paragraph.
+            if shouldUseMobileSafetyWrap(text: nsText, requestedWrap: false) ||
+                shouldSuppressGeneratedFileSyntaxHighlighting(text: nsText, language: lang) {
+                lastHighlightedText = text
+                lastLanguage = lang
+                lastColorScheme = scheme
+                lastLineHeight = lineHeight
+                lastHighlightToken = token
+                lastSelectionLocation = selectionLocation
+                lastHighlightViewportAnchor = -1
+                lastTranslucencyEnabled = translucencyEnabled
+                lastFormattingPreferences = formatting
+                return
+            }
+            if textLength >= EditorRuntimeLimits.syntaxMinimalUTF16Length &&
+                !supportsViewportSyntaxHighlighting(language: lang, textLength: textLength) {
+                updateMatchingBracketOverlay(textView: textView, text: nsText, selectionLocation: selectionLocation)
+                // Cache the current document even when syntax highlighting is
+                // intentionally skipped. Leaving this empty makes every SwiftUI
+                // update look like a new document and repeats the large-file
+                // fallback work while typing or scrolling.
+                lastHighlightedText = text
+                lastLanguage = lang
+                lastColorScheme = scheme
+                lastLineHeight = lineHeight
+                lastHighlightToken = token
+                lastSelectionLocation = selectionLocation
+                lastHighlightViewportAnchor = -1
+                lastTranslucencyEnabled = translucencyEnabled
+                lastFormattingPreferences = formatting
+                return
+            }
+            let viewportAnchor = currentViewportAnchor(
+                textLength: textLength,
+                language: lang
+            )
+
+            if text == lastHighlightedText &&
+                lang == lastLanguage &&
+                scheme == lastColorScheme &&
+                lineHeight == lastLineHeight &&
+                lastHighlightToken == token &&
+                lastSelectionLocation == selectionLocation &&
+                lastHighlightViewportAnchor == viewportAnchor &&
+                lastTranslucencyEnabled == translucencyEnabled &&
+                lastFormattingPreferences == formatting {
+                return
+            }
+
+            let styleStateUnchanged = lang == lastLanguage &&
+                scheme == lastColorScheme &&
+                lineHeight == lastLineHeight &&
+                lastHighlightToken == token &&
+                lastTranslucencyEnabled == translucencyEnabled &&
+                lastFormattingPreferences == formatting
+            let selectionOnlyChange = text == lastHighlightedText &&
+                styleStateUnchanged &&
+                lastSelectionLocation != selectionLocation
+            if selectionOnlyChange && textView.textContainer.lineBreakMode != .byClipping {
+                cancelPendingHighlight()
+                updateMatchingBracketOverlay(textView: textView, text: nsText, selectionLocation: selectionLocation)
+                lastSelectionLocation = selectionLocation
+                return
+            }
+            if selectionOnlyChange && textLength >= EditorRuntimeLimits.cursorRehighlightMaxUTF16Length {
+                updateMatchingBracketOverlay(textView: textView, text: nsText, selectionLocation: selectionLocation)
+                lastSelectionLocation = selectionLocation
+                return
+            }
+
+            // Coalesce Markdown edits before its stateful full-document pass.
+            // This prevents a serial backlog while the user is typing and keeps
+            // the main-thread apply phase out of the scroll interaction window.
+            if !immediate && !deferred && isMarkdownSyntaxLanguage(lang) {
+                cancelPendingHighlight()
+                let retry = DispatchWorkItem { [weak self] in
+                    self?.scheduleHighlightIfNeeded(deferred: true)
+                }
+                pendingHighlight = retry
+                DispatchQueue.main.asyncAfter(
+                    deadline: .now() + EditorRuntimeLimits.markdownHighlightDebounce,
+                    execute: retry
+                )
+                return
+            }
+
+            let theme = currentEditorTheme(
+                colorScheme: scheme,
+                formatting: parent.formattingPreferences,
+                ignoreBackgroundOverrides: parent.ignoreBackgroundOverrides
+            )
+            let syntaxProfile = syntaxProfile(for: lang, text: nsText)
+            let colors = SyntaxColors.from(theme: theme)
+            let patterns = getSyntaxPatterns(for: lang, colors: colors, profile: syntaxProfile)
+            let emphasisPatterns = syntaxEmphasisPatterns(for: lang, profile: syntaxProfile)
+
+            let incrementalRange: NSRange? = {
+                guard token == lastHighlightToken,
+                      lang == lastLanguage,
+                      scheme == lastColorScheme,
+                      !immediate,
+                      let edit = pendingEditedRange else { return nil }
+                let supportsResponsiveRange = supportsResponsiveLargeFileHighlight(
+                    language: lang,
+                    textLength: textLength
+                )
+                if !supportsResponsiveRange && text.utf16.count >= 120_000 {
+                    return nil
+                }
+                let padding = supportsResponsiveRange
+                    ? EditorRuntimeLimits.largeFileJSONIncrementalPaddingUTF16
+                    : 6_000
+                return expandedRange(around: edit, in: text as NSString, maxUTF16Padding: padding)
+            }()
+            pendingEditedRange = nil
+            cancelPendingHighlight()
+            highlightGeneration &+= 1
+            let generation = highlightGeneration
+            let cancellation = SyntaxHighlightCancellationToken()
+            let applyRange = incrementalRange ?? preferredHighlightRange(textView: textView, text: text as NSString, immediate: immediate)
+            let fullRange = NSRange(location: 0, length: textLength)
+            let fastInitialPass = immediate &&
+                lastHighlightedText.isEmpty &&
+                textLength >= EditorRuntimeLimits.initialProgrammingHighlightThresholdUTF16 &&
+                applyRange.length < fullRange.length
+            let work = DispatchWorkItem { @Sendable [weak self] in
+                Self.computeHighlightAndApply(
+                    coordinator: self,
+                    text: text,
+                    language: lang,
+                    colorScheme: scheme,
+                    useSystemFont: useSystemFont,
+                    fontName: fontName,
+                    fontSize: fontSize,
+                    theme: theme,
+                    syntaxProfile: syntaxProfile,
+                    colors: colors,
+                    patterns: patterns,
+                    emphasisPatterns: emphasisPatterns,
+                    token: token,
+                    generation: generation,
+                    applyRange: applyRange,
+                    fastInitialPass: fastInitialPass,
+                    cancellation: cancellation
+                )
+            }
+            pendingHighlight = work
+            pendingHighlightCancellation = cancellation
+            let shouldRunImmediate = immediate || (!deferred && (lastHighlightedText.isEmpty || lastHighlightToken != token))
+            // A document transition gets a bounded visible-range pass without
+            // the large-file queue delay. Only the follow-up full pass remains
+            // deferred, so tab switching never waits for whole-file regex work.
+            let allowImmediate = (immediate && applyRange.length < fullRange.length) ||
+                textLength < EditorRuntimeLimits.nonImmediateHighlightMaxUTF16Length
+            if shouldRunImmediate && allowImmediate {
+                syntaxHighlightSignposter.emitEvent("queued_visible_pass")
+                highlightQueue.async(execute: work)
+            } else {
+                let delay: TimeInterval
+                if text.utf16.count >= 120_000 {
+                    delay = 0.24
+                } else if text.utf16.count >= 80_000 {
+                    delay = 0.18
+                } else {
+                    delay = 0.1
+                }
+                highlightQueue.asyncAfter(deadline: .now() + delay, execute: work)
+            }
+        }
+
+        private func expandedRange(around range: NSRange, in text: NSString, maxUTF16Padding: Int = 8000) -> NSRange {
+            boundedSyntaxHighlightRange(around: range, in: text, padding: maxUTF16Padding)
+        }
+
+        private func preferredHighlightRange(
+            textView: UITextView,
+            text: NSString,
+            immediate: Bool
+        ) -> NSRange {
+            let fullRange = NSRange(location: 0, length: text.length)
+            if immediate,
+               lastHighlightedText.isEmpty,
+               text.length >= EditorRuntimeLimits.initialProgrammingHighlightThresholdUTF16 {
+                let visibleRect = textView.editorViewport
+                    .insetBy(dx: 0, dy: -80)
+                let glyphRange = textView.layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
+                let charRange = textView.layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+                if charRange.length > 0 {
+                    return expandedRange(
+                        around: charRange,
+                        in: text,
+                        maxUTF16Padding: EditorRuntimeLimits.initialProgrammingHighlightPaddingUTF16
+                    )
+                }
+            }
+            // Restrict the first pass to the visible range for every language
+            // with a bounded large-file policy. The complete pass follows in
+            // the background; stateful Markdown remains full-document until
+            // its syntax context can be preserved safely.
+            let supportsResponsiveRange = supportsViewportSyntaxHighlighting(
+                language: parent.language,
+                textLength: text.length
+            )
+            guard supportsResponsiveRange, text.length >= 100_000 else { return fullRange }
+            let visibleRect = textView.editorViewport.insetBy(dx: 0, dy: -80)
+            let glyphRange = textView.layoutManager.glyphRange(forBoundingRect: visibleRect, in: textView.textContainer)
+            let charRange = textView.layoutManager.characterRange(forGlyphRange: glyphRange, actualGlyphRange: nil)
+            // TextKit can have no laid-out glyphs on the first frame. Do not
+            // fall back to styling the entire file while layout catches up.
+            guard charRange.length > 0 else {
+                return expandedRange(around: NSRange(location: 0, length: 0), in: text)
+            }
+            let padding = EditorRuntimeLimits.largeFileJSONVisiblePaddingUTF16
+            return expandedRange(around: charRange, in: text, maxUTF16Padding: padding)
+        }
+
+        private nonisolated static func computeHighlightAndApply(
+            coordinator: Coordinator?,
+            text: String,
+            language: String,
+            colorScheme: ColorScheme,
+            useSystemFont: Bool,
+            fontName: String,
+            fontSize: CGFloat,
+            theme: EditorTheme,
+            syntaxProfile: SyntaxPatternProfile,
+            colors: SyntaxColors,
+            patterns: [String: Color],
+            emphasisPatterns: SyntaxEmphasisPatterns,
+            token: Int,
+            generation: Int,
+            applyRange: NSRange,
+            fastInitialPass: Bool,
+            cancellation: SyntaxHighlightCancellationToken
+        ) {
+            let interval = syntaxHighlightSignposter.beginInterval("rehighlight_ios")
+            defer { syntaxHighlightSignposter.endInterval("rehighlight_ios", interval) }
+            guard !cancellation.isCancelled else { return }
+            let nsText = text as NSString
+            let fullRange = NSRange(location: 0, length: nsText.length)
+            let baseColor = UIColor(theme.text)
+            let baseFont: UIFont
+            if useSystemFont {
+                baseFont = UIFont.systemFont(ofSize: fontSize)
+            } else if let named = UIFont(name: fontName, size: fontSize) {
+                baseFont = named
+            } else {
+                baseFont = UIFont.monospacedSystemFont(ofSize: fontSize, weight: .regular)
+            }
+
+            var coloredRanges: [(NSRange, UIColor)] = []
+            var fallbackColoredRanges: [(priority: Int, range: NSRange, color: UIColor)] = []
+            var emphasizedRanges: [(NSRange, SyntaxFontEmphasis)] = []
+            var underlinedRanges: [NSRange] = []
+            let markdownFonts = isMarkdownSyntaxLanguage(language) ? markdownSourceFontRanges(text) : []
+
+            if let fastRanges = fastSyntaxColorRanges(
+                language: language,
+                profile: syntaxProfile,
+                text: nsText,
+                in: applyRange,
+                colors: colors
+            ) {
+                for (range, color) in fastRanges {
+                    guard isValidHighlightRange(range, utf16Length: fullRange.length) else { continue }
+                    coloredRanges.append((range, UIColor(color)))
+                }
+                } else {
+                    for (pattern, color) in patterns {
+                    guard !cancellation.isCancelled else { return }
+                    guard let regex = cachedSyntaxRegex(pattern: pattern, options: [.anchorsMatchLines]) else { continue }
+                    let matches = regex.matches(in: text, range: applyRange)
+                    let uiColor = UIColor(color)
+                    for match in matches {
+                        guard isValidHighlightRange(match.range, utf16Length: fullRange.length) else { continue }
+                        if let priority = syntaxFallbackPriority(for: pattern) {
+                            fallbackColoredRanges.append((priority, match.range, uiColor))
+                        } else {
+                            coloredRanges.append((match.range, uiColor))
+                        }
+                        }
+                    }
+                }
+                var occupiedRanges = mergedSyntaxRanges(coloredRanges.map(\.0))
+                let acceptedTypes = fallbackColoredRanges.lazy
+                    .filter { $0.priority == 0 }
+                    .filter { syntaxRangeIsUnoccupied($0.range, occupiedRanges: occupiedRanges) }
+                    .map { ($0.range, $0.color) }
+                coloredRanges.append(contentsOf: acceptedTypes)
+                occupiedRanges = mergedSyntaxRanges(coloredRanges.map(\.0))
+                coloredRanges.append(contentsOf: fallbackColoredRanges.lazy
+                    .filter { $0.priority == 1 }
+                    .filter { syntaxRangeIsUnoccupied($0.range, occupiedRanges: occupiedRanges) }
+                    .map { ($0.range, $0.color) })
+                // Apply broad tokens first so attributes and quoted values remain distinct.
+                coloredRanges.sort { lhs, rhs in
+                    lhs.0.length == rhs.0.length ? lhs.0.location < rhs.0.location : lhs.0.length > rhs.0.length
+                }
+
+                if theme.boldKeywords {
+                for pattern in emphasisPatterns.keyword {
+                    guard !cancellation.isCancelled else { return }
+                    guard let regex = cachedSyntaxRegex(pattern: pattern, options: [.anchorsMatchLines]) else { continue }
+                    let matches = regex.matches(in: text, range: applyRange)
+                    for match in matches {
+                        guard isValidHighlightRange(match.range, utf16Length: fullRange.length) else { continue }
+                        emphasizedRanges.append((match.range, .keyword))
+                    }
+                }
+            }
+
+            if theme.italicComments {
+                for pattern in emphasisPatterns.comment {
+                    guard !cancellation.isCancelled else { return }
+                    guard let regex = cachedSyntaxRegex(pattern: pattern, options: [.anchorsMatchLines]) else { continue }
+                    let matches = regex.matches(in: text, range: applyRange)
+                    for match in matches {
+                        guard isValidHighlightRange(match.range, utf16Length: fullRange.length) else { continue }
+                        emphasizedRanges.append((match.range, .comment))
+                    }
+                }
+            }
+
+            if theme.boldMarkdownHeadings {
+                for pattern in emphasisPatterns.markdownHeading {
+                    guard !cancellation.isCancelled else { return }
+                    guard let regex = cachedSyntaxRegex(pattern: pattern, options: [.anchorsMatchLines]) else { continue }
+                    let matches = regex.matches(in: text, range: applyRange)
+                    for match in matches {
+                        guard isValidHighlightRange(match.range, utf16Length: fullRange.length) else { continue }
+                        emphasizedRanges.append((match.range, .markdownHeading))
+                    }
+                }
+            }
+
+            if theme.underlineLinks {
+                for pattern in emphasisPatterns.link {
+                    guard !cancellation.isCancelled else { return }
+                    guard let regex = cachedSyntaxRegex(pattern: pattern, options: [.anchorsMatchLines]) else { continue }
+                    let matches = regex.matches(in: text, range: applyRange)
+                    for match in matches {
+                        guard isValidHighlightRange(match.range, utf16Length: fullRange.length) else { continue }
+                        underlinedRanges.append(match.range)
+                    }
+                }
+            }
+
+            DispatchQueue.main.async { [weak coordinator] in
+                guard !cancellation.isCancelled else { return }
+                guard let self = coordinator, let textView = self.textView else { return }
+                guard generation == self.highlightGeneration else { return }
+                guard textView.text == text else { return }
+                let selectedRange = textView.selectedRange
+                let viewportAnchor = self.currentViewportAnchor(
+                    textLength: (text as NSString).length,
+                    language: language
+                )
+                let priorOffset = textView.editorContentOffset
+                let wasFirstResponder = textView.isFirstResponder
+                self.isApplyingHighlight = true
+                let undoWasEnabled = textView.undoManager?.isUndoRegistrationEnabled ?? false
+                if undoWasEnabled {
+                    textView.undoManager?.disableUndoRegistration()
+                }
+                defer {
+                    if undoWasEnabled {
+                        textView.undoManager?.enableUndoRegistration()
+                    }
+                }
+                textView.textStorage.beginEditing()
+                textView.textStorage.removeAttribute(.foregroundColor, range: applyRange)
+                textView.textStorage.removeAttribute(.backgroundColor, range: applyRange)
+                textView.textStorage.removeAttribute(.underlineStyle, range: applyRange)
+                textView.textStorage.addAttribute(.foregroundColor, value: baseColor, range: applyRange)
+                textView.textStorage.addAttribute(.font, value: baseFont, range: applyRange)
+                let boldKeywordFont = fontWithSymbolicTrait(baseFont, trait: .traitBold)
+                let italicCommentFont = fontWithSymbolicTrait(baseFont, trait: .traitItalic)
+                for (range, color) in coloredRanges {
+                    textView.textStorage.addAttribute(.foregroundColor, value: color, range: range)
+                }
+                for (range, emphasis) in emphasizedRanges {
+                    let font: UIFont
+                    switch emphasis {
+                    case .keyword, .markdownHeading:
+                        font = boldKeywordFont
+                    case .comment:
+                        font = italicCommentFont
+                    }
+                    textView.textStorage.addAttribute(.font, value: font, range: range)
+                }
+                for range in underlinedRanges {
+                    textView.textStorage.addAttribute(
+                        .underlineStyle,
+                        value: NSUnderlineStyle.single.rawValue,
+                        range: range
+                    )
+                }
+                for span in markdownFonts {
+                    let range = NSIntersectionRange(span.range, applyRange)
+                    guard range.length > 0 else { continue }
+                    var traits: UIFontDescriptor.SymbolicTraits = []
+                    if span.bold { traits.insert(.traitBold) }
+                    if span.italic { traits.insert(.traitItalic) }
+                    if let descriptor = baseFont.fontDescriptor.withSymbolicTraits(traits) {
+                        textView.textStorage.addAttribute(.font,
+                            value: UIFont(descriptor: descriptor, size: baseFont.pointSize), range: range)
+                    }
+                }
+                let suppressLargeFileExtras = self.parent.isLargeFileMode
+                let scopeGuideVisualsSupported = supportsScopeGuideVisuals(language: self.parent.language)
+                let wantsBracketTokens = self.parent.highlightMatchingBrackets && !suppressLargeFileExtras
+                let usesWrapLayout = textView.textContainer.lineBreakMode != .byClipping
+                let wantsScopeBackground = self.parent.highlightScopeBackground && !suppressLargeFileExtras && !usesWrapLayout && scopeGuideVisualsSupported
+                let wantsScopeGuides = self.parent.showScopeGuides && !suppressLargeFileExtras && !usesWrapLayout && scopeGuideVisualsSupported
+                let needsScopeComputation = (wantsBracketTokens || wantsScopeBackground || wantsScopeGuides)
+                    && fullRange.length < EditorRuntimeLimits.scopeComputationMaxUTF16Length
+                let bracketMatch = needsScopeComputation ? computeBracketScopeMatch(text: text, caretLocation: selectedRange.location) : nil
+                let indentationMatch: IndentationScopeMatch? = {
+                    guard needsScopeComputation, supportsIndentationScopes(language: self.parent.language) else { return nil }
+                    return computeIndentationScopeMatch(text: text, caretLocation: selectedRange.location)
+                }()
+
+                if wantsBracketTokens, let match = bracketMatch {
+                    let textLength = fullRange.length
+                    if isValidRange(match.openRange, utf16Length: textLength) {
+                        textView.textStorage.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: match.openRange)
+                        textView.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: match.openRange)
+                        textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemOrange.withAlphaComponent(0.22), range: match.openRange)
+                    }
+                    if isValidRange(match.closeRange, utf16Length: textLength) {
+                        textView.textStorage.addAttribute(.foregroundColor, value: UIColor.systemOrange, range: match.closeRange)
+                        textView.textStorage.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: match.closeRange)
+                        textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemOrange.withAlphaComponent(0.22), range: match.closeRange)
+                    }
+                }
+                if wantsBracketTokens, let match = bracketMatch {
+                    textView.matchingBracketHighlightRanges = [match.openRange, match.closeRange].filter {
+                        Self.isValidHighlightRange($0, utf16Length: fullRange.length)
+                    }
+                } else {
+                    textView.matchingBracketHighlightRanges = []
+                }
+
+                if wantsScopeBackground || wantsScopeGuides {
+                    let textLength = fullRange.length
+                    let scopeRange = bracketMatch?.scopeRange ?? indentationMatch?.scopeRange
+                    let guideRanges = bracketMatch?.guideMarkerRanges ?? indentationMatch?.guideMarkerRanges ?? []
+
+                    if wantsScopeBackground, let scope = scopeRange, isValidRange(scope, utf16Length: textLength) {
+                        textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemOrange.withAlphaComponent(0.18), range: scope)
+                    }
+                    if wantsScopeGuides {
+                        for marker in guideRanges {
+                            if isValidRange(marker, utf16Length: textLength) {
+                                textView.textStorage.addAttribute(.backgroundColor, value: UIColor.systemBlue.withAlphaComponent(0.36), range: marker)
+                            }
+                        }
+                    }
+                }
+                textView.textStorage.endEditing()
+                syntaxHighlightSignposter.emitEvent("applied_ios")
+                textView.selectedRange = selectedRange
+                if wasFirstResponder {
+                    textView.setEditorContentOffset(priorOffset, animated: false)
+                }
+                textView.typingAttributes = [
+                    .foregroundColor: baseColor,
+                    .font: baseFont
+                ]
+                self.isApplyingHighlight = false
+                self.lastHighlightedText = text
+                self.lastLanguage = language
+                self.lastColorScheme = colorScheme
+                self.lastLineHeight = self.parent.lineHeightMultiple
+                self.lastHighlightToken = token
+                self.lastSelectionLocation = selectedRange.location
+                self.lastHighlightViewportAnchor = viewportAnchor
+                self.lastTranslucencyEnabled = self.parent.translucentBackgroundEnabled
+                self.lastFormattingPreferences = self.parent.formattingPreferences
+                self.syncLineNumberScroll()
+                textView.setNeedsDisplay()
+                if fastInitialPass {
+                    // Keep the highlight state dirty so the complete document pass
+                    // follows the quick visible-range first paint.
+                    self.lastHighlightedText = ""
+                    self.scheduleHighlightIfNeeded(currentText: textView.text, deferred: true)
+                }
+            }
+        }
+
+        private nonisolated static func isValidHighlightRange(_ range: NSRange, utf16Length: Int) -> Bool {
+            guard range.location != NSNotFound, range.length >= 0, range.location >= 0 else { return false }
+            return NSMaxRange(range) <= utf16Length
+        }
+
+        private func updateMatchingBracketOverlay(textView: UITextView, text: NSString, selectionLocation: Int) {
+            guard let editorTextView = textView as? EditorInputTextView else { return }
+            guard parent.highlightMatchingBrackets,
+                  !parent.isLargeFileMode,
+                  text.length < EditorRuntimeLimits.scopeComputationMaxUTF16Length,
+                  let match = computeBracketScopeMatch(text: text as String, caretLocation: selectionLocation) else {
+                editorTextView.matchingBracketHighlightRanges = []
+                return
+            }
+            editorTextView.matchingBracketHighlightRanges = [match.openRange, match.closeRange].filter {
+                Self.isValidHighlightRange($0, utf16Length: text.length)
+            }
+        }
+
+        func textViewDidChange(_ textView: UITextView) {
+            guard !isApplyingHighlight else { return }
+            let lineNumberMutation = pendingTextMutation
+            let didApplyIncrementalMutation = applyPendingTextMutationIfPossible()
+            if !didApplyIncrementalMutation {
+                syncBindingText(textView.text)
+            }
+            if let editorTextView = textView as? EditorInputTextView,
+               editorTextView.rendersInvisibleCharacters || editorTextView.rendersIndentationGuides {
+                editorTextView.invisibleCharactersOverlayView?.requestRedraw(immediate: !isPhoneActivelyEditing)
+            }
+            if let editorTextView = textView as? EditorInputTextView {
+                if let lineNumberMutation {
+                    editorTextView.applyTextMetricsMutation(
+                        range: lineNumberMutation.range,
+                        replacement: lineNumberMutation.replacement
+                    )
+                } else {
+                    editorTextView.invalidateTextMetrics()
+                }
+            }
+            if shouldRenderLineNumbers() {
+                if let lineNumberMutation {
+                    container?.updateLineNumbers(
+                        afterReplacing: lineNumberMutation.range,
+                        with: lineNumberMutation.replacement,
+                        resultingText: textView.text,
+                        fontSize: parent.fontSize
+                    )
+                } else {
+                    // Undo, IME, and programmatic replacements may not supply a delta.
+                    container?.updateLineNumbers(for: textView.text, fontSize: parent.fontSize)
+                }
+            }
+            let nsText = (textView.text ?? "") as NSString
+            let caretLocation = min(nsText.length, textView.selectedRange.location)
+            pendingEditedRange = nsText.lineRange(for: NSRange(location: caretLocation, length: 0))
+            updateCaretStatus()
+            scheduleHighlightIfNeeded(currentText: textView.text)
+            (textView as? EditorInputTextView)?.expandUnwrappedEditingLineIfNeeded()
+            (textView as? EditorInputTextView)?.revealCaretWithContext()
+        }
+
+        func textViewDidChangeSelection(_ textView: UITextView) {
+            guard !isApplyingHighlight else { return }
+            textView.setNeedsDisplay()
+            let editorTextView = textView as? EditorInputTextView
+            editorTextView?.currentLineHighlightOverlayView?.setNeedsDisplay()
+            selectionUpdateGeneration &+= 1
+            let generation = selectionUpdateGeneration
+            guard textView.selectedRange.length > 0 else {
+                publishSelectionState(for: textView)
+                editorTextView?.revealCaretWithContext()
+                return
+            }
+
+            // UIKit already paints the selection synchronously. Defer the derived
+            // selection text, caret status, and cursor-driven highlighting so a drag
+            // does not repeatedly scan/copy the document on the tracking run loop.
+            DispatchQueue.main.asyncAfter(deadline: .now() + (1.0 / 30.0)) { [weak self, weak textView] in
+                guard let self,
+                      let textView,
+                      self.textView === textView,
+                      self.selectionUpdateGeneration == generation else { return }
+                self.publishSelectionState(for: textView)
+            }
+        }
+
+        private func publishSelectionState(for textView: UITextView) {
+            let nsText = (textView.text ?? "") as NSString
+            publishSelectionSnapshot(from: nsText, selectedRange: textView.selectedRange)
+            updateCaretStatus()
+            if !(UIDevice.current.userInterfaceIdiom == .phone && textView.isFirstResponder) {
+                let immediateHighlight = nsText.length < 200_000
+                scheduleHighlightIfNeeded(currentText: textView.text, immediate: immediateHighlight)
+            }
+        }
+
+        func textViewDidBeginEditing(_ textView: UITextView) {
+            if UIDevice.current.userInterfaceIdiom == .phone {
+                cancelPendingHighlight()
+                highlightGeneration &+= 1
+                scheduleHighlightIfNeeded(currentText: textView.text, immediate: true)
+            }
+            // Selection callbacks can arrive before UIKit has promoted the
+            // editor to first responder.  That ordering used to skip the
+            // three-line caret reveal until the first typed character caused
+            // another layout pass.  Reveal once after the responder and
+            // keyboard geometry are committed, then repeat on the next run
+            // loop for the final viewport size without touching selection.
+            if let editorTextView = textView as? EditorInputTextView {
+                editorTextView.layoutIfNeeded()
+                editorTextView.revealCaretWithContext(force: true)
+                DispatchQueue.main.async { [weak editorTextView] in
+                    guard let editorTextView, editorTextView.isFirstResponder else { return }
+                    editorTextView.layoutIfNeeded()
+                    editorTextView.revealCaretWithContext(force: true)
+                }
+            }
+            NotificationCenter.default.post(name: .editorFocusDidChange, object: true)
+        }
+
+        func textViewDidEndEditing(_ textView: UITextView) {
+            NotificationCenter.default.post(name: .editorFocusDidChange, object: false)
+            let textLength = (textView.text as NSString?)?.length ?? 0
+            scheduleHighlightIfNeeded(
+                currentText: textView.text,
+                immediate: textLength < EditorRuntimeLimits.cursorRehighlightMaxUTF16Length
+            )
+        }
+
+        @available(iOS 16.0, *)
+        func textView(
+            _ textView: UITextView,
+            editMenuForTextIn range: NSRange,
+            suggestedActions: [UIMenuElement]
+        ) -> UIMenu? {
+            guard !EditorEditMenuPolicy.shouldUseDefaultMenu(for: range) else { return nil }
+            let snapshotAction = UIAction(
+                title: "Create Code Snapshot",
+                image: UIImage(systemName: "camera.viewfinder")
+            ) { [weak self, weak textView] _ in
+                guard let self, let textView else { return }
+                let nsText = (textView.text ?? "") as NSString
+                self.publishSelectionSnapshot(from: nsText, selectedRange: textView.selectedRange)
+                NotificationCenter.default.post(name: .editorRequestCodeSnapshotFromSelection, object: nil)
+            }
+            return UIMenu(children: suggestedActions + [snapshotAction])
+        }
+
+        private func publishSelectionSnapshot(from text: NSString, selectedRange: NSRange) {
+            var userInfo: [AnyHashable: Any] = [:]
+            if let documentID = parent.documentID {
+                userInfo[EditorCommandUserInfo.documentID] = documentID.uuidString
+            }
+            guard selectedRange.location != NSNotFound,
+                  selectedRange.length > 0,
+                  NSMaxRange(selectedRange) <= text.length else {
+                NotificationCenter.default.post(
+                    name: .editorSelectionDidChange,
+                    object: "",
+                    userInfo: userInfo
+                )
+                return
+            }
+            userInfo["range"] = NSValue(range: selectedRange)
+            let cappedLength = min(selectedRange.length, 20_000)
+            let snippet = text.substring(with: NSRange(location: selectedRange.location, length: cappedLength))
+            NotificationCenter.default.post(
+                name: .editorSelectionDidChange,
+                object: snippet,
+                userInfo: userInfo
+            )
+        }
+
+        private func updateCaretStatus() {
+            // Placeholder/partial-buffer coordinates must not become persisted
+            // bookmarks through ContentView's caret notification receiver.
+            guard !parent.isTabLoadingContent, !isInstallingLargeText, let textView else { return }
+            let nsText = (textView.text ?? "") as NSString
+            let location = min(max(0, textView.selectedRange.location), nsText.length)
+            let useOffsetOnlyStatus =
+                parent.isLargeFileMode ||
+                nsText.length > 300_000 ||
+                (UIDevice.current.userInterfaceIdiom == .phone && nsText.length > 80_000) ||
+                (isPhoneActivelyEditing && nsText.length > 20_000)
+            if useOffsetOnlyStatus {
+                postCaretStatusIfChanged(line: 0, column: location, location: location)
+                return
+            }
+
+            let caret = editorCaretLineColumn(in: nsText, location: location)
+            postCaretStatusIfChanged(line: caret.line, column: caret.column, location: location)
+        }
+
+        private func postCaretStatusIfChanged(line: Int, column: Int, location: Int) {
+            guard line != lastCaretStatusLine ||
+                    column != lastCaretStatusColumn ||
+                    location != lastCaretStatusLocation else { return }
+            lastCaretStatusLine = line
+            lastCaretStatusColumn = column
+            lastCaretStatusLocation = location
+            var userInfo: [AnyHashable: Any] = ["line": line, "column": column, "location": location]
+            if let documentID = parent.documentID {
+                userInfo[EditorCommandUserInfo.documentID] = documentID.uuidString
+            }
+            NotificationCenter.default.post(
+                name: .caretPositionDidChange,
+                object: nil,
+                userInfo: userInfo
+            )
+        }
+
+        func textView(_ textView: UITextView, shouldChangeTextIn range: NSRange, replacementText text: String) -> Bool {
+            EditorPerformanceMonitor.shared.markFirstKeystroke()
+            if text == "\t" {
+                if let expansion = EmmetExpander.expansionIfPossible(
+                    in: textView.text ?? "",
+                    cursorUTF16Location: range.location,
+                    language: parent.language,
+                    indentStyle: parent.indentStyle,
+                    indentWidth: parent.indentWidth
+                ) {
+                    setPendingTextMutation(range: expansion.range, replacement: expansion.expansion)
+                    performProgrammaticReplacement(
+                        in: textView,
+                        range: expansion.range,
+                        replacement: expansion.expansion,
+                        selectedRange: NSRange(location: expansion.range.location + expansion.caretOffset, length: 0)
+                    )
+                    return false
+                }
+                let insertion = EditorCommandSemantics.indentation(
+                    style: parent.indentStyle,
+                    width: parent.indentWidth
+                )
+                setPendingTextMutation(range: range, replacement: insertion)
+                performProgrammaticReplacement(
+                    in: textView,
+                    range: range,
+                    replacement: insertion,
+                    selectedRange: NSRange(location: range.location + insertion.count, length: 0)
+                )
+                return false
+            }
+
+            if text == "\n", parent.autoIndentEnabled {
+                let ns = textView.text as NSString
+                guard let returnContext = autoIndentReturnContext(
+                    in: ns,
+                    proposedRange: range,
+                    selectedRange: textView.selectedRange
+                ) else {
+                    return true
+                }
+                let currentLine = returnContext.linePrefix
+                let indent = currentLine.prefix { $0 == " " || $0 == "\t" }
+                let normalized = normalizedIndentation(String(indent))
+                let listPrefix = continuedMarkdownListPrefix(for: currentLine, normalizedIndent: normalized)
+                let replacement = "\n" + (listPrefix ?? normalized)
+                setPendingTextMutation(range: returnContext.replacementRange, replacement: replacement)
+                performProgrammaticReplacement(
+                    in: textView,
+                    range: returnContext.replacementRange,
+                    replacement: replacement,
+                    selectedRange: NSRange(location: returnContext.replacementRange.location + replacement.count, length: 0),
+                    shouldPreserveViewport: false
+                )
+                return false
+            }
+
+            if parent.autoCloseBracketsEnabled,
+               text == ">",
+               let insertion = htmlAutoCloseInsertion(
+                   in: textView.text as NSString,
+                   insertionRange: range,
+                   language: parent.language
+               ) {
+                setPendingTextMutation(range: range, replacement: insertion.replacement)
+                performProgrammaticReplacement(
+                    in: textView,
+                    range: range,
+                    replacement: insertion.replacement,
+                    selectedRange: NSRange(location: range.location + insertion.caretOffset, length: 0)
+                )
+                return false
+            }
+
+            if parent.autoCloseBracketsEnabled, text.count == 1 {
+                let pairs: [String: String] = ["(": ")", "[": "]", "{": "}", "\"": "\"", "'": "'"]
+                if let closing = pairs[text] {
+                    let insertion = text + closing
+                    setPendingTextMutation(range: range, replacement: insertion)
+                    performProgrammaticReplacement(
+                        in: textView,
+                        range: range,
+                        replacement: insertion,
+                        selectedRange: NSRange(location: range.location + 1, length: 0)
+                    )
+                    return false
+                }
+            }
+
+            setPendingTextMutation(range: range, replacement: text)
+            return true
+        }
+
+        private func performProgrammaticReplacement(
+            in textView: UITextView,
+            range: NSRange,
+            replacement: String,
+            selectedRange: NSRange,
+            shouldPreserveViewport: Bool = true
+        ) {
+            let priorOffset = textView.editorContentOffset
+            textView.textStorage.replaceCharacters(in: range, with: replacement)
+            textView.selectedRange = selectedRange
+            if shouldPreserveViewport,
+               UIDevice.current.userInterfaceIdiom == .phone,
+               textView.isFirstResponder,
+               !textView.isTracking,
+               !textView.isDragging,
+               !textView.isDecelerating {
+                let inset = textView.adjustedContentInset
+                let minY = -inset.top
+                let maxY = max(minY, textView.contentSize.height - textView.bounds.height + inset.bottom)
+                let clampedY = min(max(priorOffset.y, minY), maxY)
+                textView.setEditorContentOffset(CGPoint(x: priorOffset.x, y: clampedY), animated: false)
+            }
+            textViewDidChange(textView)
+        }
+
+        private func normalizedIndentation(_ indent: String) -> String {
+            let width = max(1, parent.indentWidth)
+            switch parent.indentStyle {
+            case "tabs":
+                let spacesCount = indent.filter { $0 == " " }.count
+                let tabsCount = indent.filter { $0 == "\t" }.count
+                let totalSpaces = spacesCount + (tabsCount * width)
+                let tabs = String(repeating: "\t", count: totalSpaces / width)
+                let leftover = String(repeating: " ", count: totalSpaces % width)
+                return tabs + leftover
+            default:
+                let tabsCount = indent.filter { $0 == "\t" }.count
+                let spacesCount = indent.filter { $0 == " " }.count
+                let totalSpaces = spacesCount + (tabsCount * width)
+                return String(repeating: " ", count: totalSpaces)
+            }
+        }
+
+        func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            guard let textView else { return }
+            if consumeIPadShiftScroll(in: scrollView, textView: textView) {
+                return
+            }
+            postUserScrollDirectionIfNeeded(scrollView)
+            let panState = scrollView.panGestureRecognizer.state
+            if panState == .began || panState == .changed {
+                cancelMinimapViewportReconciliation()
+            } else {
+                reconcileMinimapViewportIfNeeded(textView: textView)
+            }
+            syncLineNumberScroll()
+            postMinimapViewportIfNeeded(textView: textView, scrollView: scrollView)
+            if textView.rendersInvisibleCharacters || textView.rendersIndentationGuides {
+                textView.invisibleCharactersOverlayView?.requestRedraw()
+            }
+            if textView.highlightsCurrentLine {
+                textView.currentLineHighlightOverlayView?.setNeedsDisplay()
+            }
+            if !textView.matchingBracketHighlightRanges.isEmpty {
+                textView.setNeedsDisplay()
+            }
+            let textLength = (textView.text as NSString?)?.length ?? 0
+            if shouldRefreshViewportSyntaxOnScroll(
+                language: parent.language,
+                textLength: textLength
+            ) {
+                guard !isPhoneActivelyEditing else { return }
+                scheduleHighlightIfNeeded(currentText: textView.text)
+            }
+        }
+
+        private func postUserScrollDirectionIfNeeded(_ scrollView: UIScrollView) {
+            guard UIDevice.current.userInterfaceIdiom == .phone,
+                  let documentID = parent.documentID,
+                  scrollView.panGestureRecognizer.state == .changed else {
+                lastUserScrollOffsetY = nil
+                accumulatedUserScrollDelta = 0
+                return
+            }
+            let offset = scrollView.contentOffset.y
+            defer { lastUserScrollOffsetY = offset }
+            guard let previousOffset = lastUserScrollOffsetY else { return }
+            let delta = offset - previousOffset
+            guard abs(delta) > 0.5, abs(delta) < 80 else { return }
+            if accumulatedUserScrollDelta.sign != delta.sign {
+                accumulatedUserScrollDelta = 0
+            }
+            accumulatedUserScrollDelta += delta
+            guard abs(accumulatedUserScrollDelta) >= 24 else { return }
+            NotificationCenter.default.post(
+                name: .editorUserDidScroll,
+                object: nil,
+                userInfo: [
+                    EditorCommandUserInfo.documentID: documentID.uuidString,
+                    EditorCommandUserInfo.scrollingDown: accumulatedUserScrollDelta > 0
+                ]
+            )
+            accumulatedUserScrollDelta = 0
+        }
+
+        private func consumeIPadShiftScroll(in scrollView: UIScrollView, textView: EditorInputTextView) -> Bool {
+            let currentOffsetY = scrollView.contentOffset.y
+            guard !isRestoringShiftScrollOffset else {
+                lastScrollOffsetY = currentOffsetY
+                return false
+            }
+            guard let previousOffsetY = lastScrollOffsetY else {
+                lastScrollOffsetY = currentOffsetY
+                return false
+            }
+            guard UIDevice.current.userInterfaceIdiom == .pad,
+                  textView.isHardwareKeyboardShiftPressed else {
+                lastScrollOffsetY = currentOffsetY
+                return false
+            }
+
+            let offsetDelta = currentOffsetY - previousOffsetY
+            guard abs(offsetDelta) > 0.5 else {
+                lastScrollOffsetY = currentOffsetY
+                return false
+            }
+
+            isRestoringShiftScrollOffset = true
+            scrollView.setContentOffset(
+                CGPoint(x: scrollView.contentOffset.x, y: previousOffsetY),
+                animated: false
+            )
+            isRestoringShiftScrollOffset = false
+            lastScrollOffsetY = previousOffsetY
+
+            pendingShiftScrollFontSizeDelta += iPadShiftScrollFontSizeDelta(
+                contentOffsetDeltaY: offsetDelta
+            )
+            let wholePointDelta = pendingShiftScrollFontSizeDelta.rounded(.towardZero)
+            guard abs(wholePointDelta) >= 1 else { return true }
+            pendingShiftScrollFontSizeDelta -= wholePointDelta
+            let nextFontSize = min(28, max(10, parent.fontSize + wholePointDelta))
+            guard nextFontSize != parent.fontSize else { return true }
+            parent.onFontSizeChange?(nextFontSize)
+            return true
+        }
+
+        func syncLineNumberScroll() {
+            guard shouldRenderLineNumbers(), let textView else { return }
+            let offsetY = textView.editorContentOffset.y
+            if abs(lastLineNumberContentOffsetY - offsetY) <= 0.5 {
+                return
+            }
+            lastLineNumberContentOffsetY = offsetY
+            container?.lineNumberView.setNeedsDisplay()
+        }
+
+        func postMinimapViewportIfNeeded(
+            textView: UITextView,
+            scrollView: UIScrollView,
+            force: Bool = false
+        ) {
+            guard let documentID = parent.documentID else { return }
+            let inset = scrollView.adjustedContentInset
+            let contentHeight = max(
+                scrollView.contentSize.height,
+                scrollView.bounds.height - inset.top - inset.bottom
+            )
+            let visibleHeight = max(1, scrollView.bounds.height - inset.top - inset.bottom)
+            guard contentHeight > visibleHeight else {
+                if force || lastMinimapViewportTop != 0 || lastMinimapViewportHeight != 1 {
+                    lastMinimapViewportTop = 0
+                    lastMinimapViewportHeight = 1
+                    NotificationCenter.default.post(
+                        name: .editorViewportDidChange,
+                        object: nil,
+                        userInfo: [
+                            EditorCommandUserInfo.documentID: documentID.uuidString,
+                            EditorCommandUserInfo.viewportTopFraction: 0.0,
+                            EditorCommandUserInfo.viewportHeightFraction: 1.0
+                        ]
+                    )
+                }
+                return
+            }
+            let viewport = codeMinimapViewport(
+                contentOffsetY: Double(scrollView.contentOffset.y),
+                boundsHeight: Double(scrollView.bounds.height),
+                contentHeight: Double(contentHeight),
+                adjustedTopInset: Double(inset.top),
+                adjustedBottomInset: Double(inset.bottom)
+            )
+            guard force ||
+                    abs(viewport.topFraction - lastMinimapViewportTop) > 0.003 ||
+                    abs(viewport.heightFraction - lastMinimapViewportHeight) > 0.003 else { return }
+            lastMinimapViewportTop = viewport.topFraction
+            lastMinimapViewportHeight = viewport.heightFraction
+            NotificationCenter.default.post(
+                name: .editorViewportDidChange,
+                object: nil,
+                userInfo: [
+                    EditorCommandUserInfo.documentID: documentID.uuidString,
+                    EditorCommandUserInfo.viewportTopFraction: viewport.topFraction,
+                    EditorCommandUserInfo.viewportHeightFraction: viewport.heightFraction
+                ]
+            )
+        }
+
+        func scheduleDeferredMinimapViewportPost(for textView: UITextView) {
+            guard !pendingDeferredMinimapViewportPost else { return }
+            let expectedDocumentID = parent.documentID
+            pendingDeferredMinimapViewportPost = true
+            DispatchQueue.main.async { [weak self, weak textView] in
+                guard let self else { return }
+                self.pendingDeferredMinimapViewportPost = false
+                guard self.parent.documentID == expectedDocumentID,
+                      let textView else { return }
+                textView.layoutIfNeeded()
+                self.postMinimapViewportIfNeeded(textView: textView, scrollView: textView, force: true)
+            }
+        }
+    }
+}
+
+#endif

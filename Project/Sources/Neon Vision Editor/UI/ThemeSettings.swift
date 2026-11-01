@@ -1,0 +1,1161 @@
+import SwiftUI
+
+#if os(macOS)
+import AppKit
+private typealias PlatformColor = NSColor
+#else
+import UIKit
+private typealias PlatformColor = UIColor
+#endif
+
+// MARK: - Theme Models
+
+struct EditorTheme {
+    let text: Color
+    let background: Color
+    let cursor: Color
+    let selection: Color
+    let syntax: SyntaxColors
+    let boldKeywords: Bool
+    let italicComments: Bool
+    let underlineLinks: Bool
+    let boldMarkdownHeadings: Bool
+}
+
+extension EditorTheme: SyntaxThemeProviding {}
+
+struct EditorFormattingPreferences: Equatable, Sendable {
+    let boldKeywords: Bool
+    let italicComments: Bool
+    let underlineLinks: Bool
+    let boldMarkdownHeadings: Bool
+}
+
+private struct ThemePalette {
+    let text: Color
+    let background: Color
+    let cursor: Color
+    let selection: Color
+    let keyword: Color
+    let string: Color
+    let number: Color
+    let comment: Color
+    let type: Color
+    let property: Color
+    let builtin: Color
+}
+
+struct ThemePaletteColors {
+    let text: Color
+    let background: Color
+    let cursor: Color
+    let selection: Color
+    let keyword: Color
+    let string: Color
+    let number: Color
+    let comment: Color
+    let type: Color
+    let property: Color
+    let builtin: Color
+}
+
+/// Combines a saved custom palette with user edits for the same theme.
+/// Overrides intentionally win so the editor and Settings present identical colors.
+func mergedThemeColorValues(
+    for themeName: String,
+    customThemes: [String: [String: String]],
+    overrides: [String: [String: String]]
+) -> [String: String] {
+    (customThemes[themeName] ?? [:]).merging(overrides[themeName] ?? [:]) { _, override in override }
+}
+
+private struct RGBColorComponents {
+    let red: Double
+    let green: Double
+    let blue: Double
+    let alpha: Double
+}
+
+// MARK: - Color Adjustment Helpers
+
+private func colorComponents(_ color: Color) -> RGBColorComponents? {
+#if os(macOS)
+    let platform = PlatformColor(color)
+    guard let srgb = platform.usingColorSpace(.sRGB) else { return nil }
+    return RGBColorComponents(
+        red: Double(srgb.redComponent),
+        green: Double(srgb.greenComponent),
+        blue: Double(srgb.blueComponent),
+        alpha: Double(srgb.alphaComponent)
+    )
+#else
+    let platform = PlatformColor(color)
+    var red: CGFloat = 0
+    var green: CGFloat = 0
+    var blue: CGFloat = 0
+    var alpha: CGFloat = 0
+    guard platform.getRed(&red, green: &green, blue: &blue, alpha: &alpha) else { return nil }
+    return RGBColorComponents(red: Double(red), green: Double(green), blue: Double(blue), alpha: Double(alpha))
+#endif
+}
+
+private func relativeLuminance(_ components: RGBColorComponents) -> Double {
+    (0.2126 * components.red) + (0.7152 * components.green) + (0.0722 * components.blue)
+}
+
+private func blend(_ source: Color, with target: Color, amount: Double) -> Color {
+    guard let sourceComponents = colorComponents(source), let targetComponents = colorComponents(target) else {
+        return source
+    }
+    let clamped = min(1.0, max(0.0, amount))
+    return Color(
+        red: sourceComponents.red + ((targetComponents.red - sourceComponents.red) * clamped),
+        green: sourceComponents.green + ((targetComponents.green - sourceComponents.green) * clamped),
+        blue: sourceComponents.blue + ((targetComponents.blue - sourceComponents.blue) * clamped),
+        opacity: sourceComponents.alpha + ((targetComponents.alpha - sourceComponents.alpha) * clamped)
+    )
+}
+
+private func modeAdjustedEditorBackground(_ background: Color, colorScheme: ColorScheme) -> Color {
+    guard let components = colorComponents(background) else { return background }
+    let luminance = relativeLuminance(components)
+
+    if colorScheme == .light {
+        // Keep all themes readable in light/system-light by lifting dark palettes.
+        if luminance >= 0.78 { return background }
+        let targetLuminance = 0.96
+        let normalized = (targetLuminance - luminance) / max(0.0001, 1.0 - luminance)
+        let mixAmount = min(0.95, max(0.70, normalized))
+        return blend(background, with: .white, amount: mixAmount)
+    }
+
+    // Keep all themes readable in dark/system-dark by lowering bright palettes.
+    if luminance <= 0.28 { return background }
+    let targetLuminance = 0.14
+    let normalized = (luminance - targetLuminance) / max(0.0001, luminance)
+    let mixAmount = min(0.90, max(0.55, normalized))
+    return blend(background, with: .black, amount: mixAmount)
+}
+
+private func modeAdjustedEditorText(_ text: Color, background: Color, colorScheme: ColorScheme) -> Color {
+    guard let textComponents = colorComponents(text), let backgroundComponents = colorComponents(background) else {
+        return text
+    }
+    let textLuminance = relativeLuminance(textComponents)
+    let backgroundLuminance = relativeLuminance(backgroundComponents)
+
+    if colorScheme == .light {
+        if backgroundLuminance < 0.72 {
+            return textLuminance <= 0.22 ? text : blend(text, with: .black, amount: 0.72)
+        }
+        return textLuminance <= 0.35 ? text : blend(text, with: .black, amount: 0.72)
+    }
+
+    if backgroundLuminance > 0.34 {
+        return textLuminance >= 0.78 ? text : blend(text, with: .white, amount: 0.72)
+    }
+    return textLuminance >= 0.68 ? text : blend(text, with: .white, amount: 0.72)
+}
+
+private func backgroundOverrideKey(for colorScheme: ColorScheme) -> String {
+    colorScheme == .dark ? "backgroundDark" : "backgroundLight"
+}
+
+private func backgroundOverrideHex(from overrides: [String: String], colorScheme: ColorScheme) -> String? {
+    overrides[backgroundOverrideKey(for: colorScheme)] ?? overrides["background"]
+}
+
+private func modeAdjustedSyntaxColor(
+    _ color: Color,
+    colorScheme: ColorScheme,
+    darkenInLight amountLight: Double,
+    brightenInDark amountDark: Double
+) -> Color {
+    if colorScheme == .light {
+        return blend(color, with: .black, amount: amountLight)
+    }
+    return blend(color, with: .white, amount: amountDark)
+}
+
+private func emphasizedSelectionColor(for canonicalName: String, fallback: Color) -> Color {
+    switch canonicalName {
+    case "Neon Glow":
+        return Color(red: 0.95, green: 0.17, blue: 0.56)
+    case "Neon Flow":
+        return Color(red: 0.95, green: 0.17, blue: 0.56)
+    case "Neon Voltage":
+        return Color(red: 0.00, green: 0.72, blue: 1.00)
+    case "Laserwave":
+        return Color(red: 0.98, green: 0.24, blue: 0.88)
+    case "Cyber Lime":
+        return Color(red: 0.45, green: 0.78, blue: 0.16)
+    case "Plasma Storm":
+        return Color(red: 0.58, green: 0.46, blue: 1.00)
+    case "Inferno Neon":
+        return Color(red: 1.00, green: 0.38, blue: 0.16)
+    case "Ultraviolet Flux":
+        return Color(red: 0.84, green: 0.36, blue: 1.00)
+    case "AMOLED Neon":
+        return Color(red: 0.00, green: 0.749, blue: 0.949)
+    case "Prism Daylight":
+        return Color(red: 0.24, green: 0.50, blue: 0.96)
+    case "Dracula":
+        return Color(red: 1.00, green: 0.48, blue: 0.78)
+    case "One Dark Pro":
+        return Color(red: 0.35, green: 0.67, blue: 0.98)
+    case "Nord":
+        return Color(red: 0.56, green: 0.74, blue: 0.73)
+    case "Tokyo Night":
+        return Color(red: 0.48, green: 0.64, blue: 0.97)
+    case "Gruvbox":
+        return Color(red: 1.00, green: 0.50, blue: 0.10)
+    case "Arc":
+        return Color(red: 0.35, green: 0.67, blue: 0.98)
+    case "Dusk":
+        return Color(red: 0.93, green: 0.54, blue: 0.94)
+    case "Aurora":
+        return Color(red: 0.35, green: 0.96, blue: 0.76)
+    case "Horizon":
+        return Color(red: 0.99, green: 0.46, blue: 0.36)
+    case "Midnight":
+        return Color(red: 0.25, green: 0.78, blue: 0.98)
+    case "Mono":
+        return Color(red: 0.82, green: 0.82, blue: 0.82)
+    case "Paper":
+        return Color(red: 0.24, green: 0.50, blue: 0.96)
+    case "Solar":
+        return Color(red: 0.99, green: 0.64, blue: 0.24)
+    case "Pulse":
+        return Color(red: 0.98, green: 0.54, blue: 0.62)
+    case "Mocha":
+        return Color(red: 0.82, green: 0.60, blue: 0.98)
+    case "Custom":
+        return fallback
+    default:
+        return fallback
+    }
+}
+
+// MARK: - Syntax Adjustment Profiles
+
+// Internal strategy for token color adjustment per theme family.
+private enum SyntaxAdjustmentProfile {
+    case standard
+    case neonRaw
+}
+
+private func adjustedSyntaxColor(
+    _ color: Color,
+    colorScheme: ColorScheme,
+    profile: SyntaxAdjustmentProfile,
+    darkenInLight amountLight: Double,
+    brightenInDark amountDark: Double
+) -> Color {
+    switch profile {
+    case .standard:
+        return modeAdjustedSyntaxColor(
+            color,
+            colorScheme: colorScheme,
+            darkenInLight: amountLight,
+            brightenInDark: amountDark
+        )
+    case .neonRaw:
+        // Keep Neon Glow vivid in light mode and only apply a tiny dark-mode lift.
+        if colorScheme == .light { return color }
+        return blend(color, with: .white, amount: 0.03)
+    }
+}
+
+// MARK: - Theme Name Canonicalization
+
+// Canonical theme names shown in settings and used for palette lookup.
+let editorThemeNames: [String] = [
+    "Neon Glow",
+    "Neon Flow",
+    "Neon Voltage",
+    "Laserwave",
+    "Cyber Lime",
+    "Plasma Storm",
+    "Inferno Neon",
+    "Ultraviolet Flux",
+    "AMOLED Neon",
+    "Prism Daylight",
+    "Custom",
+    "Dracula",
+    "One Dark Pro",
+    "Monokai",
+    "GitHub Dark",
+    "Material",
+    "Solarized Dark",
+    "Rose Pine",
+    "Nord",
+    "Tokyo Night",
+    "Gruvbox",
+    "Arc",
+    "Dusk",
+    "Aurora",
+    "Horizon",
+    "Midnight",
+    "Mono",
+    "Paper",
+    "Solar",
+    "Pulse",
+    "Mocha"
+]
+
+// Normalize persisted theme values so legacy/case variants still resolve correctly.
+func canonicalThemeName(_ rawName: String, defaults: UserDefaults = .standard) -> String {
+    let trimmed = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return "Neon Glow" }
+
+    if let exact = editorThemeNames.first(where: { $0 == trimmed }) {
+        return exact
+    }
+
+    if let caseInsensitive = editorThemeNames.first(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+        return caseInsensitive
+    }
+
+    let customThemeNames = ThemeOverrideDecodeCache.overrides(
+        from: defaults.data(forKey: SettingsPreferenceKey.savedCustomThemes)
+    ).keys
+    if let exact = customThemeNames.first(where: { $0 == trimmed }) {
+        return exact
+    }
+
+    if let caseInsensitive = customThemeNames.first(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
+        return caseInsensitive
+    }
+
+    return "Neon Glow"
+}
+
+private func savedCustomThemeColors(named name: String, defaults: UserDefaults) -> [String: String]? {
+    ThemeOverrideDecodeCache.overrides(
+        from: defaults.data(forKey: SettingsPreferenceKey.savedCustomThemes)
+    )[name]
+}
+
+private func paletteForThemeName(_ name: String, defaults: UserDefaults) -> ThemePalette {
+    let canonicalName = canonicalThemeName(name, defaults: defaults)
+    let customColors = savedCustomThemeColors(named: canonicalName, defaults: defaults) ?? [:]
+    let palette: ThemePalette = {
+        switch canonicalName {
+        case "Neon Glow":
+            return ThemePalette(
+                text: Color(red: 0.94, green: 0.94, blue: 0.94),
+                background: Color(red: 0.06, green: 0.07, blue: 0.09),
+                cursor: Color(red: 0.30, green: 0.60, blue: 0.90),
+                selection: Color(red: 0.18, green: 0.24, blue: 0.33),
+                keyword: Color(red: 0.93, green: 0.00, blue: 0.88),
+                string: Color(red: 0.00, green: 0.243137, blue: 1.00),
+                number: Color(red: 1.00, green: 0.02, blue: 0.12),
+                comment: Color(red: 0.38, green: 0.38, blue: 0.40),
+                type: Color(red: 0.20, green: 0.82, blue: 0.41),
+                property: Color(red: 0.86, green: 0.44, blue: 0.84),
+                builtin: Color(red: 1.00, green: 0.88, blue: 0.05)
+            )
+        case "Neon Flow":
+            return ThemePalette(
+                text: Color(red: 0.00, green: 0.00, blue: 0.00),
+                background: Color(red: 1.00, green: 1.00, blue: 1.00),
+                cursor: Color(red: 0.00, green: 0.54, blue: 1.00),
+                selection: Color(red: 0.78, green: 0.88, blue: 1.00),
+                keyword: Color(red: 0.00, green: 0.34, blue: 1.00),
+                string: Color(red: 0.78, green: 0.00, blue: 1.00),
+                number: Color(red: 1.00, green: 0.28, blue: 0.00),
+                comment: Color(red: 0.35, green: 0.42, blue: 0.48),
+                type: Color(red: 0.00, green: 0.62, blue: 0.20),
+                property: Color(red: 0.00, green: 0.62, blue: 0.95),
+                builtin: Color(red: 0.94, green: 0.00, blue: 0.42)
+            )
+        case "Neon Voltage":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.98, blue: 1.00),
+                background: Color(red: 0.04, green: 0.06, blue: 0.09),
+                cursor: Color(red: 0.00, green: 0.92, blue: 1.00),
+                selection: Color(red: 0.12, green: 0.20, blue: 0.30),
+                keyword: Color(red: 0.00, green: 0.92, blue: 1.00),
+                string: Color(red: 0.35, green: 1.00, blue: 0.72),
+                number: Color(red: 1.00, green: 0.72, blue: 0.10),
+                comment: Color(red: 0.48, green: 0.56, blue: 0.68),
+                type: Color(red: 0.74, green: 0.52, blue: 1.00),
+                property: Color(red: 0.32, green: 0.88, blue: 1.00),
+                builtin: Color(red: 1.00, green: 0.34, blue: 0.74)
+            )
+        case "Laserwave":
+            return ThemePalette(
+                text: Color(red: 0.96, green: 0.93, blue: 1.00),
+                background: Color(red: 0.10, green: 0.05, blue: 0.14),
+                cursor: Color(red: 0.98, green: 0.24, blue: 0.88),
+                selection: Color(red: 0.25, green: 0.15, blue: 0.34),
+                keyword: Color(red: 1.00, green: 0.28, blue: 0.86),
+                string: Color(red: 0.10, green: 0.92, blue: 0.96),
+                number: Color(red: 1.00, green: 0.60, blue: 0.30),
+                comment: Color(red: 0.60, green: 0.52, blue: 0.72),
+                type: Color(red: 0.65, green: 0.72, blue: 1.00),
+                property: Color(red: 0.36, green: 0.98, blue: 0.84),
+                builtin: Color(red: 1.00, green: 0.42, blue: 0.56)
+            )
+        case "Cyber Lime":
+            return ThemePalette(
+                text: Color(red: 0.94, green: 0.98, blue: 0.92),
+                background: Color(red: 0.07, green: 0.09, blue: 0.06),
+                cursor: Color(red: 0.18, green: 0.48, blue: 0.96),
+                selection: Color(red: 0.18, green: 0.25, blue: 0.14),
+                keyword: Color(red: 0.45, green: 0.78, blue: 0.16),
+                string: Color(red: 0.13, green: 0.70, blue: 0.50),
+                number: Color(red: 1.00, green: 0.86, blue: 0.22),
+                comment: Color(red: 0.54, green: 0.62, blue: 0.50),
+                type: Color(red: 0.48, green: 0.86, blue: 1.00),
+                property: Color(red: 0.56, green: 0.78, blue: 0.28),
+                builtin: Color(red: 1.00, green: 0.48, blue: 0.40)
+            )
+        case "Plasma Storm":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.95, blue: 1.00),
+                background: Color(red: 0.06, green: 0.05, blue: 0.10),
+                cursor: Color(red: 0.54, green: 0.44, blue: 1.00),
+                selection: Color(red: 0.16, green: 0.12, blue: 0.30),
+                keyword: Color(red: 0.58, green: 0.46, blue: 1.00),
+                string: Color(red: 0.30, green: 1.00, blue: 0.62),
+                number: Color(red: 1.00, green: 0.52, blue: 0.20),
+                comment: Color(red: 0.54, green: 0.50, blue: 0.68),
+                type: Color(red: 0.80, green: 0.54, blue: 1.00),
+                property: Color(red: 0.66, green: 0.78, blue: 1.00),
+                builtin: Color(red: 1.00, green: 0.30, blue: 0.66)
+            )
+        case "Inferno Neon":
+            return ThemePalette(
+                text: Color(red: 1.00, green: 0.94, blue: 0.90),
+                background: Color(red: 0.11, green: 0.05, blue: 0.03),
+                cursor: Color(red: 1.00, green: 0.46, blue: 0.08),
+                selection: Color(red: 0.28, green: 0.12, blue: 0.08),
+                keyword: Color(red: 1.00, green: 0.38, blue: 0.16),
+                string: Color(red: 1.00, green: 0.74, blue: 0.24),
+                number: Color(red: 1.00, green: 0.26, blue: 0.48),
+                comment: Color(red: 0.70, green: 0.54, blue: 0.46),
+                type: Color(red: 1.00, green: 0.56, blue: 0.20),
+                property: Color(red: 1.00, green: 0.70, blue: 0.32),
+                builtin: Color(red: 1.00, green: 0.18, blue: 0.30)
+            )
+        case "Ultraviolet Flux":
+            return ThemePalette(
+                text: Color(red: 0.96, green: 0.93, blue: 1.00),
+                background: Color(red: 0.08, green: 0.04, blue: 0.12),
+                cursor: Color(red: 0.84, green: 0.36, blue: 1.00),
+                selection: Color(red: 0.21, green: 0.12, blue: 0.30),
+                keyword: Color(red: 0.84, green: 0.36, blue: 1.00),
+                string: Color(red: 0.76, green: 1.00, blue: 0.24),
+                number: Color(red: 1.00, green: 0.62, blue: 0.24),
+                comment: Color(red: 0.60, green: 0.52, blue: 0.72),
+                type: Color(red: 1.00, green: 0.38, blue: 0.86),
+                property: Color(red: 0.68, green: 0.72, blue: 1.00),
+                builtin: Color(red: 1.00, green: 0.28, blue: 0.56)
+            )
+        case "AMOLED Neon":
+            return ThemePalette(
+                text: Color(red: 0.96, green: 0.98, blue: 1.00),
+                background: Color(red: 0.00, green: 0.00, blue: 0.00),
+                cursor: Color(red: 0.004, green: 0.820, blue: 0.502),
+                selection: Color(red: 0.00, green: 0.749, blue: 0.949),
+                keyword: Color(red: 1.00, green: 0.00, blue: 0.88),
+                string: Color(red: 0.00, green: 0.843, blue: 0.00),
+                number: Color(red: 1.00, green: 0.82, blue: 0.00),
+                comment: Color(red: 0.42, green: 0.48, blue: 0.56),
+                type: Color(red: 0.00, green: 0.78, blue: 1.00),
+                property: Color(red: 0.72, green: 0.20, blue: 1.00),
+                builtin: Color(red: 1.00, green: 0.20, blue: 0.32)
+            )
+        case "Prism Daylight":
+            return ThemePalette(
+                text: Color(red: 0.08, green: 0.10, blue: 0.14),
+                background: Color(red: 0.96, green: 0.97, blue: 0.99),
+                cursor: Color(red: 0.14, green: 0.34, blue: 0.84),
+                selection: Color(red: 0.84, green: 0.89, blue: 0.99),
+                keyword: Color(red: 0.48, green: 0.13, blue: 0.71),
+                string: Color(red: 0.05, green: 0.48, blue: 0.33),
+                number: Color(red: 0.71, green: 0.28, blue: 0.03),
+                comment: Color(red: 0.37, green: 0.42, blue: 0.49),
+                type: Color(red: 0.00, green: 0.34, blue: 0.76),
+                property: Color(red: 0.64, green: 0.11, blue: 0.67),
+                builtin: Color(red: 0.76, green: 0.25, blue: 0.05)
+            )
+        case "Dracula":
+            return ThemePalette(
+                text: Color(red: 0.97, green: 0.97, blue: 0.95),
+                background: Color(red: 0.16, green: 0.17, blue: 0.21),
+                cursor: Color(red: 0.97, green: 0.97, blue: 0.95),
+                selection: Color(red: 0.27, green: 0.28, blue: 0.35),
+                keyword: Color(red: 1.00, green: 0.48, blue: 0.78),
+                string: Color(red: 0.95, green: 0.98, blue: 0.55),
+                number: Color(red: 0.74, green: 0.58, blue: 0.98),
+                comment: Color(red: 0.38, green: 0.45, blue: 0.64),
+                type: Color(red: 0.55, green: 0.91, blue: 0.99),
+                property: Color(red: 0.31, green: 0.98, blue: 0.48),
+                builtin: Color(red: 1.00, green: 0.72, blue: 0.42)
+            )
+        case "One Dark Pro":
+            return ThemePalette(
+                text: Color(red: 0.67, green: 0.70, blue: 0.75),
+                background: Color(red: 0.16, green: 0.17, blue: 0.20),
+                cursor: Color(red: 0.32, green: 0.55, blue: 1.00),
+                selection: Color(red: 0.24, green: 0.27, blue: 0.32),
+                keyword: Color(red: 0.78, green: 0.47, blue: 0.87),
+                string: Color(red: 0.60, green: 0.76, blue: 0.47),
+                number: Color(red: 0.82, green: 0.60, blue: 0.40),
+                comment: Color(red: 0.36, green: 0.39, blue: 0.44),
+                type: Color(red: 0.90, green: 0.75, blue: 0.48),
+                property: Color(red: 0.38, green: 0.69, blue: 0.94),
+                builtin: Color(red: 0.34, green: 0.71, blue: 0.76)
+            )
+        case "Monokai":
+            return ThemePalette(
+                text: Color(red: 0.97, green: 0.97, blue: 0.95),
+                background: Color(red: 0.15, green: 0.16, blue: 0.13),
+                cursor: Color(red: 0.97, green: 0.97, blue: 0.95),
+                selection: Color(red: 0.29, green: 0.30, blue: 0.25),
+                keyword: Color(red: 0.98, green: 0.15, blue: 0.45),
+                string: Color(red: 0.90, green: 0.86, blue: 0.45),
+                number: Color(red: 0.68, green: 0.51, blue: 1.00),
+                comment: Color(red: 0.46, green: 0.44, blue: 0.37),
+                type: Color(red: 0.40, green: 0.85, blue: 0.94),
+                property: Color(red: 0.65, green: 0.89, blue: 0.18),
+                builtin: Color(red: 0.98, green: 0.58, blue: 0.25)
+            )
+        case "GitHub Dark":
+            return ThemePalette(
+                text: Color(red: 0.79, green: 0.82, blue: 0.85),
+                background: Color(red: 0.05, green: 0.07, blue: 0.09),
+                cursor: Color(red: 0.35, green: 0.66, blue: 1.00),
+                selection: Color(red: 0.15, green: 0.26, blue: 0.39),
+                keyword: Color(red: 1.00, green: 0.48, blue: 0.56),
+                string: Color(red: 0.65, green: 0.78, blue: 1.00),
+                number: Color(red: 0.47, green: 0.68, blue: 1.00),
+                comment: Color(red: 0.48, green: 0.53, blue: 0.59),
+                type: Color(red: 0.97, green: 0.82, blue: 0.52),
+                property: Color(red: 0.47, green: 0.82, blue: 0.98),
+                builtin: Color(red: 0.83, green: 0.65, blue: 1.00)
+            )
+        case "Material":
+            return ThemePalette(
+                text: Color(red: 0.70, green: 0.76, blue: 0.79),
+                background: Color(red: 0.15, green: 0.20, blue: 0.22),
+                cursor: Color(red: 0.50, green: 0.83, blue: 0.82),
+                selection: Color(red: 0.25, green: 0.32, blue: 0.35),
+                keyword: Color(red: 0.78, green: 0.53, blue: 1.00),
+                string: Color(red: 0.76, green: 0.86, blue: 0.50),
+                number: Color(red: 0.96, green: 0.62, blue: 0.47),
+                comment: Color(red: 0.42, green: 0.51, blue: 0.54),
+                type: Color(red: 0.50, green: 0.83, blue: 0.82),
+                property: Color(red: 0.54, green: 0.72, blue: 0.93),
+                builtin: Color(red: 1.00, green: 0.80, blue: 0.40)
+            )
+        case "Solarized Dark":
+            return ThemePalette(
+                text: Color(red: 0.51, green: 0.58, blue: 0.59),
+                background: Color(red: 0.00, green: 0.17, blue: 0.21),
+                cursor: Color(red: 0.15, green: 0.55, blue: 0.82),
+                selection: Color(red: 0.03, green: 0.24, blue: 0.29),
+                keyword: Color(red: 0.42, green: 0.44, blue: 0.77),
+                string: Color(red: 0.16, green: 0.63, blue: 0.60),
+                number: Color(red: 0.83, green: 0.21, blue: 0.51),
+                comment: Color(red: 0.35, green: 0.43, blue: 0.46),
+                type: Color(red: 0.71, green: 0.54, blue: 0.00),
+                property: Color(red: 0.15, green: 0.55, blue: 0.82),
+                builtin: Color(red: 0.80, green: 0.29, blue: 0.09)
+            )
+        case "Rose Pine":
+            return ThemePalette(
+                text: Color(red: 0.88, green: 0.85, blue: 0.88),
+                background: Color(red: 0.10, green: 0.09, blue: 0.14),
+                cursor: Color(red: 0.92, green: 0.68, blue: 0.68),
+                selection: Color(red: 0.25, green: 0.22, blue: 0.32),
+                keyword: Color(red: 0.77, green: 0.67, blue: 0.94),
+                string: Color(red: 0.62, green: 0.79, blue: 0.76),
+                number: Color(red: 0.95, green: 0.75, blue: 0.60),
+                comment: Color(red: 0.43, green: 0.40, blue: 0.51),
+                type: Color(red: 0.56, green: 0.73, blue: 0.96),
+                property: Color(red: 0.92, green: 0.68, blue: 0.68),
+                builtin: Color(red: 0.91, green: 0.55, blue: 0.66)
+            )
+        case "Nord":
+            return ThemePalette(
+                text: Color(red: 0.85, green: 0.87, blue: 0.91),
+                background: Color(red: 0.18, green: 0.20, blue: 0.25),
+                cursor: Color(red: 0.53, green: 0.75, blue: 0.82),
+                selection: Color(red: 0.26, green: 0.30, blue: 0.37),
+                keyword: Color(red: 0.51, green: 0.63, blue: 0.76),
+                string: Color(red: 0.64, green: 0.75, blue: 0.55),
+                number: Color(red: 0.71, green: 0.56, blue: 0.68),
+                comment: Color(red: 0.38, green: 0.43, blue: 0.53),
+                type: Color(red: 0.56, green: 0.74, blue: 0.73),
+                property: Color(red: 0.82, green: 0.53, blue: 0.44),
+                builtin: Color(red: 0.92, green: 0.80, blue: 0.55)
+            )
+        case "Tokyo Night":
+            return ThemePalette(
+                text: Color(red: 0.75, green: 0.79, blue: 0.96),
+                background: Color(red: 0.10, green: 0.11, blue: 0.15),
+                cursor: Color(red: 0.48, green: 0.64, blue: 0.97),
+                selection: Color(red: 0.20, green: 0.28, blue: 0.49),
+                keyword: Color(red: 0.73, green: 0.60, blue: 0.97),
+                string: Color(red: 0.62, green: 0.81, blue: 0.42),
+                number: Color(red: 1.00, green: 0.62, blue: 0.39),
+                comment: Color(red: 0.34, green: 0.37, blue: 0.54),
+                type: Color(red: 0.49, green: 0.81, blue: 1.00),
+                property: Color(red: 0.16, green: 0.77, blue: 0.87),
+                builtin: Color(red: 0.97, green: 0.46, blue: 0.56)
+            )
+        case "Gruvbox":
+            return ThemePalette(
+                text: Color(red: 0.92, green: 0.86, blue: 0.70),
+                background: Color(red: 0.16, green: 0.16, blue: 0.16),
+                cursor: Color(red: 0.98, green: 0.74, blue: 0.18),
+                selection: Color(red: 0.31, green: 0.29, blue: 0.27),
+                keyword: Color(red: 0.98, green: 0.29, blue: 0.20),
+                string: Color(red: 0.72, green: 0.73, blue: 0.15),
+                number: Color(red: 0.83, green: 0.53, blue: 0.61),
+                comment: Color(red: 0.57, green: 0.51, blue: 0.46),
+                type: Color(red: 0.56, green: 0.75, blue: 0.49),
+                property: Color(red: 0.51, green: 0.65, blue: 0.60),
+                builtin: Color(red: 1.00, green: 0.50, blue: 0.10)
+            )
+        case "Arc":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.96, blue: 0.98),
+                background: Color(red: 0.12, green: 0.13, blue: 0.16),
+                cursor: Color(red: 0.35, green: 0.67, blue: 0.98),
+                selection: Color(red: 0.22, green: 0.29, blue: 0.40),
+                keyword: Color(red: 0.85, green: 0.48, blue: 1.0),
+                string: Color(red: 0.45, green: 0.88, blue: 0.72),
+                number: Color(red: 0.98, green: 0.75, blue: 0.37),
+                comment: Color(red: 0.56, green: 0.60, blue: 0.70),
+                type: Color(red: 0.44, green: 0.66, blue: 0.98),
+                property: Color(red: 0.94, green: 0.61, blue: 0.32),
+                builtin: Color(red: 0.99, green: 0.51, blue: 0.71)
+            )
+        case "Dusk":
+            return ThemePalette(
+                text: Color(red: 0.93, green: 0.92, blue: 0.95),
+                background: Color(red: 0.14, green: 0.10, blue: 0.20),
+                cursor: Color(red: 0.93, green: 0.54, blue: 0.94),
+                selection: Color(red: 0.28, green: 0.22, blue: 0.39),
+                keyword: Color(red: 0.98, green: 0.72, blue: 0.40),
+                string: Color(red: 0.48, green: 0.89, blue: 0.67),
+                number: Color(red: 0.98, green: 0.54, blue: 0.62),
+                comment: Color(red: 0.62, green: 0.57, blue: 0.70),
+                type: Color(red: 0.57, green: 0.75, blue: 1.0),
+                property: Color(red: 0.88, green: 0.64, blue: 0.98),
+                builtin: Color(red: 0.94, green: 0.44, blue: 0.76)
+            )
+        case "Aurora":
+            return ThemePalette(
+                text: Color(red: 0.92, green: 0.96, blue: 0.98),
+                background: Color(red: 0.08, green: 0.12, blue: 0.14),
+                cursor: Color(red: 0.35, green: 0.96, blue: 0.76),
+                selection: Color(red: 0.18, green: 0.28, blue: 0.30),
+                keyword: Color(red: 0.36, green: 0.92, blue: 0.98),
+                string: Color(red: 0.44, green: 0.98, blue: 0.62),
+                number: Color(red: 0.98, green: 0.76, blue: 0.38),
+                comment: Color(red: 0.70, green: 0.86, blue: 0.92),
+                type: Color(red: 0.52, green: 0.74, blue: 0.98),
+                property: Color(red: 0.90, green: 0.60, blue: 0.98),
+                builtin: Color(red: 0.98, green: 0.52, blue: 0.72)
+            )
+        case "Horizon":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.94, blue: 0.92),
+                background: Color(red: 0.14, green: 0.10, blue: 0.09),
+                cursor: Color(red: 0.99, green: 0.62, blue: 0.36),
+                selection: Color(red: 0.30, green: 0.20, blue: 0.18),
+                keyword: Color(red: 0.99, green: 0.46, blue: 0.36),
+                string: Color(red: 0.98, green: 0.78, blue: 0.36),
+                number: Color(red: 0.98, green: 0.60, blue: 0.80),
+                comment: Color(red: 0.86, green: 0.72, blue: 0.64),
+                type: Color(red: 0.60, green: 0.78, blue: 0.98),
+                property: Color(red: 0.96, green: 0.56, blue: 0.45),
+                builtin: Color(red: 0.90, green: 0.72, blue: 0.36)
+            )
+        case "Midnight":
+            return ThemePalette(
+                text: Color(red: 0.90, green: 0.94, blue: 0.98),
+                background: Color(red: 0.08, green: 0.10, blue: 0.16),
+                cursor: Color(red: 0.25, green: 0.78, blue: 0.98),
+                selection: Color(red: 0.16, green: 0.22, blue: 0.32),
+                keyword: Color(red: 0.35, green: 0.86, blue: 0.96),
+                string: Color(red: 0.36, green: 0.82, blue: 1.00),
+                number: Color(red: 0.96, green: 0.77, blue: 0.31),
+                comment: Color(red: 0.55, green: 0.63, blue: 0.74),
+                type: Color(red: 0.40, green: 0.65, blue: 0.98),
+                property: Color(red: 0.96, green: 0.56, blue: 0.45),
+                builtin: Color(red: 0.86, green: 0.52, blue: 1.0)
+            )
+        case "Mono":
+            return ThemePalette(
+                text: Color(red: 0.88, green: 0.88, blue: 0.88),
+                background: Color(red: 0.12, green: 0.12, blue: 0.12),
+                cursor: Color.white,
+                selection: Color(red: 0.26, green: 0.26, blue: 0.26),
+                keyword: Color(red: 0.92, green: 0.92, blue: 0.92),
+                string: Color(red: 0.80, green: 0.80, blue: 0.80),
+                number: Color(red: 0.86, green: 0.86, blue: 0.86),
+                comment: Color(red: 0.55, green: 0.55, blue: 0.55),
+                type: Color(red: 0.90, green: 0.90, blue: 0.90),
+                property: Color(red: 0.84, green: 0.84, blue: 0.84),
+                builtin: Color(red: 0.78, green: 0.78, blue: 0.78)
+            )
+        case "Paper":
+            return ThemePalette(
+                text: Color(red: 0.12, green: 0.12, blue: 0.12),
+                background: Color(red: 0.98, green: 0.97, blue: 0.94),
+                cursor: Color(red: 0.16, green: 0.31, blue: 0.90),
+                selection: Color(red: 0.86, green: 0.90, blue: 0.98),
+                keyword: Color(red: 0.60, green: 0.18, blue: 0.82),
+                string: Color(red: 0.12, green: 0.54, blue: 0.39),
+                number: Color(red: 0.78, green: 0.37, blue: 0.09),
+                comment: Color(red: 0.46, green: 0.46, blue: 0.46),
+                type: Color(red: 0.12, green: 0.34, blue: 0.75),
+                property: Color(red: 0.67, green: 0.27, blue: 0.52),
+                builtin: Color(red: 0.74, green: 0.42, blue: 0.10)
+            )
+        case "Solar":
+            return ThemePalette(
+                text: Color(red: 0.98, green: 0.95, blue: 0.90),
+                background: Color(red: 0.19, green: 0.12, blue: 0.08),
+                cursor: Color(red: 0.99, green: 0.74, blue: 0.30),
+                selection: Color(red: 0.33, green: 0.20, blue: 0.14),
+                keyword: Color(red: 0.99, green: 0.64, blue: 0.24),
+                string: Color(red: 0.98, green: 0.84, blue: 0.34),
+                number: Color(red: 0.98, green: 0.52, blue: 0.74),
+                comment: Color(red: 0.92, green: 0.80, blue: 0.66),
+                type: Color(red: 0.52, green: 0.78, blue: 0.98),
+                property: Color(red: 0.98, green: 0.58, blue: 0.38),
+                builtin: Color(red: 0.94, green: 0.48, blue: 0.58)
+            )
+        case "Pulse":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.96, blue: 0.98),
+                background: Color(red: 0.10, green: 0.10, blue: 0.14),
+                cursor: Color(red: 0.93, green: 0.45, blue: 0.57),
+                selection: Color(red: 0.24, green: 0.18, blue: 0.28),
+                keyword: Color(red: 0.98, green: 0.54, blue: 0.62),
+                string: Color(red: 0.46, green: 0.78, blue: 1.00),
+                number: Color(red: 0.96, green: 0.76, blue: 0.30),
+                comment: Color(red: 0.62, green: 0.63, blue: 0.72),
+                type: Color(red: 0.45, green: 0.72, blue: 0.98),
+                property: Color(red: 0.96, green: 0.59, blue: 0.32),
+                builtin: Color(red: 0.86, green: 0.52, blue: 1.0)
+            )
+        case "Mocha":
+            return ThemePalette(
+                text: Color(red: 0.95, green: 0.92, blue: 0.90),
+                background: Color(red: 0.12, green: 0.09, blue: 0.08),
+                cursor: Color(red: 0.82, green: 0.62, blue: 0.48),
+                selection: Color(red: 0.22, green: 0.17, blue: 0.15),
+                keyword: Color(red: 0.82, green: 0.60, blue: 0.98),
+                string: Color(red: 0.84, green: 0.72, blue: 0.46),
+                number: Color(red: 0.98, green: 0.70, blue: 0.46),
+                comment: Color(red: 0.78, green: 0.70, blue: 0.66),
+                type: Color(red: 0.52, green: 0.78, blue: 0.98),
+                property: Color(red: 0.94, green: 0.56, blue: 0.32),
+                builtin: Color(red: 0.90, green: 0.46, blue: 0.72)
+            )
+        case "Custom":
+            let text = colorFromHex(defaults.string(forKey: "SettingsThemeTextColor") ?? "#EDEDED", fallback: .white)
+            let background = colorFromHex(defaults.string(forKey: "SettingsThemeBackgroundColor") ?? "#0E1116", fallback: .black)
+            let cursor = colorFromHex(defaults.string(forKey: "SettingsThemeCursorColor") ?? "#4EA4FF", fallback: .blue)
+            let selection = colorFromHex(defaults.string(forKey: "SettingsThemeSelectionColor") ?? "#2A3340", fallback: .gray)
+            let keyword = colorFromHex(defaults.string(forKey: "SettingsThemeKeywordColor") ?? "#F5D90A", fallback: .yellow)
+            let string = colorFromHex(defaults.string(forKey: "SettingsThemeStringColor") ?? "#4EA4FF", fallback: .blue)
+            let number = colorFromHex(defaults.string(forKey: "SettingsThemeNumberColor") ?? "#FFB86C", fallback: .orange)
+            let comment = colorFromHex(defaults.string(forKey: "SettingsThemeCommentColor") ?? "#7F8C98", fallback: .gray)
+            let type = colorFromHex(defaults.string(forKey: "SettingsThemeTypeColor") ?? "#32D269", fallback: .green)
+            let builtin = colorFromHex(defaults.string(forKey: "SettingsThemeBuiltinColor") ?? "#EC7887", fallback: .red)
+            return ThemePalette(
+                text: text,
+                background: background,
+                cursor: cursor,
+                selection: selection,
+                keyword: keyword,
+                string: string,
+                number: number,
+                comment: comment,
+                type: type,
+                property: string,
+                builtin: builtin
+            )
+        default:
+            return ThemePalette(
+                text: Color(red: 0.93, green: 0.95, blue: 0.98),
+                background: Color(red: 0.10, green: 0.11, blue: 0.14),
+                cursor: Color(red: 0.31, green: 0.72, blue: 0.99),
+                selection: Color(red: 0.22, green: 0.30, blue: 0.43),
+                keyword: Color(red: 0.96, green: 0.84, blue: 0.23),
+                string: Color(red: 0.98, green: 0.48, blue: 0.82),
+                number: Color(red: 0.98, green: 0.72, blue: 0.33),
+                comment: Color(red: 0.60, green: 0.66, blue: 0.74),
+                type: Color(red: 0.41, green: 0.69, blue: 0.99),
+                property: Color(red: 0.39, green: 0.90, blue: 0.72),
+                builtin: Color(red: 0.94, green: 0.42, blue: 0.66)
+            )
+        }
+    }()
+    return ThemePalette(
+        text: colorFromHex(customColors["text"] ?? "", fallback: palette.text),
+        background: colorFromHex(
+            customColors["background"] ?? customColors["backgroundDark"] ?? customColors["backgroundLight"] ?? "",
+            fallback: palette.background
+        ),
+        cursor: colorFromHex(customColors["cursor"] ?? "", fallback: palette.cursor),
+        selection: colorFromHex(
+            customColors["selection"] ?? "",
+            fallback: emphasizedSelectionColor(for: canonicalName, fallback: palette.selection)
+        ),
+        keyword: colorFromHex(customColors["keyword"] ?? "", fallback: palette.keyword),
+        string: colorFromHex(customColors["string"] ?? "", fallback: palette.string),
+        number: colorFromHex(customColors["number"] ?? "", fallback: palette.number),
+        comment: colorFromHex(customColors["comment"] ?? "", fallback: palette.comment),
+        type: colorFromHex(customColors["type"] ?? "", fallback: palette.type),
+        property: colorFromHex(customColors["property"] ?? customColors["string"] ?? "", fallback: palette.property),
+        builtin: colorFromHex(customColors["builtin"] ?? "", fallback: palette.builtin)
+    )
+}
+
+func themePaletteColors(for name: String, defaults: UserDefaults = .standard) -> ThemePaletteColors {
+    let palette = paletteForThemeName(canonicalThemeName(name, defaults: defaults), defaults: defaults)
+    return ThemePaletteColors(
+        text: palette.text,
+        background: palette.background,
+        cursor: palette.cursor,
+        selection: palette.selection,
+        keyword: palette.keyword,
+        string: palette.string,
+        number: palette.number,
+        comment: palette.comment,
+        type: palette.type,
+        property: palette.property,
+        builtin: palette.builtin
+    )
+}
+
+// MARK: - Theme Resolution Caches
+
+private enum ThemeOverrideDecodeCache {
+    private struct State: Sendable {
+        var signature: ThemeOverrideSignature?
+        var decodedOverrides: [String: [String: String]] = [:]
+    }
+
+    nonisolated private static let state = NVELock(State())
+
+    nonisolated static func overrides(from data: Data?) -> [String: [String: String]] {
+        let signature = ThemeOverrideSignature(data: data)
+        return state.withLock { state in
+            if signature == state.signature {
+                return state.decodedOverrides
+            }
+            guard let data, data.isEmpty == false else {
+                state.signature = signature
+                state.decodedOverrides = [:]
+                return [:]
+            }
+            let decoded = (try? JSONDecoder().decode([String: [String: String]].self, from: data)) ?? [:]
+            state.signature = signature
+            state.decodedOverrides = decoded
+            return decoded
+        }
+    }
+}
+
+private struct ThemeOverrideSignature: Equatable {
+    let count: Int
+    let hash: Int
+
+    nonisolated init(data: Data?) {
+        self.count = data?.count ?? 0
+        self.hash = data?.hashValue ?? 0
+    }
+
+    nonisolated static func == (lhs: ThemeOverrideSignature, rhs: ThemeOverrideSignature) -> Bool {
+        lhs.count == rhs.count && lhs.hash == rhs.hash
+    }
+}
+
+private enum EditorThemeResolutionCache {
+    private struct State: Sendable {
+        var entries: [(key: EditorThemeResolutionCacheKey, theme: EditorTheme)] = []
+    }
+
+    nonisolated private static let capacity = 12
+
+    nonisolated private static let state = NVELock(State())
+
+    nonisolated static func theme(for key: EditorThemeResolutionCacheKey) -> EditorTheme? {
+        state.withLock { state in
+            guard let index = state.entries.firstIndex(where: { $0.key == key }) else { return nil }
+            let entry = state.entries.remove(at: index)
+            state.entries.append(entry)
+            return entry.theme
+        }
+    }
+
+    nonisolated static func store(_ theme: EditorTheme, for key: EditorThemeResolutionCacheKey) {
+        state.withLock { state in
+            state.entries.removeAll { $0.key == key }
+            state.entries.append((key: key, theme: theme))
+            while state.entries.count > capacity {
+                state.entries.removeFirst()
+            }
+        }
+    }
+}
+
+private struct EditorThemeResolutionCacheKey: Equatable {
+    let colorSchemeID: String
+    let name: String
+    let boldKeywords: Bool
+    let italicComments: Bool
+    let underlineLinks: Bool
+    let boldMarkdownHeadings: Bool
+    let customThemesSignature: ThemeOverrideSignature
+    let overridesSignature: ThemeOverrideSignature
+
+    nonisolated static func == (
+        lhs: EditorThemeResolutionCacheKey,
+        rhs: EditorThemeResolutionCacheKey
+    ) -> Bool {
+        lhs.colorSchemeID == rhs.colorSchemeID &&
+            lhs.name == rhs.name &&
+            lhs.boldKeywords == rhs.boldKeywords &&
+            lhs.italicComments == rhs.italicComments &&
+            lhs.underlineLinks == rhs.underlineLinks &&
+            lhs.boldMarkdownHeadings == rhs.boldMarkdownHeadings &&
+            lhs.customThemesSignature == rhs.customThemesSignature &&
+            lhs.overridesSignature == rhs.overridesSignature
+    }
+}
+
+// MARK: - Current Theme Resolution
+
+func currentEditorTheme(
+    colorScheme: ColorScheme,
+    formatting: EditorFormattingPreferences? = nil,
+    ignoreBackgroundOverrides: Bool = false
+) -> EditorTheme {
+    let defaults = UserDefaults.standard
+    if defaults.string(forKey: "SettingsThemeOverridesVersion") != "v2" {
+        defaults.removeObject(forKey: SettingsPreferenceKey.themeHexOverrides)
+        let themeName = canonicalThemeName(defaults.string(forKey: SettingsPreferenceKey.themeName) ?? "Neon Glow", defaults: defaults)
+        let palette = paletteForThemeName(themeName, defaults: defaults)
+        defaults.set(colorToHex(palette.text), forKey: "SettingsThemeTextColor")
+        defaults.set(colorToHex(palette.background), forKey: "SettingsThemeBackgroundColor")
+        defaults.set(colorToHex(palette.cursor), forKey: "SettingsThemeCursorColor")
+        defaults.set(colorToHex(palette.selection), forKey: "SettingsThemeSelectionColor")
+        defaults.set(colorToHex(palette.keyword), forKey: "SettingsThemeKeywordColor")
+        defaults.set(colorToHex(palette.string), forKey: "SettingsThemeStringColor")
+        defaults.set(colorToHex(palette.number), forKey: "SettingsThemeNumberColor")
+        defaults.set(colorToHex(palette.comment), forKey: "SettingsThemeCommentColor")
+        defaults.set(colorToHex(palette.type), forKey: "SettingsThemeTypeColor")
+        defaults.set(colorToHex(palette.builtin), forKey: "SettingsThemeBuiltinColor")
+        defaults.set("v2", forKey: "SettingsThemeOverridesVersion")
+    }
+    let name = canonicalThemeName(defaults.string(forKey: SettingsPreferenceKey.themeName) ?? "Neon Glow", defaults: defaults)
+    let boldKeywords = formatting?.boldKeywords ?? defaults.bool(forKey: SettingsPreferenceKey.themeBoldKeywords)
+    let italicComments = formatting?.italicComments ?? defaults.bool(forKey: SettingsPreferenceKey.themeItalicComments)
+    let underlineLinks = formatting?.underlineLinks ?? defaults.bool(forKey: SettingsPreferenceKey.themeUnderlineLinks)
+    let boldMarkdownHeadings = formatting?.boldMarkdownHeadings ?? defaults.bool(forKey: SettingsPreferenceKey.themeBoldMarkdownHeadings)
+    let overridesData = defaults.data(forKey: SettingsPreferenceKey.themeHexOverrides)
+    let overrides = ThemeOverrideDecodeCache.overrides(from: overridesData)
+    let colorSchemeID = colorScheme == .dark ? "dark" : "light"
+    let cacheKey = EditorThemeResolutionCacheKey(
+        colorSchemeID: "\(colorSchemeID)|background-overrides:\(!ignoreBackgroundOverrides)",
+        name: name,
+        boldKeywords: boldKeywords,
+        italicComments: italicComments,
+        underlineLinks: underlineLinks,
+        boldMarkdownHeadings: boldMarkdownHeadings,
+        customThemesSignature: ThemeOverrideSignature(data: defaults.data(forKey: SettingsPreferenceKey.savedCustomThemes)),
+        overridesSignature: ThemeOverrideSignature(data: overridesData)
+    )
+    if let cachedTheme = EditorThemeResolutionCache.theme(for: cacheKey) {
+        return cachedTheme
+    }
+    let defaultPalette = paletteForThemeName(name, defaults: defaults)
+    var palette = defaultPalette
+    let savedCustomColors = savedCustomThemeColors(named: name, defaults: defaults)
+    let themeOverrides = (savedCustomColors ?? [:]).merging(overrides[name] ?? [:]) { _, override in override }
+    let defaultTextHex = colorToHex(defaultPalette.text).lowercased()
+    let overrideTextHex = themeOverrides["text"]?.lowercased()
+    let hasTextOverride = savedCustomColors != nil || themeOverrides["textExplicit"] == "true" || (overrideTextHex != nil && overrideTextHex != defaultTextHex)
+    let explicitBackgroundOverride = ignoreBackgroundOverrides
+        ? nil
+        : backgroundOverrideHex(from: themeOverrides, colorScheme: colorScheme)
+    let hasBackgroundOverride = explicitBackgroundOverride != nil
+    if !themeOverrides.isEmpty {
+        palette = ThemePalette(
+            text: hasTextOverride ? colorFromHex(themeOverrides["text"] ?? "", fallback: palette.text) : palette.text,
+            background: colorFromHex(explicitBackgroundOverride ?? "", fallback: palette.background),
+            cursor: colorFromHex(themeOverrides["cursor"] ?? "", fallback: palette.cursor),
+            selection: colorFromHex(themeOverrides["selection"] ?? "", fallback: palette.selection),
+            keyword: colorFromHex(themeOverrides["keyword"] ?? "", fallback: palette.keyword),
+            string: colorFromHex(themeOverrides["string"] ?? "", fallback: palette.string),
+            number: colorFromHex(themeOverrides["number"] ?? "", fallback: palette.number),
+            comment: colorFromHex(themeOverrides["comment"] ?? "", fallback: palette.comment),
+            type: colorFromHex(themeOverrides["type"] ?? "", fallback: palette.type),
+            property: colorFromHex(themeOverrides["string"] ?? "", fallback: palette.property),
+            builtin: colorFromHex(themeOverrides["builtin"] ?? "", fallback: palette.builtin)
+        )
+    }
+    let editorBackground = hasBackgroundOverride ? palette.background : modeAdjustedEditorBackground(palette.background, colorScheme: colorScheme)
+    let baseTextColor = modeAdjustedEditorText(palette.text, background: editorBackground, colorScheme: colorScheme)
+
+    let profile: SyntaxAdjustmentProfile = {
+        let vividNeonThemes: Set<String> = [
+            "Neon Glow",
+            "Neon Voltage",
+            "Laserwave",
+            "Cyber Lime",
+            "Plasma Storm",
+            "Inferno Neon",
+            "Ultraviolet Flux",
+            "AMOLED Neon",
+            "Custom"
+        ]
+        return vividNeonThemes.contains(name) ? .neonRaw : .standard
+    }()
+    let keyword = adjustedSyntaxColor(
+        palette.keyword,
+        colorScheme: colorScheme,
+        profile: profile,
+        darkenInLight: 0.30,
+        brightenInDark: 0.08
+    )
+    let string = modeAdjustedSyntaxColor(
+        palette.string,
+        colorScheme: colorScheme,
+        darkenInLight: 0.48,
+        brightenInDark: profile == .neonRaw ? 0.03 : 0.10
+    )
+    let number = adjustedSyntaxColor(
+        palette.number,
+        colorScheme: colorScheme,
+        profile: profile,
+        darkenInLight: 0.28,
+        brightenInDark: 0.08
+    )
+    let comment = adjustedSyntaxColor(
+        palette.comment,
+        colorScheme: colorScheme,
+        profile: profile,
+        darkenInLight: 0.28,
+        brightenInDark: 0.20
+    )
+    let type = adjustedSyntaxColor(
+        palette.type,
+        colorScheme: colorScheme,
+        profile: profile,
+        darkenInLight: 0.30,
+        brightenInDark: 0.08
+    )
+    let property = adjustedSyntaxColor(
+        palette.property,
+        colorScheme: colorScheme,
+        profile: profile,
+        darkenInLight: 0.32,
+        brightenInDark: 0.08
+    )
+    let builtin = name == "Neon Glow"
+        ? modeAdjustedSyntaxColor(
+            palette.builtin,
+            colorScheme: colorScheme,
+            darkenInLight: 0.22,
+            brightenInDark: 0.08
+        )
+        : adjustedSyntaxColor(
+            palette.builtin,
+            colorScheme: colorScheme,
+            profile: profile,
+            darkenInLight: 0.30,
+            brightenInDark: 0.08
+        )
+
+    let syntax = SyntaxColors(
+        keyword: keyword,
+        string: string,
+        number: number,
+        comment: comment,
+        attribute: property,
+        variable: property,
+        def: type,
+        property: property,
+        meta: builtin,
+        tag: keyword,
+        atom: builtin,
+        builtin: builtin,
+        type: type
+    )
+
+    let resolvedTheme = EditorTheme(
+        text: baseTextColor,
+        background: editorBackground,
+        cursor: palette.cursor,
+        selection: palette.selection,
+        syntax: syntax,
+        boldKeywords: boldKeywords,
+        italicComments: italicComments,
+        underlineLinks: underlineLinks,
+        boldMarkdownHeadings: boldMarkdownHeadings
+    )
+    EditorThemeResolutionCache.store(resolvedTheme, for: cacheKey)
+    return resolvedTheme
+}
+
+func colorFromHex(_ hex: String, fallback: Color) -> Color {
+    let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "#", with: "")
+    guard (cleaned.count == 6 || cleaned.count == 8), let intVal = UInt64(cleaned, radix: 16) else { return fallback }
+    if cleaned.count == 8 {
+        let r = Double((intVal >> 24) & 0xFF) / 255.0
+        let g = Double((intVal >> 16) & 0xFF) / 255.0
+        let b = Double((intVal >> 8) & 0xFF) / 255.0
+        let a = Double(intVal & 0xFF) / 255.0
+        return Color(red: r, green: g, blue: b, opacity: a)
+    }
+    let r = Double((intVal >> 16) & 0xFF) / 255.0
+    let g = Double((intVal >> 8) & 0xFF) / 255.0
+    let b = Double(intVal & 0xFF) / 255.0
+    return Color(red: r, green: g, blue: b)
+}
+
+func colorToHex(_ color: Color) -> String {
+#if os(macOS)
+    let platform = PlatformColor(color)
+    guard let srgb = platform.usingColorSpace(.sRGB) else { return "#FFFFFF" }
+    let r = Int(round(srgb.redComponent * 255))
+    let g = Int(round(srgb.greenComponent * 255))
+    let b = Int(round(srgb.blueComponent * 255))
+    let a = Int(round(srgb.alphaComponent * 255))
+#else
+    let platform = PlatformColor(color)
+    var r: CGFloat = 0
+    var g: CGFloat = 0
+    var b: CGFloat = 0
+    var a: CGFloat = 0
+    platform.getRed(&r, green: &g, blue: &b, alpha: &a)
+    let rInt = Int(round(r * 255))
+    let gInt = Int(round(g * 255))
+    let bInt = Int(round(b * 255))
+    let aInt = Int(round(a * 255))
+#endif
+#if os(macOS)
+    if a < 255 {
+        return String(format: "#%02X%02X%02X%02X", r, g, b, a)
+    }
+    return String(format: "#%02X%02X%02X", r, g, b)
+#else
+    if aInt < 255 {
+        return String(format: "#%02X%02X%02X%02X", rInt, gInt, bInt, aInt)
+    }
+    return String(format: "#%02X%02X%02X", rInt, gInt, bInt)
+#endif
+}

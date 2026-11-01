@@ -1,0 +1,893 @@
+import CryptoKit
+import SwiftUI
+
+@MainActor
+final class SessionPersistenceScheduler {
+    private var observationGeneration = 0
+    private var sessionGeneration = 0
+    private var draftGeneration = 0
+
+    func scheduleObservation(_ action: @escaping @MainActor () -> Void) {
+        observationGeneration &+= 1
+        let generation = observationGeneration
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.observationGeneration == generation else { return }
+            action()
+        }
+    }
+
+    func scheduleSession(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) {
+        sessionGeneration &+= 1
+        let generation = sessionGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.sessionGeneration == generation else { return }
+            action()
+        }
+    }
+
+    func scheduleDraft(after delay: TimeInterval, _ action: @escaping @MainActor () -> Void) {
+        draftGeneration &+= 1
+        let generation = draftGeneration
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.draftGeneration == generation else { return }
+            action()
+        }
+    }
+
+    func cancelDraft() {
+        draftGeneration &+= 1
+    }
+}
+
+struct DraftSnapshotTabIdentity: Hashable {
+    let name: String
+    let contentDigest: Data
+    let language: String
+    let fileURLString: String?
+
+    init(tab: ContentView.SavedDraftTabSnapshot) {
+        name = tab.name
+        contentDigest = Data(SHA256.hash(data: Data(tab.content.utf8)))
+        language = tab.language
+        fileURLString = tab.fileURLString
+    }
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        if let lhsFileURL = lhs.fileURLString, let rhsFileURL = rhs.fileURLString {
+            return lhsFileURL == rhsFileURL
+        }
+        return lhs.fileURLString == nil
+            && rhs.fileURLString == nil
+            && lhs.name == rhs.name
+            && lhs.contentDigest == rhs.contentDigest
+            && lhs.language == rhs.language
+    }
+
+    func hash(into hasher: inout Hasher) {
+        if let fileURLString {
+            hasher.combine(0)
+            hasher.combine(fileURLString)
+        } else {
+            hasher.combine(1)
+            hasher.combine(name)
+            hasher.combine(contentDigest)
+            hasher.combine(language)
+        }
+    }
+}
+
+func deduplicatedDraftSnapshotTabs(
+    _ tabs: [ContentView.SavedDraftTabSnapshot]
+) -> [ContentView.SavedDraftTabSnapshot] {
+    var seen = Set<DraftSnapshotTabIdentity>()
+    var result: [ContentView.SavedDraftTabSnapshot] = []
+
+    for tab in tabs {
+        let identity = DraftSnapshotTabIdentity(tab: tab)
+        if seen.insert(identity).inserted {
+            result.append(tab)
+        }
+    }
+    return result
+}
+
+func restoredDraftSnapshotSelectionIndex(
+    snapshot: ContentView.SavedDraftSnapshot,
+    mergedTabs: [ContentView.SavedDraftTabSnapshot]
+) -> Int? {
+    guard let selectedIndex = snapshot.selectedIndex,
+          snapshot.tabs.indices.contains(selectedIndex) else {
+        return nil
+    }
+    let selectedIdentity = DraftSnapshotTabIdentity(tab: snapshot.tabs[selectedIndex])
+    return mergedTabs.firstIndex { DraftSnapshotTabIdentity(tab: $0) == selectedIdentity }
+}
+
+func restoredDraftSnapshotState(
+    from snapshots: [ContentView.SavedDraftSnapshot]
+) -> (tabs: [ContentView.SavedDraftTabSnapshot], selectedIndex: Int?)? {
+    let newestFirst = snapshots.sorted { $0.createdAt > $1.createdAt }
+    guard let newestSnapshot = newestFirst.first else { return nil }
+    let mergedTabs = deduplicatedDraftSnapshotTabs(newestFirst.flatMap(\.tabs))
+    guard !mergedTabs.isEmpty else { return nil }
+    return (
+        tabs: mergedTabs,
+        selectedIndex: restoredDraftSnapshotSelectionIndex(
+            snapshot: newestSnapshot,
+            mergedTabs: mergedTabs
+        )
+    )
+}
+
+// MARK: - Session Persistence
+
+extension ContentView {
+    // MARK: - Startup Restore
+
+    func applyStartupBehaviorIfNeeded() {
+        guard !didApplyStartupBehavior else { return }
+#if os(macOS)
+        // Do not restore multiple documents into one model before its native
+        // window factory is attached. A preloaded child must not be reset.
+        if viewModel.nativeDocumentDestination == nil { return }
+        if startupBehavior == .nativeDocument {
+            applyDefaultMarkdownPreviewOpenMode()
+            if !viewModel.isSafeModeRecoveryWindow {
+                restoreLastSessionViewContextIfAvailable(restoresPresentation: false)
+                if let folder = markdownProjectPreviewSession.projectRoot ?? restoredLastSessionProjectFolderURL() {
+                    setProjectFolder(folder, synchronizeNativeTabs: false)
+                }
+            }
+            didApplyStartupBehavior = true
+            persistSessionIfReady()
+            return
+        }
+        if startupBehavior == .standard {
+            let shouldOpenBlank = openWithBlankDocument && !reopenLastSession
+            if !shouldOpenBlank {
+                if let folder = restoredLastSessionProjectFolderURL() {
+                    setProjectFolder(folder, synchronizeNativeTabs: false)
+                }
+                // Recover dirty buffers first. Opening their on-disk URLs must
+                // focus those owners, not start a competing load over the draft.
+                if recoverUnsavedDrafts { _ = restoreUnsavedDraftSnapshotIfAvailable() }
+                let recoveredSelection = MacDocumentWindowTabs.shared.selectedModel
+                if reopenLastSession {
+                    let preferences = restoredLastSessionEncodingPreferences()
+                    for url in restoredLastSessionFileURLs() {
+                        let preference = preferences[url.standardizedFileURL.absoluteString]
+                        _ = viewModel.openFile(url: url, preferredEncoding: preference?.encoding,
+                                               usesAutomaticEncoding: preference?.usesAutomatic ?? true)
+                    }
+                    if let selected = restoredLastSessionSelectedFileURL() {
+                        _ = viewModel.focusTabIfOpen(for: selected)
+                    } else {
+                        recoveredSelection?.nativeRevealWindow?()
+                    }
+                }
+            }
+            restoreLastSessionViewContextIfAvailable()
+            didApplyStartupBehavior = true
+            persistSessionIfReady()
+            return
+        }
+#endif
+
+        if startupBehavior == .forceBlankDocument || startupBehavior == .safeMode {
+            resetForBlankStartup()
+            didApplyStartupBehavior = true
+            if startupBehavior != .safeMode {
+                persistSessionIfReady()
+            }
+            return
+        }
+
+        if viewModel.tabs.contains(where: { $0.fileURL != nil }) {
+            didApplyStartupBehavior = true
+            persistSessionIfReady()
+            return
+        }
+
+        // If both startup toggles are enabled (legacy/default mismatch), prefer session restore.
+        let shouldOpenBlankOnStartup = openWithBlankDocument && !reopenLastSession
+        if shouldOpenBlankOnStartup {
+            resetForBlankStartup()
+            didApplyStartupBehavior = true
+            persistSessionIfReady()
+            return
+        }
+
+        var restoredSessionTabs = false
+
+        // Restore last session first when enabled.
+        if reopenLastSession {
+            if projectRootFolderURL == nil, let restoredProjectFolderURL = restoredLastSessionProjectFolderURL() {
+                setProjectFolder(restoredProjectFolderURL)
+            }
+            let urls = restoredLastSessionFileURLs()
+            let selectedURL = restoredLastSessionSelectedFileURL()
+            let encodingPreferences = restoredLastSessionEncodingPreferences()
+
+            if !urls.isEmpty {
+                viewModel.resetTabsForSessionRestore()
+
+                for url in urls {
+                    let preference = encodingPreferences[url.standardizedFileURL.absoluteString]
+                    viewModel.openFile(
+                        url: url,
+                        preferredEncoding: preference?.encoding,
+                        usesAutomaticEncoding: preference?.usesAutomatic ?? true
+                    )
+                }
+
+                if let selectedURL {
+                    _ = viewModel.focusTabIfOpen(for: selectedURL)
+                }
+
+                restoredSessionTabs = !viewModel.tabs.isEmpty
+                if viewModel.tabs.isEmpty {
+                    viewModel.addNewTab()
+                }
+            }
+        }
+
+        // Restore unsaved drafts only as fallback when no file session tabs were restored.
+        if recoverUnsavedDrafts, !restoredSessionTabs, restoreUnsavedDraftSnapshotIfAvailable() {
+            didApplyStartupBehavior = true
+            persistSessionIfReady()
+            return
+        }
+
+#if os(iOS)
+        // Keep mobile layout in a valid tab state so the file tab bar always has content.
+        if viewModel.tabs.isEmpty {
+            viewModel.addNewTab()
+        }
+#endif
+
+        restoreLastSessionViewContextIfAvailable()
+        didApplyStartupBehavior = true
+        persistSessionIfReady()
+    }
+
+    private func resetForBlankStartup() {
+        viewModel.resetToBlankDocumentForStartup()
+        projectRootFolderURL = nil
+        clearProjectEditorOverrides()
+        projectTreeNodes = []
+        quickSwitcherProjectFileURLs = []
+        stopProjectFolderObservation()
+        projectFileIndexSnapshot = .empty
+        isProjectFileIndexing = false
+        projectFileIndexHasCompleted = false
+        projectFileIndexTask?.cancel()
+        projectFileIndexTask = nil
+    }
+
+    // MARK: - Last Session Files
+
+    private var sessionPreferences: EditorPreferenceWriter { .shared }
+
+    func persistSelectedSessionFileURLImmediately() {
+        guard didApplyStartupBehavior, startupBehavior != .safeMode else { return }
+#if os(macOS)
+        guard !viewModel.isSafeModeRecoveryWindow else { return }
+#endif
+        let value = sessionSelectedFileURL.map { EditorPreferenceWriter.Value.string($0.absoluteString) } ?? .removed
+        sessionPreferences.set(value, forKey: "LastSessionSelectedFileURL")
+    }
+
+    func scheduleSessionPersistence(delay: TimeInterval = 0.5) {
+        sessionPersistenceScheduler.scheduleSession(after: delay) {
+            persistSessionIfReady()
+        }
+    }
+
+    func scheduleUnsavedDraftSnapshotPersistence(delay: TimeInterval = 0.7) {
+        guard recoverUnsavedDrafts else {
+            sessionPersistenceScheduler.cancelDraft()
+            clearUnsavedDraftSnapshots()
+            return
+        }
+        sessionPersistenceScheduler.scheduleDraft(after: delay) {
+            persistUnsavedDraftSnapshotIfNeeded()
+        }
+    }
+
+    func scheduleWindowSessionObservationHandling() {
+        sessionPersistenceScheduler.scheduleObservation {
+            scheduleSessionPersistence()
+            scheduleUnsavedDraftSnapshotPersistence()
+            synchronizePDFNoteAttachment()
+        }
+    }
+
+    func persistSessionIfReady() {
+        guard didApplyStartupBehavior else { return }
+        guard startupBehavior != .safeMode else { return }
+#if os(macOS)
+        guard !viewModel.isSafeModeRecoveryWindow else { return }
+#endif
+        let fileURLs = sessionDocumentTabs.compactMap { $0.fileURL }
+        let selectedURL = sessionSelectedFileURL
+        let signature = ([
+            fileURLs.map(\.absoluteString).joined(separator: "|"),
+            selectedURL?.absoluteString ?? "",
+            viewModel.showSidebar.description,
+            showProjectStructureSidebar.description,
+            previewMode.rawValue,
+            projectRootFolderURL?.absoluteString ?? "",
+            sessionCaretByFileURL
+                .sorted { $0.key < $1.key }
+                .map { "\($0.key)=\($0.value)" }
+                .joined(separator: "|"),
+            sessionDocumentTabs.compactMap { tab in
+                guard let url = tab.fileURL else { return nil }
+                return "\(url.standardizedFileURL.absoluteString)=\(tab.fileEncoding.identifier.rawValue):\(tab.usesAutomaticFileEncoding)"
+            }.joined(separator: "|")
+        ]).joined(separator: "\n")
+        guard signature != lastPersistedSessionSignature else { return }
+        lastPersistedSessionSignature = signature
+        sessionPreferences.set(.paths(fileURLs.map(\.absoluteString)), forKey: "LastSessionFileURLs")
+        persistSelectedSessionFileURLImmediately()
+        persistLastSessionEncodingPreferences()
+        persistLastSessionViewContext()
+        persistLastSessionProjectFolderReference(projectRootFolderURL)
+
+        let bookmarkSignature = ([
+            fileURLs.map { $0.standardizedFileURL.absoluteString }.joined(separator: "|"),
+            selectedURL?.standardizedFileURL.absoluteString ?? "",
+            projectRootFolderURL?.standardizedFileURL.absoluteString ?? ""
+        ]).joined(separator: "\n")
+        guard bookmarkSignature != lastPersistedSessionBookmarkSignature else { return }
+        lastPersistedSessionBookmarkSignature = bookmarkSignature
+        persistLastSessionProjectFolderSecurityScopedBookmark(projectRootFolderURL)
+#if os(iOS) || os(visionOS)
+        persistLastSessionSecurityScopedBookmarks(fileURLs: fileURLs, selectedURL: selectedURL)
+#elseif os(macOS)
+        persistLastSessionSecurityScopedBookmarksMac(fileURLs: fileURLs, selectedURL: selectedURL)
+#endif
+    }
+
+    var sessionSelectedFileURL: URL? {
+#if os(macOS)
+        (MacDocumentWindowTabs.shared.sessionSelectionModel ?? viewModel).selectedTab?.fileURL
+#else
+        viewModel.selectedTab?.fileURL
+#endif
+    }
+
+    var sessionDocumentTabs: [TabData] {
+#if os(macOS)
+        return MacDocumentWindowTabs.shared.models.flatMap(\.tabs)
+#else
+        return viewModel.tabs
+#endif
+    }
+
+    func restoredLastSessionFileURLs() -> [URL] {
+#if os(macOS)
+        let bookmarked = restoreSessionURLsFromSecurityScopedBookmarksMac()
+        if !bookmarked.isEmpty {
+            return bookmarked
+        }
+#elseif os(iOS) || os(visionOS)
+        let bookmarked = restoreSessionURLsFromSecurityScopedBookmarks()
+        if !bookmarked.isEmpty {
+            return bookmarked
+        }
+#endif
+        let stored = sessionPreferences.object(forKey: "LastSessionFileURLs") as? [String] ?? []
+        var urls: [URL] = []
+        var seen: Set<String> = []
+        for raw in stored {
+            guard let parsed = restoredSessionURL(from: raw) else { continue }
+            let standardized = parsed.standardizedFileURL
+            // Only restore files that still exist; avoids empty placeholder tabs on launch.
+            guard FileManager.default.fileExists(atPath: standardized.path) else { continue }
+            let key = standardized.absoluteString
+            if seen.insert(key).inserted {
+                urls.append(standardized)
+            }
+        }
+        return urls
+    }
+
+    func restoredLastSessionSelectedFileURL() -> URL? {
+#if os(macOS)
+        if let bookmarked = restoreSelectedURLFromSecurityScopedBookmarkMac() {
+            return bookmarked
+        }
+#elseif os(iOS) || os(visionOS)
+        if let bookmarked = restoreSelectedURLFromSecurityScopedBookmark() {
+            return bookmarked
+        }
+#endif
+        guard let selectedPath = sessionPreferences.object(forKey: "LastSessionSelectedFileURL") as? String,
+              let selectedURL = restoredSessionURL(from: selectedPath) else {
+            return nil
+        }
+        let standardized = selectedURL.standardizedFileURL
+        return FileManager.default.fileExists(atPath: standardized.path) ? standardized : nil
+    }
+
+    func restoredSessionURL(from raw: String) -> URL? {
+        // Support both absolute URL strings ("file:///...") and legacy plain paths.
+        if let url = URL(string: raw), url.isFileURL {
+            return url
+        }
+        if raw.hasPrefix("/") {
+            return URL(fileURLWithPath: raw)
+        }
+        return nil
+    }
+
+    var lastSessionShowSidebarKey: String { "LastSessionShowSidebarV1" }
+    var lastSessionShowProjectSidebarKey: String { "LastSessionShowProjectSidebarV1" }
+    var lastSessionShowMarkdownPreviewKey: String { "LastSessionShowMarkdownPreviewV1" }
+    var lastSessionPreviewModeKey: String { "LastSessionPreviewModeV1" }
+    var lastSessionCaretByFileURLKey: String { "LastSessionCaretByFileURLV1" }
+    var lastSessionEncodingByFileURLKey: String { "LastSessionEncodingByFileURLV2" }
+    var lastSessionAutomaticEncodingByFileURLKey: String { "LastSessionAutomaticEncodingByFileURLV2" }
+
+    var lastSessionProjectFolderURLKey: String { "LastSessionProjectFolderURL" }
+
+    struct RestoredEncodingPreference {
+        let encoding: TextEncodingDescriptor
+        let usesAutomatic: Bool
+    }
+
+    func persistLastSessionEncodingPreferences() {
+        var identifiers: [String: String] = [:]
+        var automaticModes: [String: Bool] = [:]
+        for tab in sessionDocumentTabs {
+            guard let url = tab.fileURL else { continue }
+            let key = url.standardizedFileURL.absoluteString
+            identifiers[key] = tab.fileEncoding.identifier.rawValue
+            automaticModes[key] = tab.usesAutomaticFileEncoding
+        }
+        sessionPreferences.set(.strings(identifiers), forKey: lastSessionEncodingByFileURLKey)
+        sessionPreferences.set(.flags(automaticModes), forKey: lastSessionAutomaticEncodingByFileURLKey)
+    }
+
+    func restoredLastSessionEncodingPreferences() -> [String: RestoredEncodingPreference] {
+        let identifiers = sessionPreferences.object(forKey: lastSessionEncodingByFileURLKey) as? [String: String] ?? [:]
+        let automaticModes = sessionPreferences.object(forKey: lastSessionAutomaticEncodingByFileURLKey) as? [String: Bool] ?? [:]
+        return identifiers.reduce(into: [:]) { result, pair in
+            guard let identifier = TextEncodingDescriptor.Identifier(rawValue: pair.value) else { return }
+            result[pair.key] = RestoredEncodingPreference(
+                encoding: TextEncodingDescriptor(identifier: identifier),
+                usesAutomatic: automaticModes[pair.key] ?? true
+            )
+        }
+    }
+
+    // MARK: - Last Session View Context
+
+    func persistLastSessionViewContext() {
+        sessionPreferences.set(.flag(viewModel.showSidebar), forKey: lastSessionShowSidebarKey)
+        sessionPreferences.set(.flag(showProjectStructureSidebar), forKey: lastSessionShowProjectSidebarKey)
+        sessionPreferences.set(.string(previewMode.rawValue), forKey: lastSessionPreviewModeKey)
+
+        if let selectedURL = viewModel.selectedTab?.fileURL {
+            let key = selectedURL.standardizedFileURL.absoluteString
+            if !key.isEmpty, sessionCaretByFileURL[key] == nil {
+                sessionCaretByFileURL[key] = max(0, lastCaretLocation)
+            }
+        }
+#if os(macOS)
+        var saved = sessionPreferences.object(forKey: lastSessionCaretByFileURLKey) as? [String: Int] ?? [:]
+        if let url = viewModel.selectedTab?.fileURL {
+            let key = url.standardizedFileURL.absoluteString
+            saved[key] = sessionCaretByFileURL[key] ?? max(0, lastCaretLocation)
+        }
+        sessionPreferences.set(.integers(saved), forKey: lastSessionCaretByFileURLKey)
+#else
+        sessionPreferences.set(.integers(sessionCaretByFileURL), forKey: lastSessionCaretByFileURLKey)
+#endif
+    }
+
+    func restoreLastSessionViewContextIfAvailable(restoresPresentation: Bool = true) {
+        let defaults = sessionPreferences
+        if restoresPresentation {
+            if let visible = defaults.object(forKey: lastSessionShowSidebarKey) as? Bool {
+                viewModel.showSidebar = visible
+            }
+#if !os(macOS)
+            if let visible = defaults.object(forKey: lastSessionShowProjectSidebarKey) as? Bool {
+                showProjectStructureSidebar = visible
+            }
+#endif
+            if let rawPreviewMode = defaults.object(forKey: lastSessionPreviewModeKey) as? String,
+               let restoredPreviewMode = PreviewMode(rawValue: rawPreviewMode) {
+                previewMode = restoredPreviewMode
+            } else if let visible = defaults.object(forKey: lastSessionShowMarkdownPreviewKey) as? Bool {
+                showMarkdownPreviewPane = visible
+            }
+        }
+        sessionCaretByFileURL = defaults.object(forKey: lastSessionCaretByFileURLKey) as? [String: Int] ?? [:]
+    }
+
+    func persistLastSessionProjectFolderReference(_ folderURL: URL?) {
+        guard let folderURL else {
+            sessionPreferences.set(.removed, forKey: lastSessionProjectFolderURLKey)
+            return
+        }
+        sessionPreferences.set(.string(folderURL.absoluteString), forKey: lastSessionProjectFolderURLKey)
+    }
+
+    func persistLastSessionProjectFolderSecurityScopedBookmark(_ folderURL: URL?) {
+        guard let folderURL else {
+#if os(macOS)
+            sessionPreferences.set(.removed, forKey: macLastSessionProjectFolderBookmarkKey)
+#elseif os(iOS) || os(visionOS)
+            sessionPreferences.set(.removed, forKey: lastSessionProjectFolderBookmarkKey)
+#endif
+            return
+        }
+
+#if os(macOS)
+        if let bookmark = makeSecurityScopedBookmarkDataMac(for: folderURL) {
+            sessionPreferences.set(.data(bookmark), forKey: macLastSessionProjectFolderBookmarkKey)
+        } else {
+            sessionPreferences.set(.removed, forKey: macLastSessionProjectFolderBookmarkKey)
+        }
+#elseif os(iOS) || os(visionOS)
+        if let bookmark = makeSecurityScopedBookmarkData(for: folderURL) {
+            sessionPreferences.set(.data(bookmark), forKey: lastSessionProjectFolderBookmarkKey)
+        } else {
+            sessionPreferences.set(.removed, forKey: lastSessionProjectFolderBookmarkKey)
+        }
+#endif
+    }
+
+    func restoredLastSessionProjectFolderURL() -> URL? {
+#if os(macOS)
+        if let bookmarked = restoreProjectFolderURLFromSecurityScopedBookmarkMac() {
+            return bookmarked
+        }
+#elseif os(iOS) || os(visionOS)
+        if let bookmarked = restoreProjectFolderURLFromSecurityScopedBookmark() {
+            return bookmarked
+        }
+#endif
+        guard let raw = sessionPreferences.object(forKey: lastSessionProjectFolderURLKey) as? String,
+              let parsed = restoredSessionURL(from: raw) else {
+            return nil
+        }
+        let standardized = parsed.standardizedFileURL
+        return FileManager.default.fileExists(atPath: standardized.path) ? standardized : nil
+    }
+
+#if os(macOS)
+    // MARK: - macOS Security-Scoped Bookmarks
+
+    var macLastSessionBookmarksKey: String { "MacLastSessionFileBookmarks" }
+    var macLastSessionSelectedBookmarkKey: String { "MacLastSessionSelectedFileBookmark" }
+    var macLastSessionProjectFolderBookmarkKey: String { "MacLastSessionProjectFolderBookmark" }
+
+    func persistLastSessionSecurityScopedBookmarksMac(fileURLs: [URL], selectedURL: URL?) {
+        let bookmarkData = fileURLs.compactMap { makeSecurityScopedBookmarkDataMac(for: $0) }
+        sessionPreferences.set(.dataList(bookmarkData), forKey: macLastSessionBookmarksKey)
+        if let selectedURL, let selectedData = makeSecurityScopedBookmarkDataMac(for: selectedURL) {
+            sessionPreferences.set(.data(selectedData), forKey: macLastSessionSelectedBookmarkKey)
+        } else {
+            sessionPreferences.set(.removed, forKey: macLastSessionSelectedBookmarkKey)
+        }
+    }
+
+    func restoreSessionURLsFromSecurityScopedBookmarksMac() -> [URL] {
+        guard let saved = sessionPreferences.object(forKey: macLastSessionBookmarksKey) as? [Data], !saved.isEmpty else {
+            return []
+        }
+        var urls: [URL] = []
+        var seen: Set<String> = []
+        for data in saved {
+            guard let url = resolveSecurityScopedBookmarkMac(data) else { continue }
+            let standardized = url.standardizedFileURL
+            guard fileExistsWithScopedAccessMac(standardized) else { continue }
+            let key = standardized.absoluteString
+            if seen.insert(key).inserted {
+                urls.append(standardized)
+            }
+        }
+        return urls
+    }
+
+    func restoreSelectedURLFromSecurityScopedBookmarkMac() -> URL? {
+        guard let data = sessionPreferences.object(forKey: macLastSessionSelectedBookmarkKey) as? Data,
+              let resolved = resolveSecurityScopedBookmarkMac(data) else {
+            return nil
+        }
+        let standardized = resolved.standardizedFileURL
+        return fileExistsWithScopedAccessMac(standardized) ? standardized : nil
+    }
+
+    func restoreProjectFolderURLFromSecurityScopedBookmarkMac() -> URL? {
+        guard let data = sessionPreferences.object(forKey: macLastSessionProjectFolderBookmarkKey) as? Data,
+              let resolved = resolveSecurityScopedBookmarkMac(data) else {
+            return nil
+        }
+        let standardized = resolved.standardizedFileURL
+        return fileExistsWithScopedAccessMac(standardized) ? standardized : nil
+    }
+
+    func makeSecurityScopedBookmarkDataMac(for url: URL) -> Data? {
+        let didStartScopedAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartScopedAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        do {
+            return try url.bookmarkData(
+                options: [.withSecurityScope],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    func resolveSecurityScopedBookmarkMac(_ data: Data) -> URL? {
+        var isStale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: data,
+            options: [.withSecurityScope, .withoutUI],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else {
+            return nil
+        }
+        return resolved
+    }
+
+    private func fileExistsWithScopedAccessMac(_ url: URL) -> Bool {
+        let didStartScopedAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if didStartScopedAccess {
+                url.stopAccessingSecurityScopedResource()
+            }
+        }
+        return FileManager.default.fileExists(atPath: url.path)
+    }
+#endif
+
+    // MARK: - Unsaved Draft Recovery
+
+    var unsavedDraftSnapshotRegistryKey: String { "UnsavedDraftSnapshotRegistryV1" }
+    var unsavedDraftSnapshotKey: String {
+#if os(macOS)
+        return MacDocumentTabPolicy.draftSnapshotKey(for: viewModel)
+#else
+        return "UnsavedDraftSnapshotV2.\(recoverySnapshotIdentifier)"
+#endif
+    }
+    var maxPersistedDraftTabs: Int { 20 }
+    var maxPersistedDraftUTF16Length: Int { 1_000_000 }
+    var maxPersistedDraftTotalUTF16Length: Int { 4_000_000 }
+
+    func persistUnsavedDraftSnapshotIfNeeded() {
+#if os(macOS)
+        if MacDocumentWindowTabs.shared.isTerminating { return }
+#endif
+        guard recoverUnsavedDrafts else {
+            clearUnsavedDraftSnapshots()
+            return
+        }
+        let defaults = UserDefaults.standard
+        let dirtyTabs = sessionDocumentTabs.filter(\.isDirty)
+        let signature = dirtyTabs.isEmpty
+            ? "clean"
+            : dirtyTabs.map { "\($0.id.uuidString):\($0.contentRevision)" }.joined(separator: "|")
+        guard signature != lastPersistedDraftSignature else { return }
+        lastPersistedDraftSignature = signature
+        var registry = defaults.stringArray(forKey: unsavedDraftSnapshotRegistryKey) ?? []
+
+        guard !dirtyTabs.isEmpty else {
+            defaults.removeObject(forKey: unsavedDraftSnapshotKey)
+            registry.removeAll { $0 == unsavedDraftSnapshotKey }
+            defaults.set(registry, forKey: unsavedDraftSnapshotRegistryKey)
+            return
+        }
+
+        var savedTabs: [SavedDraftTabSnapshot] = []
+        savedTabs.reserveCapacity(min(dirtyTabs.count, maxPersistedDraftTabs))
+        var remainingUTF16Length = maxPersistedDraftTotalUTF16Length
+        for tab in dirtyTabs.prefix(maxPersistedDraftTabs) {
+            guard remainingUTF16Length > 0 else { break }
+            let fileBackedRecord = tab.fileBackedDocument?.restoreRecord
+            let fileBackedSessionState = tab.fileBackedDocument?.sessionState
+            if fileBackedRecord != nil {
+                savedTabs.append(
+                    SavedDraftTabSnapshot(
+                        name: tab.name,
+                        content: "",
+                        language: tab.language,
+                        fileURLString: tab.fileURL?.absoluteString,
+                        lineEndingRawValue: tab.lineEnding.rawValue,
+                        fileEncodingIdentifierRawValue: tab.fileEncoding.identifier.rawValue,
+                        usesAutomaticFileEncoding: tab.usesAutomaticFileEncoding,
+                        storageMode: .fileBacked,
+                        fileBackedRestoreRecord: fileBackedRecord,
+                        fileBackedSessionState: fileBackedSessionState
+                    )
+                )
+                continue
+            }
+            let content = tab.document.string()
+            let nsContent = content as NSString
+            let maximumLength = min(maxPersistedDraftUTF16Length, remainingUTF16Length)
+            let clampedContent = nsContent.length > maximumLength
+                ? nsContent.substring(to: maximumLength)
+                : content
+            remainingUTF16Length -= (clampedContent as NSString).length
+            savedTabs.append(
+                SavedDraftTabSnapshot(
+                    name: tab.name,
+                    content: clampedContent,
+                    language: tab.language,
+                    fileURLString: tab.fileURL?.absoluteString,
+                    lineEndingRawValue: tab.lineEnding.rawValue,
+                    fileEncodingIdentifierRawValue: tab.fileEncoding.identifier.rawValue,
+                    usesAutomaticFileEncoding: tab.usesAutomaticFileEncoding,
+                    storageMode: fileBackedRecord == nil ? .materialized : .fileBacked,
+                    fileBackedRestoreRecord: fileBackedRecord,
+                    fileBackedSessionState: fileBackedSessionState
+                )
+            )
+        }
+
+        let selectedIndex: Int? = {
+            guard let selectedID = viewModel.selectedTabID else { return nil }
+            return dirtyTabs.firstIndex(where: { $0.id == selectedID })
+        }()
+
+        let snapshot = SavedDraftSnapshot(tabs: savedTabs, selectedIndex: selectedIndex, createdAt: Date())
+        guard let encoded = try? JSONEncoder().encode(snapshot) else { return }
+        defaults.set(encoded, forKey: unsavedDraftSnapshotKey)
+        if !registry.contains(unsavedDraftSnapshotKey) {
+            registry.append(unsavedDraftSnapshotKey)
+            defaults.set(registry, forKey: unsavedDraftSnapshotRegistryKey)
+        }
+    }
+
+    func restoreUnsavedDraftSnapshotIfAvailable() -> Bool {
+        let defaults = UserDefaults.standard
+        let keys = defaults.stringArray(forKey: unsavedDraftSnapshotRegistryKey) ?? []
+        guard !keys.isEmpty else { return false }
+
+        var snapshots: [SavedDraftSnapshot] = []
+        for key in keys {
+            guard let data = defaults.data(forKey: key),
+                  let snapshot = try? JSONDecoder().decode(SavedDraftSnapshot.self, from: data),
+                  !snapshot.tabs.isEmpty else {
+                continue
+            }
+            snapshots.append(snapshot)
+        }
+        guard !snapshots.isEmpty else { return false }
+
+        guard let restoredSnapshot = restoredDraftSnapshotState(from: snapshots) else { return false }
+        let mergedTabs = restoredSnapshot.tabs
+
+        let restoredTabs = mergedTabs.map { saved in
+            let restoredEncoding = saved.fileEncodingIdentifierRawValue
+                .flatMap(TextEncodingDescriptor.Identifier.init(rawValue:))
+                .map(TextEncodingDescriptor.init(identifier:))
+                ?? .utf8
+            return EditorViewModel.RestoredTabSnapshot(
+                name: saved.name,
+                content: saved.content,
+                language: saved.language,
+                fileURL: saved.fileURLString.flatMap(URL.init(string:)),
+                languageLocked: true,
+                isDirty: true,
+                lastSavedFingerprint: nil,
+                lastKnownFileModificationDate: nil,
+                fileEncodingRawValue: restoredEncoding.encodingRawValue,
+                fileEncoding: restoredEncoding,
+                usesAutomaticFileEncoding: saved.usesAutomaticFileEncoding ?? true,
+                lineEnding: saved.lineEndingRawValue.flatMap(TextLineEnding.init(rawValue:)) ?? .lf,
+                fileBackedSessionState: saved.fileBackedSessionState
+            )
+        }
+        viewModel.restoreTabsFromSnapshot(restoredTabs, selectedIndex: restoredSnapshot.selectedIndex)
+
+#if os(macOS)
+        // Persist the complete restored set, including pending scenes, before
+        // consuming legacy snapshots. Child scene attachment is asynchronous.
+        persistUnsavedDraftSnapshotIfNeeded()
+        guard defaults.data(forKey: unsavedDraftSnapshotKey) != nil else { return true }
+        for key in keys where key != unsavedDraftSnapshotKey { defaults.removeObject(forKey: key) }
+        defaults.set([unsavedDraftSnapshotKey], forKey: unsavedDraftSnapshotRegistryKey)
+#else
+        for key in keys {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: unsavedDraftSnapshotRegistryKey)
+#endif
+        return true
+    }
+
+    func clearUnsavedDraftSnapshots() {
+        let defaults = UserDefaults.standard
+        for key in defaults.stringArray(forKey: unsavedDraftSnapshotRegistryKey) ?? [] {
+            defaults.removeObject(forKey: key)
+        }
+        defaults.removeObject(forKey: unsavedDraftSnapshotRegistryKey)
+        lastPersistedDraftSignature = ""
+    }
+
+#if os(iOS) || os(visionOS)
+    // MARK: - iOS Security-Scoped Bookmarks
+
+    var lastSessionBookmarksKey: String { "LastSessionFileBookmarks" }
+    var lastSessionSelectedBookmarkKey: String { "LastSessionSelectedFileBookmark" }
+    var lastSessionProjectFolderBookmarkKey: String { "LastSessionProjectFolderBookmark" }
+
+    func persistLastSessionSecurityScopedBookmarks(fileURLs: [URL], selectedURL: URL?) {
+        let bookmarkData = fileURLs.compactMap { makeSecurityScopedBookmarkData(for: $0) }
+        sessionPreferences.set(.dataList(bookmarkData), forKey: lastSessionBookmarksKey)
+        if let selectedURL, let selectedData = makeSecurityScopedBookmarkData(for: selectedURL) {
+            sessionPreferences.set(.data(selectedData), forKey: lastSessionSelectedBookmarkKey)
+        } else {
+            sessionPreferences.set(.removed, forKey: lastSessionSelectedBookmarkKey)
+        }
+    }
+
+    func restoreSessionURLsFromSecurityScopedBookmarks() -> [URL] {
+        guard let saved = sessionPreferences.object(forKey: lastSessionBookmarksKey) as? [Data], !saved.isEmpty else {
+            return []
+        }
+        var urls: [URL] = []
+        var seen: Set<String> = []
+        for data in saved {
+            guard let url = resolveSecurityScopedBookmark(data) else { continue }
+            let key = url.standardizedFileURL.absoluteString
+            if seen.insert(key).inserted {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    func restoreSelectedURLFromSecurityScopedBookmark() -> URL? {
+        guard let data = sessionPreferences.object(forKey: lastSessionSelectedBookmarkKey) as? Data else { return nil }
+        return resolveSecurityScopedBookmark(data)
+    }
+
+    func restoreProjectFolderURLFromSecurityScopedBookmark() -> URL? {
+        guard let data = sessionPreferences.object(forKey: lastSessionProjectFolderBookmarkKey) as? Data,
+              let resolved = resolveSecurityScopedBookmark(data) else { return nil }
+        let standardized = resolved.standardizedFileURL
+        return FileManager.default.fileExists(atPath: standardized.path) ? standardized : nil
+    }
+
+    func makeSecurityScopedBookmarkData(for url: URL) -> Data? {
+        do {
+            return try url.bookmarkData(
+                options: [],
+                includingResourceValuesForKeys: nil,
+                relativeTo: nil
+            )
+        } catch {
+            return nil
+        }
+    }
+
+    func resolveSecurityScopedBookmark(_ data: Data) -> URL? {
+        var isStale = false
+        guard let resolved = try? URL(
+            resolvingBookmarkData: data,
+            options: [.withoutUI],
+            relativeTo: nil,
+            bookmarkDataIsStale: &isStale
+        ) else {
+            return nil
+        }
+        return resolved
+    }
+#endif
+}

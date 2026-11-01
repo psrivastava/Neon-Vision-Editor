@@ -1,0 +1,2722 @@
+import SwiftUI
+import Foundation
+import Dispatch
+import UniformTypeIdentifiers
+#if canImport(Darwin)
+import Darwin
+#endif
+#if os(macOS)
+import AppKit
+#elseif canImport(UIKit)
+import UIKit
+#endif
+
+struct FindReplaceAllPreview: Identifiable {
+    let id = UUID()
+    let source: String
+    let replacement: String
+    let mutations: [FindReplaceAllMutation]
+    let matchCount: Int
+}
+
+struct FindReplaceAllMutation {
+    let range: NSRange
+    let replacement: String
+}
+
+#if os(macOS)
+enum EditorFileDropPolicy {
+    nonisolated static func regularFileURLs(in urls: [URL]) -> [URL] {
+        urls.filter { url in
+            guard url.isFileURL else { return false }
+            return (try? url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true
+        }
+    }
+
+    nonisolated static func fileURL(fromDroppedItem item: NSSecureCoding?) -> URL? {
+        if let url = item as? URL, url.isFileURL {
+            return url
+        }
+        if let data = item as? Data,
+           let value = String(data: data, encoding: .utf8),
+           let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+           url.isFileURL {
+            return url
+        }
+        if let value = item as? String,
+           let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+           url.isFileURL {
+            return url
+        }
+        return nil
+    }
+}
+#endif
+
+
+// MARK: - Content View Actions
+
+extension ContentView {
+    var editorLayoutPreset: EditorLayoutPreset {
+        editorLayoutPresetOverride ?? EditorLayoutPreset(rawValue: editorLayoutPresetRaw) ?? .markdown
+    }
+
+    func applyEditorLayoutPreset(_ preset: EditorLayoutPreset) {
+#if os(macOS)
+        guard editorLayoutPreset == preset else {
+            openWindow(value: MacEditorWindowSessionStore.shared.createWindowID(initialPresetRawValue: preset.rawValue))
+            return
+        }
+#endif
+        applyEditorLayoutPresetLocally(preset, persistsSelection: true)
+    }
+
+    func applyEditorLayoutPresetLocally(_ preset: EditorLayoutPreset, persistsSelection: Bool) {
+        editorLayoutPresetOverride = preset
+        if persistsSelection {
+            editorLayoutPresetRaw = preset.rawValue
+        }
+        viewModel.isLineWrapEnabled = preset.lineWrapEnabled
+        showLineNumbers = preset.lineNumbersVisible
+        showCodeMinimap = preset.minimapVisible
+        viewModel.showSidebar = preset.editorSidebarVisible
+        showProjectStructureSidebar = preset.projectSidebarVisible
+        editorFontSize = preset.editorFontSize
+
+        switch preset {
+        case .writing, .code, .pyDev:
+            previewMode = .none
+        case .markdown:
+            previewMode = isMarkdownPreviewDocument ? .markdown : .none
+        case .review:
+            previewMode = previewModeForCurrentDocument ?? .none
+        }
+        isMarkdownProjectPreviewPresented = false
+        scheduleHighlightRefresh()
+    }
+
+    func startPythonProjectTemplate() {
+#if os(macOS) && !APP_STORE_BUILD
+        pythonProjectTemplateDestinationURL = projectRootFolderURL ?? FileManager.default.homeDirectoryForCurrentUser
+        showPythonProjectTemplateSheet = true
+#endif
+    }
+
+    func createPythonProject(at parentURL: URL, named projectName: String) {
+#if os(macOS) && !APP_STORE_BUILD
+        do {
+            let projectURL = try PythonProjectTemplate.create(projectName: projectName, in: parentURL)
+            setProjectFolder(projectURL)
+            openProjectFile(url: projectURL.appendingPathComponent("src").appendingPathComponent(PythonProjectTemplate.packageName(for: projectName)).appendingPathComponent("main.py"))
+            showPythonProjectTemplateSheet = false
+        } catch {
+            presentProjectItemOperationError(error.localizedDescription)
+        }
+#endif
+    }
+
+    func openPDFNotesEditor() {
+        let sourceURL = pdfNoteSourceURL ?? viewModel.selectedTab?.fileURL
+        guard let sourceURL, sourceURL.pathExtension.lowercased() == "pdf" else { return }
+
+        if let noteTabID = pdfNoteTabID,
+           viewModel.selectedTabID == noteTabID {
+            if let pdfTab = viewModel.tabs.first(where: {
+                $0.fileURL?.path == sourceURL.path && $0.fileURL?.pathExtension.lowercased() == "pdf"
+            }) {
+                viewModel.selectTab(id: pdfTab.id)
+            } else {
+                // Recover sessions created by the old implementation, which
+                // converted the PDF tab into the note tab instead of creating
+                // a separate editor tab.
+                _ = viewModel.openFile(url: sourceURL)
+            }
+            previewMode = .pdf
+            return
+        }
+
+        activatePDFNotesEditor()
+    }
+
+    /// Opens or activates the note editor without toggling it closed. This is
+    /// used by PDF highlighting, where the note must remain available for the
+    /// text that was just captured.
+    private func activatePDFNotesEditor() {
+        let sourceURL = pdfNoteSourceURL ?? viewModel.selectedTab?.fileURL
+        guard let sourceURL, sourceURL.pathExtension.lowercased() == "pdf" else { return }
+
+        let noteURL = sourceURL.deletingPathExtension().appendingPathExtension("pdf.notes.md")
+        pdfNoteSourceURL = sourceURL
+        if let noteTabID = pdfNoteTabID,
+           viewModel.tabs.contains(where: { $0.id == noteTabID }) {
+            viewModel.selectTab(id: noteTabID)
+        } else {
+            let noteContent: String
+            let attachedFileURL: URL?
+            if FileManager.default.fileExists(atPath: noteURL.path),
+               let existingContent = try? String(contentsOf: noteURL, encoding: .utf8) {
+                noteContent = existingContent
+                attachedFileURL = noteURL
+            } else {
+                noteContent = ""
+                attachedFileURL = nil
+            }
+            pdfNoteTabID = viewModel.addPDFNoteTab(
+                name: noteURL.lastPathComponent,
+                fileURL: attachedFileURL,
+                content: noteContent
+            )
+        }
+        previewMode = .pdf
+    }
+
+    func appendPDFHighlightToNote(_ selectedText: String) {
+        let sourceURL = pdfNoteSourceURL ?? viewModel.selectedTab?.fileURL
+        guard let sourceURL,
+              sourceURL.pathExtension.lowercased() == "pdf",
+              !selectedText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        activatePDFNotesEditor()
+        guard let noteTabID = pdfNoteTabID,
+              let noteTab = viewModel.tabs.first(where: { $0.id == noteTabID }) else { return }
+
+        let referenceHeading = "# PDF: \(sourceURL.lastPathComponent)"
+        var content = noteTab.document.string()
+        if !content.split(whereSeparator: \.isNewline).contains(where: { String($0).trimmingCharacters(in: .whitespaces) == referenceHeading }) {
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            content = trimmed.isEmpty ? "\(referenceHeading)\n" : "\(referenceHeading)\n\n\(trimmed)"
+        }
+
+        let quotedText = selectedText
+            .split(omittingEmptySubsequences: false, whereSeparator: \.isNewline)
+            .map { "> \($0)" }
+            .joined(separator: "\n")
+        let separator = content.hasSuffix("\n") ? "\n" : "\n\n"
+        viewModel.updateTabContent(
+            tabID: noteTabID,
+            content: content + separator + "## Highlight\n\n" + quotedText + "\n"
+        )
+        isPDFNoteMarkdownPreviewVisible = false
+    }
+
+    func synchronizePDFNoteContext() {
+        guard let pdfNoteTabID else {
+            if viewModel.selectedTab?.fileURL?.pathExtension.lowercased() != "pdf" || pdfNoteSourceURL != nil {
+                pdfNoteSourceURL = nil
+                isPDFNoteMarkdownPreviewVisible = false
+            }
+            return
+        }
+        guard viewModel.tabs.contains(where: { $0.id == pdfNoteTabID }) else {
+            self.pdfNoteTabID = nil
+            pdfNoteSourceURL = nil
+            isPDFNoteMarkdownPreviewVisible = false
+            return
+        }
+        if viewModel.selectedTabID == pdfNoteTabID {
+            synchronizePDFNoteAttachment()
+        } else if viewModel.selectedTab?.fileURL?.pathExtension.lowercased() != "pdf" {
+            self.pdfNoteTabID = nil
+            pdfNoteSourceURL = nil
+            isPDFNoteMarkdownPreviewVisible = false
+        } else if viewModel.selectedTab?.fileURL?.path != pdfNoteSourceURL?.path {
+            self.pdfNoteTabID = nil
+            pdfNoteSourceURL = nil
+            isPDFNoteMarkdownPreviewVisible = false
+        }
+    }
+
+    func synchronizePDFNoteAttachment() {
+        guard let pdfNoteTabID,
+              viewModel.selectedTabID == pdfNoteTabID,
+              let sourceURL = pdfNoteSourceURL,
+              let tab = viewModel.selectedTab else { return }
+        let noteURL = sourceURL.deletingPathExtension().appendingPathExtension("pdf.notes.md")
+        let hasContent = !tab.document.string().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        if hasContent {
+            if tab.fileURL == nil {
+                viewModel.remapTabFileURL(tabID: pdfNoteTabID, to: noteURL)
+            }
+            // PDF notes are the one editor document that is created implicitly.
+            // Persist them after a short pause so typing remains responsive while
+            // the first non-empty content is written beside the source PDF.
+            if tab.fileURL == nil || tab.contentRevision > 0 {
+                schedulePDFNoteAutoSave(tabID: pdfNoteTabID, revision: tab.contentRevision)
+            }
+        } else if !hasContent {
+            pdfNoteAutoSaveTask?.cancel()
+            pdfNoteAutoSaveTask = nil
+            pdfNoteAutoSaveRevision = nil
+            viewModel.clearUnsavedEmptyPDFNote(tabID: pdfNoteTabID, displayName: noteURL.lastPathComponent)
+        }
+    }
+
+    private func schedulePDFNoteAutoSave(tabID: UUID, revision: Int) {
+        guard pdfNoteAutoSaveRevision != revision else { return }
+        pdfNoteAutoSaveTask?.cancel()
+        pdfNoteAutoSaveRevision = revision
+        pdfNoteAutoSaveTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 450_000_000)
+            } catch {
+                return
+            }
+            guard !Task.isCancelled,
+                  pdfNoteTabID == tabID,
+                  viewModel.selectedTabID == tabID,
+                  let tab = viewModel.tabs.first(where: { $0.id == tabID }),
+                  tab.contentRevision == revision,
+                  !tab.document.string().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  tab.fileURL != nil else { return }
+            viewModel.saveFile(tabID: tabID)
+        }
+    }
+
+    func openPreviewInSeparateWindow() {
+#if os(macOS)
+        guard isMarkdownPreviewDocument || isSVGDocument || isHTMLPreviewDocument else { return }
+        // The detached window owns the preview presentation now. Set its state
+        // before starting a render so opening it while the inline pane is already
+        // closed still enters the live detached render pipeline.
+        showDetachedPreviewWindow = true
+        if isMarkdownPreviewDocument {
+            scheduleMarkdownPreviewRender(immediate: true)
+        }
+        if previewMode != .none {
+            previewMode = .none
+        }
+#endif
+    }
+
+    private struct ProjectEditorOverrides: Decodable {
+        let indentWidth: Int?
+        let lineWrapEnabled: Bool?
+    }
+
+    // MARK: - Window and Toolbar Commands
+
+    func performConfiguredAppShortcut(_ action: EditorShortcutAction) {
+        switch action {
+        case .closeTab:
+            if let tab = viewModel.selectedTab { requestCloseTab(tab) }
+        case .newTab: viewModel.addNewTab()
+        case .openFile: openFileFromToolbar()
+        case .save: saveCurrentTabFromToolbar()
+        case .saveAs: saveCurrentTabAsFromToolbar()
+        case .toggleLineWrap:
+            guard viewModel.selectedTab != nil else { return }
+            viewModel.isLineWrapEnabled.toggle()
+        case .languageSearch: presentLanguageSearchSheet()
+        case .find: showFindReplace = true
+        case .findInFiles: requestFindInFilesFromToolbar()
+        case .goToLine:
+            goToLineInput = currentCaretLineNumber.map(String.init) ?? ""
+            showGoToLine = true
+        case .goToSymbol:
+            goToSymbolQuery = ""
+            showGoToSymbol = true
+        case .quickOpen:
+            quickSwitcherQuery = ""
+            showQuickSwitcher = true
+        case .toggleSidebar: toggleSidebarFromToolbar()
+        case .toggleProjectSidebar: toggleProjectSidebarFromToolbar()
+        case .joinLines: joinSelectedLines()
+        case .formatJSON: formatJSONDocument()
+        }
+    }
+
+    func dismissTransientSheetsForCommand() {
+        showWelcomeTour = false
+        showSupportPromptSheet = false
+        showEditorHelp = false
+#if os(iOS) || os(visionOS)
+        showSettingsSheet = false
+#endif
+    }
+
+    func liveEditorBufferText() -> String? {
+#if os(macOS)
+        return viewModel.selectedTab?.document.string()
+#elseif canImport(UIKit)
+        if let textView = activeEditorInputTextView() {
+            return textView.text
+        }
+        return nil
+#else
+        return nil
+#endif
+    }
+
+    func showUpdaterDialog(checkNow: Bool = true) {
+#if os(macOS)
+        guard ReleaseRuntimePolicy.isUpdaterEnabledForCurrentDistribution else { return }
+        SparkleUpdateController.shared.checkForUpdates()
+#endif
+    }
+
+    func openSettings(tab: String? = nil) {
+        let targetTab = ReleaseRuntimePolicy.settingsTab(from: tab)
+#if os(macOS)
+        MacSettingsTabRoute.request(targetTab)
+        dismissTransientSheetsForCommand()
+        openSettingsAction()
+#else
+        settingsActiveTab = targetTab
+        prepareForSettingsSheetPresentation()
+        DispatchQueue.main.async {
+            showSettingsSheet = true
+        }
+#endif
+    }
+
+#if os(iOS) || os(visionOS)
+    func prepareForSettingsSheetPresentation() {
+        dismissTransientSheetsForCommand()
+    }
+#endif
+
+    var canPresentStartupPrompt: Bool {
+#if os(iOS) || os(visionOS)
+        return !showSettingsSheet
+            && !showWelcomeTour
+            && !showSupportPromptSheet
+            && !showEditorHelp
+            && !showFindReplace
+            && !showQuickSwitcher
+            && !showGoToLine
+            && !showGoToSymbol
+            && !showFindInFiles
+            && !showCompactSidebarSheet
+            && !showCompactProjectSidebarSheet
+            && !showLanguageSearchSheet
+#else
+        return !showWelcomeTour
+            && !showSupportPromptSheet
+            && !showEditorHelp
+            && !showUpdateDialog
+#endif
+    }
+
+    func openAPISettings() {
+        openSettings(tab: "ai")
+    }
+
+    func openFileFromToolbar() {
+#if os(macOS)
+        viewModel.openFile()
+#else
+        showIOSFileImporter = true
+#endif
+    }
+
+    func undoFromToolbar() {
+#if os(macOS)
+        NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+#elseif canImport(UIKit)
+        if let textView = activeEditorInputTextView(),
+           !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        }
+        UIApplication.shared.sendAction(Selector(("undo:")), to: nil, from: nil, for: nil)
+#endif
+    }
+
+    func redoFromToolbar() {
+#if os(macOS)
+        NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+#elseif canImport(UIKit)
+        if let textView = activeEditorInputTextView(), !textView.isFirstResponder {
+            textView.becomeFirstResponder()
+        }
+        UIApplication.shared.sendAction(Selector(("redo:")), to: nil, from: nil, for: nil)
+#endif
+    }
+
+    func saveCurrentTabFromToolbar() {
+#if os(macOS)
+        let focusedWindow = hostWindowNumber.flatMap { NSApp.window(withWindowNumber: $0) } ?? NSApp.keyWindow
+        if MacDocumentWindowTabs.shared.saveFocusedSideBySideDocument(
+            for: viewModel, focusedDocumentID: MacDocumentWindowTabs.focusedEditorDocumentID(in: focusedWindow)) {
+            return
+        }
+#endif
+        guard let tab = viewModel.selectedTab else { return }
+        guard !tab.isReadOnlyPreview else { return }
+        if isPDFNoteEditorActive,
+           tab.document.string().trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return
+        }
+#if os(macOS)
+        viewModel.saveFile(tabID: tab.id)
+#else
+        if tab.remotePreviewPath != nil {
+            viewModel.saveFile(tabID: tab.id)
+            return
+        }
+        if tab.fileURL != nil {
+            viewModel.saveFile(tabID: tab.id)
+            return
+        }
+        iosExportTabID = tab.id
+        iosExportDocument = PlainTextDocument(text: tab.document.string(), encoding: tab.fileEncoding)
+        iosExportFilename = suggestedExportFilename(for: tab)
+        iosExportContentType = exportContentType(forFilename: iosExportFilename)
+        showIOSFileExporter = true
+#endif
+    }
+
+    func saveCurrentTabAsFromToolbar() {
+#if os(macOS)
+        let focusedWindow = hostWindowNumber.flatMap { NSApp.window(withWindowNumber: $0) } ?? NSApp.keyWindow
+        if MacDocumentWindowTabs.shared.saveFocusedSideBySideDocument(
+            for: viewModel, focusedDocumentID: MacDocumentWindowTabs.focusedEditorDocumentID(in: focusedWindow),
+            saveAs: true) {
+            return
+        }
+#endif
+        guard let tab = viewModel.selectedTab else { return }
+        guard !tab.isReadOnlyPreview else { return }
+        if tab.remotePreviewPath != nil {
+            viewModel.saveFile(tabID: tab.id)
+            return
+        }
+#if os(macOS)
+        viewModel.saveFileAs(tabID: tab.id)
+#else
+        iosExportTabID = tab.id
+        iosExportDocument = PlainTextDocument(text: tab.document.string(), encoding: tab.fileEncoding)
+        iosExportFilename = suggestedExportFilename(for: tab)
+        iosExportContentType = exportContentType(forFilename: iosExportFilename)
+        showIOSFileExporter = true
+#endif
+    }
+
+#if canImport(UIKit)
+    func handleIOSImportResult(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard !urls.isEmpty else { return }
+            var openedCount = 0
+            var unsupportedCount = 0
+            var openedNames: [String] = []
+
+            for url in urls {
+                if viewModel.openFile(url: url) {
+                    openedCount += 1
+                    openedNames.append(url.lastPathComponent)
+                } else {
+                    unsupportedCount += 1
+                    presentUnsupportedFileAlert(for: url)
+                }
+            }
+
+            guard openedCount > 0 else {
+                if unsupportedCount > 0 {
+                    findStatusMessage = "Open failed: unsupported file type."
+                } else {
+                    findStatusMessage = "Open failed: selected files are no longer available."
+                }
+                recordDiagnostic("iOS import failed: no valid files in selection")
+                return
+            }
+
+            if openedCount == 1, let name = openedNames.first {
+                if unsupportedCount > 0 {
+                    findStatusMessage = "Opened \(name) (\(unsupportedCount) unsupported ignored)"
+                } else {
+                    findStatusMessage = "Opened \(name)"
+                }
+            } else {
+                if unsupportedCount > 0 {
+                    findStatusMessage = "Opened \(openedCount) files (\(unsupportedCount) unsupported ignored)"
+                } else {
+                    findStatusMessage = "Opened \(openedCount) files"
+                }
+            }
+            recordDiagnostic("iOS import success count: \(openedCount)")
+        case .failure(let error):
+            findStatusMessage = "Open failed: \(userFacingFileError(error))"
+            recordDiagnostic("iOS import failed: \(error.localizedDescription)")
+        }
+    }
+
+    func handleIOSExportResult(_ result: Result<URL, Error>) {
+        switch result {
+        case .success(let url):
+            if let tabID = iosExportTabID {
+                viewModel.markTabSaved(tabID: tabID, fileURL: url)
+            }
+            findStatusMessage = "Saved to \(url.lastPathComponent)"
+            recordDiagnostic("iOS export success: \(url.lastPathComponent)")
+        case .failure(let error):
+            findStatusMessage = "Save failed: \(userFacingFileError(error))"
+            recordDiagnostic("iOS export failed: \(error.localizedDescription)")
+        }
+        iosExportTabID = nil
+    }
+
+    private func suggestedExportFilename(for tab: TabData) -> String {
+        let trimmedName = tab.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedName.isEmpty, trimmedName.contains(".") {
+            return tab.name
+        }
+        let baseName = trimmedName.isEmpty ? "Untitled" : trimmedName
+        let ext = preferredExportExtension(for: tab)
+        return "\(baseName).\(ext)"
+    }
+
+    private func exportContentType(forFilename filename: String) -> UTType {
+        let ext = URL(fileURLWithPath: filename).pathExtension
+        guard !ext.isEmpty,
+              let type = UTType(filenameExtension: ext),
+              type.conforms(to: .text) || type.conforms(to: .plainText) || type.conforms(to: .sourceCode) else {
+            return .text
+        }
+        return type
+    }
+
+    private func preferredExportExtension(for tab: TabData) -> String {
+        if let fileURL = tab.fileURL {
+            let ext = fileURL.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !ext.isEmpty {
+                return ext
+            }
+        }
+
+        switch tab.language.lowercased() {
+        case "swift": return "swift"
+        case "python": return "py"
+        case "javascript": return "js"
+        case "typescript": return "ts"
+        case "php": return "php"
+        case "java": return "java"
+        case "kotlin": return "kt"
+        case "go": return "go"
+        case "ruby": return "rb"
+        case "rust": return "rs"
+        case "html": return "html"
+        case "css": return "css"
+        case "json": return "json"
+        case "xml": return "xml"
+        case "yaml": return "yml"
+        case "toml": return "toml"
+        case "nix": return "nix"
+        case "eml": return "eml"
+        case "ini": return "ini"
+        case "sql": return "sql"
+        case "markdown": return "md"
+        case "typst": return "typ"
+        case "tex": return "tex"
+        case "graphql": return "graphql"
+        case "proto": return "proto"
+        case "dotenv": return "env"
+        case "shell", "bash", "zsh": return "sh"
+        case "powershell": return "ps1"
+        case "c": return "c"
+        case "cpp": return "cpp"
+        case "objective-c": return "m"
+        case "csharp": return "cs"
+        case "csv": return "csv"
+        case "vim": return "vim"
+        case "log": return "log"
+        default: return "txt"
+        }
+    }
+
+    private func userFacingFileError(_ error: Error) -> String {
+        let nsError = error as NSError
+        if nsError.domain == NSCocoaErrorDomain {
+            switch nsError.code {
+            case NSUserCancelledError:
+                return NSLocalizedString("Cancelled.", comment: "File operation error")
+            case NSFileWriteNoPermissionError, NSFileReadNoPermissionError:
+                return NSLocalizedString("No permission for this location.", comment: "File operation error")
+            case NSFileWriteOutOfSpaceError:
+                return NSLocalizedString("Not enough storage space.", comment: "File operation error")
+            default:
+                break
+            }
+        }
+        return nsError.localizedDescription
+    }
+#endif
+
+    // MARK: - Document Transform Commands
+
+    func clearEditorContent() {
+        editorExternalMutationRevision &+= 1
+#if os(macOS)
+        if let tab = viewModel.selectedTab {
+            postEditorReplacement("", range: NSRange(location: 0, length: tab.document.utf16Length), documentID: tab.id)
+        } else {
+            currentContentBinding.wrappedValue = ""
+        }
+#else
+        currentContentBinding.wrappedValue = ""
+#endif
+        caretStatus = "Ln 1, Col 1"
+        caretLine = 1
+        caretColumn = 1
+    }
+
+    func copyCurrentEditorReference() {
+        let fileReference = viewModel.selectedTab?.fileURL?.path
+            ?? viewModel.selectedTab?.name
+            ?? "Untitled"
+        let reference = "\(fileReference):\(caretLine):\(caretColumn)"
+#if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(reference, forType: .string)
+#else
+        UIPasteboard.general.string = reference
+#endif
+        findStatusMessage = "Copied \(reference)"
+    }
+
+    // FORK-SEAM E19: route the Tools > JSON items through the unified fork formatter, which also
+    // handles file-backed (large) documents. Upstream's `transformCurrentJSONDocument` bails out
+    // on those, so Format JSON silently did nothing on exactly the files that need it.
+    func formatJSONDocument() {
+        guard currentLanguage.lowercased().hasPrefix("json") else {
+            forkStatusMessage = "JSON tools are available for JSON documents."
+            return
+        }
+        forkFormatDocument(pretty: true)
+    }
+
+    func combineJSONLines() {
+        guard currentLanguage.lowercased().hasPrefix("json") else {
+            forkStatusMessage = "JSON tools are available for JSON documents."
+            return
+        }
+        forkFormatDocument(pretty: false)
+    }
+
+    private func transformCurrentJSONDocument(prettyPrinted: Bool) {
+        guard currentLanguage.lowercased().hasPrefix("json") else {
+            findStatusMessage = "JSON tools are available for JSON documents."
+            return
+        }
+        guard !requiresMaterializedEditorTransform() else { return }
+
+        let source = currentContentBinding.wrappedValue
+        guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+
+        do {
+            var output = try JSONPreviewDocument.formattedText(source, prettyPrinted: prettyPrinted)
+            if prettyPrinted && !output.hasSuffix("\n") {
+                output.append("\n")
+            }
+            editorExternalMutationRevision &+= 1
+            currentContentBinding.wrappedValue = output
+            findStatusMessage = prettyPrinted ? "Formatted JSON" : "Combined JSON lines"
+        } catch {
+            findStatusMessage = "Invalid JSON: \(error.localizedDescription)"
+        }
+    }
+
+    func requestClearEditorContent() {
+        let hasText = !currentContentBinding.wrappedValue.isEmpty
+        if confirmClearEditor && hasText {
+            showClearEditorConfirmDialog = true
+        } else {
+            clearEditorContent()
+        }
+    }
+
+    var clearEditorPreviewDescription: String {
+        Self.clearEditorPreviewDescription(isPresented: showClearEditorConfirmDialog) {
+            currentContentBinding.wrappedValue
+        }
+    }
+
+    static func clearEditorPreviewDescription(isPresented: Bool, content: () -> String) -> String {
+        // SwiftUI evaluates dialog messages while the dialog is hidden. Keep
+        // that normal render path from projecting and counting the whole file.
+        guard isPresented else { return "" }
+        let content = content()
+        let lineCount = max(1, content.reduce(into: 1) { count, character in
+            if character == "\n" { count += 1 }
+        })
+        let key = lineCount == 1
+            ? NSLocalizedString("This will remove %d characters across %d line in the current editor. You can undo this change.", comment: "Delete confirmation")
+            : NSLocalizedString("This will remove %d characters across %d lines in the current editor. You can undo this change.", comment: "Delete confirmation")
+        return String(format: key, content.count, lineCount)
+    }
+
+    // MARK: - Sidebar and Tab Commands
+
+    func toggleSidebarFromToolbar() {
+#if os(iOS) || os(visionOS)
+        if usesCompactIOSLayout {
+            showCompactSidebarSheet.toggle()
+            return
+        }
+#endif
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            viewModel.showSidebar.toggle()
+        }
+    }
+
+    func toggleProjectSidebarFromToolbar() {
+#if os(iOS) || os(visionOS)
+        if usesCompactIOSLayout {
+            DispatchQueue.main.async {
+                showCompactProjectSidebarSheet.toggle()
+            }
+            return
+        }
+#endif
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            showProjectStructureSidebar.toggle()
+        }
+    }
+
+    /// Opens project-wide search in the project sidebar, switching away from
+    /// the AI assistant when that sidebar is currently selected.
+    func requestFindInFilesFromToolbar() {
+        utilitySidebarMode = .project
+        showFindInFiles = true
+    }
+
+    func openFileFromCompactProjectSidebar() {
+#if os(iOS) || os(visionOS)
+        showCompactProjectSidebarSheet = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            openFileFromToolbar()
+        }
+#else
+        openFileFromToolbar()
+#endif
+    }
+
+    func openProjectFolderFromCompactProjectSidebar() {
+#if os(iOS) || os(visionOS)
+        showCompactProjectSidebarSheet = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            openProjectFolder()
+        }
+#else
+        openProjectFolder()
+#endif
+    }
+
+    func startProjectItemCreationFromCompactProjectSidebar(kind: ProjectSidebarCreationKind, in preferredDirectory: URL?) {
+#if os(iOS) || os(visionOS)
+        showCompactProjectSidebarSheet = false
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            startProjectItemCreation(kind: kind, in: preferredDirectory)
+        }
+#else
+        startProjectItemCreation(kind: kind, in: preferredDirectory)
+#endif
+    }
+
+    func toggleMarkdownPreviewFromToolbar() {
+        togglePreviewFromToolbar()
+    }
+
+    func togglePreviewFromToolbar() {
+        guard !isSafeModeActive else { return }
+        guard let requestedMode = previewModeForCurrentDocument else { return }
+#if os(macOS)
+        if isMarkdownPreviewDocument {
+            let selectedMode = MarkdownPreviewOpenMode(rawValue: markdownPreviewDefaultModeRaw) ?? .defaultMode
+            let presentation = MarkdownPreviewPresentationPolicy.toggledPresentation(
+                previewIsActive: previewMode == .markdown,
+                selectedMode: selectedMode
+            )
+            isMarkdownPreviewReadingMode = presentation.isReadingMode
+            previewMode = presentation.previewMode
+            return
+        }
+#endif
+        previewMode = previewMode.toggled(for: requestedMode)
+        let isOpeningPreview = previewMode != .none
+#if os(iOS) || os(visionOS)
+        if usesRegularIOSLayout && isOpeningPreview {
+            showProjectStructureSidebar = false
+            showCompactProjectSidebarSheet = false
+        } else if usesCompactIOSLayout && isOpeningPreview {
+            markdownPreviewSheetDetent = .large
+            dismissKeyboard()
+        }
+#endif
+    }
+
+    func closeCurrentPreview() {
+#if os(macOS)
+        isMarkdownPreviewReadingMode = false
+#endif
+        previewMode = .none
+    }
+
+    /// Closes only the Markdown pane when it is attached to a PDF preview.
+    /// The PDF remains the active document and keeps its preview visible.
+    func closeMarkdownPreview() {
+        if previewMode == .pdf, isPDFNoteMarkdownPreviewVisible {
+            isPDFNoteMarkdownPreviewVisible = false
+        } else if previewMode == .markdown {
+#if os(macOS)
+            isMarkdownPreviewReadingMode = false
+#endif
+            previewMode = .none
+        }
+    }
+
+    func closeAllTabsFromToolbar() {
+#if os(macOS)
+        let owners = MacDocumentWindowTabs.shared.models(inGroupOf: viewModel)
+        Task {
+            for owner in owners {
+                owner.nativeRevealWindow?()
+                guard await owner.saveAndCloseTabs(tabIDs: owner.tabs.map(\.id)) else { return }
+            }
+        }
+#else
+        let tabIDsToClose = viewModel.tabs.map(\.id)
+        Task { await viewModel.saveAndCloseTabs(tabIDs: tabIDsToClose) }
+#endif
+    }
+
+    func requestCloseAllTabsFromToolbar() {
+        guard !viewModel.tabs.isEmpty else { return }
+        showCloseAllTabsDialog = true
+    }
+
+    func dismissKeyboard() {
+#if os(iOS) || os(visionOS)
+        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+#endif
+    }
+
+    func requestCloseTab(_ tab: TabData) {
+        #if os(macOS)
+        // Native window tabs: one document per window, so closing the tab is
+        // closing the window. With fork in-app tabs, only the last tab does.
+        let closesWindow = !MacDocumentTabPolicy.forkInAppTabsEnabled || viewModel.tabs.count <= 1
+        if closesWindow, let hostWindowNumber {
+            NSApp.window(withWindowNumber: hostWindowNumber)?.performClose(nil)
+            return
+        }
+        #endif
+        #if os(iOS) || os(visionOS)
+        let shouldConfirmClose = tab.isDirty
+        #else
+        let shouldConfirmClose = tab.isDirty && confirmCloseDirtyTab
+        #endif
+
+        if shouldConfirmClose {
+            pendingCloseTabID = tab.id
+            showUnsavedCloseDialog = true
+        } else {
+            viewModel.closeTab(tabID: tab.id)
+        }
+    }
+
+    func saveAndClosePendingTab() {
+        guard let pendingCloseTabID,
+              viewModel.tabs.contains(where: { $0.id == pendingCloseTabID }) else {
+            self.pendingCloseTabID = nil
+            return
+        }
+
+        Task {
+            await viewModel.saveAndCloseTabs(tabIDs: [pendingCloseTabID])
+            if self.pendingCloseTabID == pendingCloseTabID { self.pendingCloseTabID = nil }
+        }
+    }
+
+    func discardAndClosePendingTab() {
+        guard let pendingCloseTabID,
+              let tab = viewModel.tabs.first(where: { $0.id == pendingCloseTabID }) else {
+            self.pendingCloseTabID = nil
+            return
+        }
+        viewModel.closeTab(tabID: tab.id)
+        self.pendingCloseTabID = nil
+    }
+
+    // MARK: - Find and Replace
+
+    /// Prevent whole-document compatibility projections for virtual large tabs.
+    func requiresMaterializedEditorTransform() -> Bool {
+        guard viewModel.selectedTab?.usesFileBackedStorage == true else { return false }
+        findStatusMessage = "This whole-document command is not available for large virtual documents yet."
+        return true
+    }
+
+    func findNext(focusEditor: Bool = true) {
+        moveFindSelection(by: 1, focusEditor: focusEditor)
+    }
+
+    func findPrevious(focusEditor: Bool = true) {
+        moveFindSelection(by: -1, focusEditor: focusEditor)
+    }
+
+    private func moveFindSelection(by delta: Int, focusEditor: Bool) {
+        guard let index = ReleaseRuntimePolicy.movedFindMatchIndex(
+            currentIndex: findSession.selectedIndex,
+            matchCount: findSession.ranges.count,
+            delta: delta
+        ) else {
+            refreshFindPreview()
+            return
+        }
+        selectFindMatch(at: index, focusEditor: focusEditor)
+    }
+
+    func jumpToCurrentFindMatch() {
+        guard let index = findSession.selectedIndex else {
+            refreshFindPreview()
+            return
+        }
+        selectFindMatch(at: index, focusEditor: true)
+    }
+
+    func refreshFindPreview() {
+        findRefreshTask?.cancel()
+        findRefreshGeneration &+= 1
+        let generation = findRefreshGeneration
+
+        guard !findQuery.isEmpty, let tab = viewModel.selectedTab else {
+            findMatchCount = 0
+            findStatusMessage = ""
+            findSession = EditorFindSessionState(presentationRevision: findSession.presentationRevision &+ 1)
+            postEditorFindHighlights()
+            return
+        }
+#if os(macOS)
+        guard !requiresMaterializedEditorTransform() else { return }
+#endif
+        let source = tab.document.string()
+        let documentID = tab.id
+        let sourceRevision = tab.contentRevision
+        let query = findQuery
+        let useRegex = findUsesRegex
+        let caseSensitive = findCaseSensitive
+        let wholeWord = findWholeWord && !findUsesRegex
+        let fingerprint = "\(query)|\(useRegex)|\(caseSensitive)|\(wholeWord)"
+        let caretLocation = currentSelectionSnapshotTabID == documentID
+            ? currentSelectionSnapshotRange?.location ?? 0
+            : 0
+        let priorSession = findSession
+        findSession.isSearching = true
+
+        findRefreshTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(90))
+            guard !Task.isCancelled else { return }
+            let result = await Task.detached(priority: .userInitiated) {
+                ReleaseRuntimePolicy.findMatches(
+                    in: source,
+                    query: query,
+                    useRegex: useRegex,
+                    caseSensitive: caseSensitive,
+                    wholeWord: wholeWord
+                )
+            }.value
+            guard !Task.isCancelled,
+                  generation == findRefreshGeneration,
+                  viewModel.selectedTab?.id == documentID,
+                  viewModel.selectedTab?.contentRevision == sourceRevision else { return }
+
+            let selectedIndex: Int?
+            if priorSession.documentID == documentID,
+               priorSession.fingerprint == fingerprint,
+               let selectedRange = priorSession.selectedRange,
+               let preservedIndex = result.ranges.firstIndex(of: selectedRange) {
+                selectedIndex = preservedIndex
+            } else {
+                selectedIndex = ReleaseRuntimePolicy.initialFindMatchIndex(
+                    in: result.ranges,
+                    caretLocation: caretLocation
+                )
+            }
+            findSession = EditorFindSessionState(
+                ranges: result.ranges,
+                selectedIndex: selectedIndex,
+                documentID: documentID,
+                fingerprint: fingerprint,
+                sourceRevision: sourceRevision,
+                isSearching: false,
+                errorMessage: result.errorMessage,
+                presentationRevision: priorSession.presentationRevision &+ 1
+            )
+            findMatchCount = result.ranges.count
+            findStatusMessage = result.errorMessage ?? (result.ranges.isEmpty ? "No matches found" : "")
+            postEditorFindHighlights()
+            if let selectedIndex {
+                selectFindMatch(at: selectedIndex, focusEditor: false)
+            }
+        }
+    }
+
+    func refreshFindMatchCount() {
+        refreshFindPreview()
+    }
+
+    private func selectFindMatch(at index: Int, focusEditor: Bool) {
+        guard findSession.ranges.indices.contains(index) else { return }
+        findSession.selectedIndex = index
+        findSession.presentationRevision &+= 1
+        postEditorFindHighlights()
+        postEditorRangeSelection(
+            findSession.ranges[index],
+            focusEditor: focusEditor,
+            documentID: findSession.documentID,
+            centerSelection: true
+        )
+    }
+
+    func closeFindReplace() {
+        showFindReplace = false
+        findRefreshTask?.cancel()
+        findSession = EditorFindSessionState(presentationRevision: findSession.presentationRevision &+ 1)
+        findMatchCount = 0
+        postEditorFindHighlights()
+    }
+
+    func postEditorFindHighlights() {
+        var userInfo: [String: Any] = [
+            EditorCommandUserInfo.findMatchRanges: findSession.ranges.map { NSValue(range: $0) }
+        ]
+        if let documentID = findSession.documentID {
+            userInfo[EditorCommandUserInfo.documentID] = documentID.uuidString
+        }
+        if let selectedRange = findSession.selectedRange {
+            userInfo[EditorCommandUserInfo.selectedFindMatchRange] = NSValue(range: selectedRange)
+        }
+        NotificationCenter.default.post(name: .updateEditorFindHighlights, object: nil, userInfo: userInfo)
+    }
+
+    private func postEditorRangeSelection(
+        _ range: NSRange,
+        focusEditor: Bool,
+        documentID: UUID? = nil,
+        centerSelection: Bool = false
+    ) {
+        let userInfo: [String: Any] = [
+            EditorCommandUserInfo.rangeLocation: range.location,
+            EditorCommandUserInfo.rangeLength: range.length,
+            EditorCommandUserInfo.focusEditor: focusEditor,
+            EditorCommandUserInfo.centerSelection: centerSelection,
+            EditorCommandUserInfo.documentID: (documentID ?? viewModel.selectedTab?.id)?.uuidString as Any
+        ]
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .moveCursorToRange, object: nil, userInfo: userInfo)
+        }
+    }
+
+    // MARK: - Replace and Editor View Lookup
+
+    func replaceSelection() {
+        guard let tab = viewModel.selectedTab,
+              tab.id == findSession.documentID,
+              let range = findSession.selectedRange,
+              NSMaxRange(range) <= tab.document.utf16Length else { return }
+#if os(macOS)
+        guard !requiresMaterializedEditorTransform() else { return }
+#endif
+        guard let replacement = ReleaseRuntimePolicy.replacementForFindMatch(
+            in: tab.document.string(),
+            range: range,
+            query: findQuery,
+            replacement: replaceQuery,
+            useRegex: findUsesRegex,
+            caseSensitive: findCaseSensitive,
+            wholeWord: findWholeWord && !findUsesRegex
+        ) else { return }
+        postEditorReplacement(replacement, range: range, documentID: tab.id)
+        DispatchQueue.main.async { refreshFindPreview() }
+    }
+
+    func replaceAll() {
+#if os(macOS)
+        guard let tab = viewModel.selectedTab, !findQuery.isEmpty else { return }
+        guard !requiresMaterializedEditorTransform() else { return }
+        findStatusMessage = ""
+        requestReplaceAll(in: tab.document.string())
+#else
+        guard !findQuery.isEmpty else { return }
+        requestReplaceAll(in: currentContentBinding.wrappedValue)
+#endif
+    }
+
+    private func requestReplaceAll(in source: String) {
+        guard let preview = makeReplaceAllPreview(in: source) else { return }
+        pendingReplaceAllPreview = preview
+    }
+
+    private func makeReplaceAllPreview(in source: String) -> FindReplaceAllPreview? {
+        let result = ReleaseRuntimePolicy.findMatches(
+            in: source,
+            query: findQuery,
+            useRegex: findUsesRegex,
+            caseSensitive: findCaseSensitive,
+            wholeWord: findWholeWord && !findUsesRegex
+        )
+        guard result.isValid else {
+            findStatusMessage = result.errorMessage ?? "Invalid regular expression"
+#if os(macOS)
+            NSSound.beep()
+#endif
+            return nil
+        }
+        guard !result.ranges.isEmpty else {
+            findStatusMessage = "No matches found"
+            return nil
+        }
+        let mutations = result.ranges.compactMap { range -> FindReplaceAllMutation? in
+            guard let text = ReleaseRuntimePolicy.replacementForFindMatch(
+                in: source,
+                range: range,
+                query: findQuery,
+                replacement: replaceQuery,
+                useRegex: findUsesRegex,
+                caseSensitive: findCaseSensitive,
+                wholeWord: findWholeWord && !findUsesRegex
+            ) else { return nil }
+            return FindReplaceAllMutation(range: range, replacement: text)
+        }
+        let replacement = NSMutableString(string: source)
+        for mutation in mutations.reversed() {
+            replacement.replaceCharacters(in: mutation.range, with: mutation.replacement)
+        }
+        return FindReplaceAllPreview(
+            source: source,
+            replacement: replacement as String,
+            mutations: mutations,
+            matchCount: result.ranges.count
+        )
+    }
+
+    func replaceAllConfirmationMessage(for preview: FindReplaceAllPreview) -> String {
+        let key = preview.matchCount == 1
+            ? NSLocalizedString("Replace %d match in the current document. You can undo this change.", comment: "Replace All confirmation")
+            : NSLocalizedString("Replace %d matches in the current document. You can undo this change.", comment: "Replace All confirmation")
+        return String(format: key, preview.matchCount)
+    }
+
+    func remoteSaveIssueMessage(for issue: EditorViewModel.RemoteSaveIssueState) -> String {
+        issue.requiresReconnect ? issue.recoveryGuidance : issue.detail
+    }
+
+    func aiReplacementConfirmationMessage(for preview: AIChatReplacementPreview) -> String {
+        String(format: NSLocalizedString("Replace %d selected characters with %d AI-proposed characters. You can undo this change.", comment: "AI replacement confirmation"), preview.sourceCharacterCount, preview.replacementCharacterCount)
+    }
+
+    func projectReplacementConfirmationMessage(for preview: FindInFilesReplacementPreview) -> String {
+        let key: String
+        switch (preview.matchCount == 1, preview.fileCount == 1) {
+        case (true, true):
+            key = NSLocalizedString("Replace %d selected match across %d file. Open the selected results to inspect each affected location before applying.", comment: "Project replacement confirmation")
+        case (true, false):
+            key = NSLocalizedString("Replace %d selected match across %d files. Open the selected results to inspect each affected location before applying.", comment: "Project replacement confirmation")
+        case (false, true):
+            key = NSLocalizedString("Replace %d selected matches across %d file. Open the selected results to inspect each affected location before applying.", comment: "Project replacement confirmation")
+        case (false, false):
+            key = NSLocalizedString("Replace %d selected matches across %d files. Open the selected results to inspect each affected location before applying.", comment: "Project replacement confirmation")
+        }
+        return String(format: key, preview.matchCount, preview.fileCount)
+    }
+
+    func clearRemoteConflictComparison() {
+        remoteConflictCompareSnapshot = nil
+        remoteConflictDiff = nil
+    }
+
+    func clearExternalConflictComparison() {
+        externalConflictCompareSnapshot = nil
+        externalConflictDiff = nil
+    }
+
+    func applyReplaceAll(_ preview: FindReplaceAllPreview) {
+#if os(macOS)
+        guard let tab = viewModel.selectedTab, tab.document.string() == preview.source else {
+            findStatusMessage = "The document changed. Review Replace All again."
+            return
+        }
+        postEditorReplacement(
+            preview.replacement,
+            range: NSRange(location: 0, length: tab.document.utf16Length),
+            documentID: tab.id
+        )
+#else
+        guard currentContentBinding.wrappedValue == preview.source else {
+            findStatusMessage = "The document changed. Review Replace All again."
+            return
+        }
+        if let tab = viewModel.selectedTab {
+            postEditorReplacements(preview.mutations, documentID: tab.id)
+            findSession = EditorFindSessionState(
+                presentationRevision: findSession.presentationRevision &+ 1
+            )
+            findMatchCount = 0
+            postEditorFindHighlights()
+        } else {
+            currentContentBinding.wrappedValue = preview.replacement
+        }
+#endif
+        findStatusMessage = "Replaced \(preview.matchCount) matches"
+    }
+
+    private func postEditorReplacement(_ replacement: String, range: NSRange, documentID: UUID) {
+        var userInfo: [String: Any] = [
+            EditorCommandUserInfo.documentID: documentID.uuidString,
+            EditorCommandUserInfo.rangeLocation: range.location,
+            EditorCommandUserInfo.rangeLength: range.length,
+            EditorCommandUserInfo.replacementText: replacement
+        ]
+#if os(macOS)
+        if let hostWindowNumber {
+            userInfo[EditorCommandUserInfo.windowNumber] = hostWindowNumber
+        }
+#endif
+        NotificationCenter.default.post(
+            name: .replaceEditorRangeRequested,
+            object: nil,
+            userInfo: userInfo
+        )
+    }
+
+    private func postEditorReplacements(_ mutations: [FindReplaceAllMutation], documentID: UUID) {
+        NotificationCenter.default.post(
+            name: .replaceEditorRangesRequested,
+            object: nil,
+            userInfo: [
+                EditorCommandUserInfo.documentID: documentID.uuidString,
+                EditorCommandUserInfo.replacementRanges: mutations.map { NSValue(range: $0.range) },
+                EditorCommandUserInfo.replacementTexts: mutations.map(\.replacement)
+            ]
+        )
+    }
+
+    func addNextMatchSelection() {
+#if os(macOS)
+        guard let tab = viewModel.selectedTab,
+              let primary = currentSelectionSnapshotRange,
+              primary.length > 0 else { return }
+        guard !requiresMaterializedEditorTransform() else { return }
+        let source = tab.document.string() as NSString
+        guard source.length > 0 else { return }
+        let needle = source.substring(with: primary)
+        guard !needle.isEmpty else { return }
+
+        let opts: NSString.CompareOptions = []
+        let searchStart = NSMaxRange(primary)
+        let forward = source.range(
+            of: needle,
+            options: opts,
+            range: NSRange(location: min(searchStart, source.length), length: max(0, source.length - min(searchStart, source.length)))
+        )
+        let wrapped = source.range(
+            of: needle,
+            options: opts,
+            range: NSRange(location: 0, length: min(primary.location, source.length))
+        )
+        guard let nextRange = forward.toOptional() ?? wrapped.toOptional() else { return }
+        postEditorRangeSelection(nextRange, focusEditor: true, documentID: tab.id)
+#endif
+    }
+
+#if canImport(UIKit)
+    func activeEditorInputTextView() -> UITextView? {
+        let scenes = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .filter { $0.activationState == .foregroundActive }
+        let windows = scenes
+            .flatMap(\.windows)
+            .sorted { lhs, rhs in
+                if lhs.isKeyWindow != rhs.isKeyWindow {
+                    return lhs.isKeyWindow && !rhs.isKeyWindow
+                }
+                return lhs.windowLevel < rhs.windowLevel
+            }
+        for window in windows {
+            guard !window.isHidden, window.alpha > 0.01 else { continue }
+            if let textView = findEditorInputTextView(in: window) {
+                return textView
+            }
+        }
+        return nil
+    }
+
+    private func findEditorInputTextView(in view: UIView?) -> UITextView? {
+        guard let view else { return nil }
+        if let textView = view as? EditorInputTextView, textView.isEditable {
+            return textView
+        }
+        for subview in view.subviews {
+            if let found = findEditorInputTextView(in: subview) {
+                return found
+            }
+        }
+        return nil
+    }
+#endif
+
+    // MARK: - Window Appearance
+
+    func applyWindowTranslucency(_ enabled: Bool) {
+#if os(macOS)
+        Self.MacEditorSurfacePolicy.configureRegisteredWindowTranslucency(enabled,
+            opaqueEditorCanvas: opaqueEditorSurfaceMac, modeRaw: macTranslucencyModeRaw,
+            isDarkMode: colorScheme == .dark)
+#endif
+    }
+
+    // MARK: - Project Folder Loading
+
+    func openProjectFolder() {
+#if os(macOS)
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.showsHiddenFiles = false
+        if panel.runModal() == .OK, let folderURL = panel.url {
+            setProjectFolder(folderURL)
+        }
+#else
+        showProjectFolderPicker = true
+#endif
+    }
+
+    /// Clears only the selected project context. Open tabs remain available,
+    /// while project indexing, file observation, security scope, and Git state
+    /// are released together.
+    func closeProjectFolder(synchronizeNativeTabs: Bool = true) {
+        projectTreeRefreshGeneration &+= 1
+        projectFileIndexRefreshGeneration &+= 1
+        projectFileIndexTask?.cancel()
+        projectFileIndexTask = nil
+        stopProjectFolderObservation()
+        projectFolderSecurityURL?.stopAccessingSecurityScopedResource()
+        projectFolderSecurityURL = nil
+        projectRootFolderURL = nil
+        markdownProjectPreviewSession.setProjectRoot(nil)
+        projectTreeNodes = []
+        projectTreeRevealURL = nil
+        quickSwitcherProjectFileURLs = []
+        projectFileIndexSnapshot = .empty
+        isProjectFileIndexing = false
+        projectFileIndexHasCompleted = true
+        clearProjectEditorOverrides()
+        gitViewModel.setProjectURL(nil)
+        showCompactProjectSidebarSheet = false
+        projectSidebarFindInFilesRequestToken = 0
+        persistSessionIfReady()
+#if os(macOS)
+        if synchronizeNativeTabs {
+            MacDocumentWindowTabs.shared.synchronizeProjectFolder(nil, from: viewModel)
+        }
+#endif
+    }
+
+    func requestCloseProjectFolderAndTabs() {
+        guard projectRootFolderURL != nil else { return }
+        showCloseProjectFolderAndTabsDialog = true
+    }
+
+    func closeProjectFolderAndTabsAfterSaving() {
+        guard let rootURL = projectRootFolderURL?.standardizedFileURL else {
+            showCloseProjectFolderAndTabsDialog = false
+            return
+        }
+        let rootPath = rootURL.path
+        let projectTabs = viewModel.tabs.filter { tab in
+            guard let fileURL = tab.fileURL?.standardizedFileURL else { return false }
+            let path = fileURL.path
+            return path == rootPath || path.hasPrefix(rootPath + "/")
+        }
+
+        showCloseProjectFolderAndTabsDialog = false
+        Task {
+            guard await viewModel.saveAndCloseTabs(tabIDs: projectTabs.map(\.id)),
+                  projectRootFolderURL?.standardizedFileURL == rootURL else { return }
+            closeProjectFolder()
+        }
+    }
+
+    func refreshProjectTree() {
+        guard let root = projectRootFolderURL else { return }
+        projectTreeRefreshGeneration &+= 1
+        let generation = projectTreeRefreshGeneration
+        let supportedOnly = showSupportedProjectFilesOnly
+        let includeHidden = showHiddenProjectFiles
+        let ignoredFolderNames = ProjectIgnoredFolders.names(from: projectIgnoredFolderNamesRaw)
+        Task.detached(priority: .utility) {
+            let nodes = Self.buildProjectTree(
+                at: root,
+                supportedOnly: supportedOnly,
+                includeHidden: includeHidden,
+                ignoredFolderNames: ignoredFolderNames
+            )
+            await MainActor.run {
+                guard generation == projectTreeRefreshGeneration else { return }
+                guard projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else { return }
+                projectTreeNodes = nodes
+                scheduleQuickSwitcherProjectFileURLRefresh(for: root, generation: generation, nodes: nodes)
+            }
+        }
+    }
+
+    func refreshProjectTreeSubtree(at directory: URL, completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let root = projectRootFolderURL else {
+            completion?()
+            return
+        }
+        let standardizedRoot = root.standardizedFileURL
+        let standardizedDirectory = directory.standardizedFileURL
+        let directoryPath = standardizedDirectory.path
+        let rootPath = standardizedRoot.path
+        guard directoryPath == rootPath || directoryPath.hasPrefix(rootPath + "/") else {
+            refreshProjectTree()
+            completion?()
+            return
+        }
+
+        if directoryPath == rootPath || projectTreeNodes.isEmpty {
+            refreshProjectTree()
+            completion?()
+            return
+        }
+
+        let generation = projectTreeRefreshGeneration
+        let supportedOnly = showSupportedProjectFilesOnly
+        let includeHidden = showHiddenProjectFiles
+        let ignoredFolderNames = ProjectIgnoredFolders.names(from: projectIgnoredFolderNamesRaw)
+        Task.detached(priority: .utility) {
+            let children = Self.readChildren(
+                of: standardizedDirectory,
+                recursive: false,
+                supportedOnly: supportedOnly,
+                includeHidden: includeHidden,
+                ignoredFolderNames: ignoredFolderNames
+            )
+            await MainActor.run {
+                guard generation == projectTreeRefreshGeneration else {
+                    completion?()
+                    return
+                }
+                guard projectRootFolderURL?.standardizedFileURL == standardizedRoot else {
+                    completion?()
+                    return
+                }
+                projectTreeNodes = Self.projectTreeNodesReplacingChildren(
+                    replacingChildrenOf: standardizedDirectory,
+                    with: children,
+                    in: projectTreeNodes
+                )
+                scheduleQuickSwitcherProjectFileURLRefresh(
+                    for: standardizedRoot,
+                    generation: generation,
+                    nodes: projectTreeNodes
+                )
+                completion?()
+            }
+        }
+    }
+
+    func expandAllProjectDirectories(completion: (@MainActor @Sendable () -> Void)? = nil) {
+        guard let root = projectRootFolderURL else {
+            completion?()
+            return
+        }
+        projectTreeRefreshGeneration &+= 1
+        let generation = projectTreeRefreshGeneration
+        let supportedOnly = showSupportedProjectFilesOnly
+        let includeHidden = showHiddenProjectFiles
+        let ignoredFolderNames = ProjectIgnoredFolders.names(from: projectIgnoredFolderNamesRaw)
+        Task.detached(priority: .utility) {
+            let nodes = Self.readChildren(
+                of: root,
+                recursive: true,
+                supportedOnly: supportedOnly,
+                includeHidden: includeHidden,
+                ignoredFolderNames: ignoredFolderNames
+            )
+            await MainActor.run {
+                guard generation == projectTreeRefreshGeneration,
+                      projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else {
+                    completion?()
+                    return
+                }
+                projectTreeNodes = nodes
+                scheduleQuickSwitcherProjectFileURLRefresh(for: root, generation: generation, nodes: nodes)
+                completion?()
+            }
+        }
+    }
+
+    private func scheduleQuickSwitcherProjectFileURLRefresh(
+        for root: URL,
+        generation: Int,
+        nodes: [ProjectTreeNode]
+    ) {
+        quickSwitcherProjectFileURLRefreshTask?.cancel()
+        quickSwitcherProjectFileURLRefreshTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            guard !Task.isCancelled else { return }
+            let urls = await Task.detached(priority: .utility) {
+                Self.projectFileURLs(from: nodes)
+            }.value
+            guard !Task.isCancelled,
+                  generation == projectTreeRefreshGeneration,
+                  projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else { return }
+            quickSwitcherProjectFileURLs = urls
+            quickSwitcherProjectFileURLRefreshTask = nil
+        }
+    }
+
+    func refreshProjectBrowserState(affectedDirectory: URL? = nil, showsStatusFeedback: Bool = false) {
+        let statusGeneration = showsStatusFeedback ? beginProjectRefreshStatus() : nil
+        guard projectRootFolderURL != nil else {
+            refreshProjectFileIndex()
+            if let statusGeneration {
+                finishProjectRefreshStatus(for: statusGeneration, message: "No project folder selected")
+            }
+            return
+        }
+        if let affectedDirectory {
+            refreshProjectTreeSubtree(at: affectedDirectory)
+        } else {
+            refreshProjectTree()
+        }
+        refreshProjectFileIndex {
+            guard let statusGeneration else { return }
+            finishProjectRefreshStatus(for: statusGeneration, message: "Project refreshed")
+        }
+    }
+
+    func refreshProjectFileIndex(onCompletion: (() -> Void)? = nil) {
+        guard let root = projectRootFolderURL else {
+#if os(macOS)
+            stopProjectFolderObservation()
+#endif
+            projectFileIndexTask?.cancel()
+            projectFileIndexTask = nil
+            projectFileIndexRefreshGeneration &+= 1
+            projectFileIndexSnapshot = .empty
+            isProjectFileIndexing = false
+            projectFileIndexHasCompleted = true
+            onCompletion?()
+            finishPendingProjectRefreshStatusIfNeeded()
+            return
+        }
+
+        projectFileIndexTask?.cancel()
+        projectFileIndexRefreshGeneration &+= 1
+        let generation = projectFileIndexRefreshGeneration
+        let supportedOnly = showSupportedProjectFilesOnly
+        let ignoredFolderNames = ProjectIgnoredFolders.names(from: projectIgnoredFolderNamesRaw)
+        let previousSnapshot = projectFileIndexSnapshot
+        isProjectFileIndexing = true
+        projectFileIndexHasCompleted = false
+
+        projectFileIndexTask = Task(priority: .utility) {
+            let snapshot = await ProjectFileIndex.refreshSnapshot(
+                previousSnapshot,
+                at: root,
+                supportedOnly: supportedOnly,
+                ignoredFolderNames: ignoredFolderNames,
+                isSupportedFile: { url in
+                    EditorViewModel.isSupportedEditorFileURL(url)
+                }
+            )
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard generation == projectFileIndexRefreshGeneration else { return }
+                guard projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else { return }
+                projectFileIndexSnapshot = snapshot
+                isProjectFileIndexing = false
+                projectFileIndexHasCompleted = true
+                projectFileIndexTask = nil
+                onCompletion?()
+                finishPendingProjectRefreshStatusIfNeeded()
+            }
+        }
+    }
+
+    private func beginProjectRefreshStatus() -> Int {
+        projectRefreshStatusTask?.cancel()
+        projectRefreshStatusTask = nil
+        projectRefreshStatusGeneration &+= 1
+        projectRefreshStatusIsPending = true
+        projectRefreshStatusMessage = "Refreshing project…"
+        return projectRefreshStatusGeneration
+    }
+
+    private func finishProjectRefreshStatus(for generation: Int, message: String) {
+        guard generation == projectRefreshStatusGeneration else { return }
+        projectRefreshStatusIsPending = false
+        projectRefreshStatusMessage = message
+        projectRefreshStatusTask?.cancel()
+        projectRefreshStatusTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 2_000_000_000)
+            guard !Task.isCancelled, generation == projectRefreshStatusGeneration else { return }
+            projectRefreshStatusMessage = ""
+            projectRefreshStatusTask = nil
+        }
+    }
+
+    private func finishPendingProjectRefreshStatusIfNeeded() {
+        guard projectRefreshStatusIsPending else { return }
+        finishProjectRefreshStatus(for: projectRefreshStatusGeneration, message: "Project refreshed")
+    }
+
+#if os(macOS)
+    func stopProjectFolderObservation() {
+        pendingProjectFolderRefreshWorkItem?.cancel()
+        pendingProjectFolderRefreshWorkItem = nil
+        projectFolderMonitorSource?.cancel()
+        projectFolderMonitorSource = nil
+    }
+
+    func startProjectFolderObservation(for root: URL) {
+        stopProjectFolderObservation()
+
+        let fileDescriptor = open(root.path, O_EVTONLY)
+        guard fileDescriptor >= 0 else { return }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fileDescriptor,
+            eventMask: [.write, .delete, .rename, .extend, .attrib, .link, .revoke],
+            queue: DispatchQueue.main
+        )
+
+        source.setEventHandler { [root] in
+            guard self.projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else { return }
+            self.pendingProjectFolderRefreshWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [root] in
+                guard self.projectRootFolderURL?.standardizedFileURL == root.standardizedFileURL else { return }
+                self.refreshProjectBrowserState()
+            }
+            self.pendingProjectFolderRefreshWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: workItem)
+        }
+
+        source.setCancelHandler {
+            close(fileDescriptor)
+        }
+
+        projectFolderMonitorSource = source
+        source.resume()
+    }
+#else
+    func stopProjectFolderObservation() {}
+
+    func startProjectFolderObservation(for root: URL) {}
+#endif
+
+    // MARK: - Project Item Operations
+
+    @discardableResult
+    func openProjectFile(url: URL) -> Bool {
+        guard EditorViewModel.isSupportedEditorFileURL(url) else {
+            presentUnsupportedFileAlert(for: url)
+            return false
+        }
+        if !viewModel.openFile(url: url) {
+            presentUnsupportedFileAlert(for: url)
+            return false
+        }
+        persistSessionIfReady()
+        return true
+    }
+
+    @MainActor
+    func openProjectFileFromProjectSidebar(url: URL) {
+        openProjectFile(url: url)
+    }
+
+#if os(macOS)
+    @discardableResult
+    func openDroppedFiles(_ urls: [URL]) -> Bool {
+        var didOpenFile = false
+        for url in EditorFileDropPolicy.regularFileURLs(in: urls) {
+            if openProjectFile(url: url) {
+                didOpenFile = true
+            }
+        }
+        return didOpenFile
+    }
+
+    func acceptDroppedFileProviders(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+        }
+        for provider in fileProviders {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                guard let url = EditorFileDropPolicy.fileURL(fromDroppedItem: item) else { return }
+                Task { @MainActor in
+                    _ = openDroppedFiles([url])
+                }
+            }
+        }
+        return !fileProviders.isEmpty
+    }
+#endif
+
+    func startProjectItemCreation(kind: ProjectSidebarCreationKind, in preferredDirectory: URL?) {
+        guard let root = projectRootFolderURL else { return }
+        let directory = resolvedProjectCreationDirectory(preferredDirectory, root: root)
+        projectItemCreationKind = kind
+        projectItemCreationParentURL = directory
+        projectItemCreationNameDraft = suggestedProjectItemName(for: kind, in: directory)
+        showProjectItemCreationPrompt = true
+    }
+
+    func cancelProjectItemCreation() {
+        showProjectItemCreationPrompt = false
+        projectItemCreationNameDraft = ""
+        projectItemCreationParentURL = nil
+    }
+
+    func confirmProjectItemCreation() {
+        guard let root = projectRootFolderURL else {
+            cancelProjectItemCreation()
+            return
+        }
+        let targetDirectory = resolvedProjectCreationDirectory(projectItemCreationParentURL, root: root)
+        let trimmedName = projectItemCreationNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard validateProjectItemName(trimmedName) else {
+            presentProjectItemOperationError(
+                NSLocalizedString("Use a valid name without slashes.", comment: "Project item name validation error")
+            )
+            return
+        }
+
+        let targetURL = targetDirectory.appendingPathComponent(trimmedName, isDirectory: projectItemCreationKind == .folder)
+        if FileManager.default.fileExists(atPath: targetURL.path) {
+            presentProjectItemOperationError(
+                NSLocalizedString("An item with this name already exists.", comment: "Project item already exists error")
+            )
+            return
+        }
+
+        do {
+            switch projectItemCreationKind {
+            case .file:
+                let created = FileManager.default.createFile(atPath: targetURL.path, contents: Data(), attributes: nil)
+                if !created {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+            case .folder:
+                try FileManager.default.createDirectory(at: targetURL, withIntermediateDirectories: false, attributes: nil)
+            }
+        } catch {
+            presentProjectItemOperationError(error.localizedDescription)
+            return
+        }
+
+        revealProjectItem(targetURL)
+        if projectItemCreationKind == .file, EditorViewModel.isSupportedEditorFileURL(targetURL) {
+            openProjectFile(url: targetURL)
+        }
+        cancelProjectItemCreation()
+    }
+
+    func startProjectItemRename(_ itemURL: URL) {
+        guard let root = projectRootFolderURL,
+              let targetURL = resolvedProjectItemURL(itemURL, root: root) else { return }
+        projectItemRenameSourceURL = targetURL
+        projectItemRenameNameDraft = targetURL.lastPathComponent
+        showProjectItemRenamePrompt = true
+    }
+
+    func cancelProjectItemRename() {
+        showProjectItemRenamePrompt = false
+        projectItemRenameSourceURL = nil
+        projectItemRenameNameDraft = ""
+    }
+
+    func confirmProjectItemRename() {
+        guard let root = projectRootFolderURL,
+              let sourceURL = projectItemRenameSourceURL,
+              let resolvedSourceURL = resolvedProjectItemURL(sourceURL, root: root) else {
+            cancelProjectItemRename()
+            return
+        }
+        let trimmedName = projectItemRenameNameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard validateProjectItemName(trimmedName) else {
+            presentProjectItemOperationError(
+                NSLocalizedString("Use a valid name without slashes.", comment: "Project item name validation error")
+            )
+            return
+        }
+
+        var isDirectory: ObjCBool = false
+        let sourcePath = resolvedSourceURL.path
+        guard FileManager.default.fileExists(atPath: sourcePath, isDirectory: &isDirectory) else {
+            presentProjectItemOperationError(
+                NSLocalizedString("The selected item no longer exists.", comment: "Project item missing error")
+            )
+            cancelProjectItemRename()
+            return
+        }
+
+        let destinationURL = resolvedSourceURL
+            .deletingLastPathComponent()
+            .appendingPathComponent(trimmedName, isDirectory: isDirectory.boolValue)
+            .standardizedFileURL
+        if destinationURL == resolvedSourceURL {
+            cancelProjectItemRename()
+            return
+        }
+        let destinationExists = FileManager.default.fileExists(atPath: destinationURL.path)
+        let isCaseOnlyRename = isCaseOnlyRename(from: resolvedSourceURL, to: destinationURL)
+        if destinationExists && !isCaseOnlyRename {
+            presentProjectItemOperationError(
+                NSLocalizedString("An item with this name already exists.", comment: "Project item already exists error")
+            )
+            return
+        }
+
+        do {
+            if destinationExists && isCaseOnlyRename {
+                // Case-only rename on a case-insensitive volume needs a temporary hop.
+                let hopURL = temporaryRenameHopURL(for: resolvedSourceURL, isDirectory: isDirectory.boolValue)
+                try FileManager.default.moveItem(at: resolvedSourceURL, to: hopURL)
+                do {
+                    try FileManager.default.moveItem(at: hopURL, to: destinationURL)
+                } catch {
+                    try? FileManager.default.moveItem(at: hopURL, to: resolvedSourceURL)
+                    throw error
+                }
+            } else {
+                try FileManager.default.moveItem(at: resolvedSourceURL, to: destinationURL)
+            }
+        } catch {
+            presentProjectItemOperationError(error.localizedDescription)
+            return
+        }
+
+        relinkOpenTabsIfNeeded(from: resolvedSourceURL, to: destinationURL, isDirectory: isDirectory.boolValue)
+        revealProjectItem(destinationURL)
+        cancelProjectItemRename()
+    }
+
+    func duplicateProjectItem(_ itemURL: URL) {
+        guard let root = projectRootFolderURL,
+              let sourceURL = resolvedProjectItemURL(itemURL, root: root) else { return }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: sourceURL.path, isDirectory: &isDirectory) else {
+            presentProjectItemOperationError(
+                NSLocalizedString("The selected item no longer exists.", comment: "Project item missing error")
+            )
+            return
+        }
+
+        let destinationURL = uniqueDuplicateURL(for: sourceURL, isDirectory: isDirectory.boolValue)
+        do {
+            try FileManager.default.copyItem(at: sourceURL, to: destinationURL)
+        } catch {
+            presentProjectItemOperationError(error.localizedDescription)
+            return
+        }
+
+        revealProjectItem(destinationURL)
+    }
+
+    func requestDeleteProjectItem(_ itemURL: URL) {
+        guard let root = projectRootFolderURL,
+              let targetURL = resolvedProjectItemURL(itemURL, root: root) else { return }
+        projectItemDeleteTargetURL = targetURL
+        projectItemDeleteTargetName = targetURL.lastPathComponent
+        showProjectItemDeleteConfirmation = true
+    }
+
+    func cancelDeleteProjectItem() {
+        showProjectItemDeleteConfirmation = false
+        projectItemDeleteTargetURL = nil
+        projectItemDeleteTargetName = ""
+    }
+
+    func confirmDeleteProjectItem() {
+        guard let root = projectRootFolderURL,
+              let targetURL = projectItemDeleteTargetURL,
+              let resolvedTargetURL = resolvedProjectItemURL(targetURL, root: root) else {
+            cancelDeleteProjectItem()
+            return
+        }
+
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: resolvedTargetURL.path, isDirectory: &isDirectory) else {
+            presentProjectItemOperationError(
+                NSLocalizedString("The selected item no longer exists.", comment: "Project item missing error")
+            )
+            cancelDeleteProjectItem()
+            return
+        }
+
+        do {
+            try FileManager.default.removeItem(at: resolvedTargetURL)
+        } catch {
+            presentProjectItemOperationError(error.localizedDescription)
+            return
+        }
+
+        closeCleanOpenTabsIfDeletedItemWasOpen(resolvedTargetURL, isDirectory: isDirectory.boolValue)
+        revealProjectItem(resolvedTargetURL.deletingLastPathComponent())
+        cancelDeleteProjectItem()
+    }
+
+    private func presentProjectItemOperationError(_ message: String) {
+        projectItemOperationErrorMessage = message
+        showProjectItemOperationErrorAlert = true
+    }
+
+    private func validateProjectItemName(_ name: String) -> Bool {
+        guard !name.isEmpty else { return false }
+        if name == "." || name == ".." { return false }
+        let invalidCharacters = CharacterSet(charactersIn: "/:")
+        return name.rangeOfCharacter(from: invalidCharacters) == nil
+    }
+
+    private func resolvedProjectCreationDirectory(_ candidate: URL?, root: URL) -> URL {
+        let standardizedRoot = root.standardizedFileURL
+        guard let candidate else { return standardizedRoot }
+
+        let standardizedCandidate = candidate.standardizedFileURL
+        let standardizedPath = standardizedCandidate.path
+        let rootPath = standardizedRoot.path
+        let isInsideRoot = standardizedPath == rootPath || standardizedPath.hasPrefix(rootPath + "/")
+        guard isInsideRoot else { return standardizedRoot }
+
+        var isDirectory: ObjCBool = false
+        if FileManager.default.fileExists(atPath: standardizedPath, isDirectory: &isDirectory), isDirectory.boolValue {
+            return standardizedCandidate
+        }
+
+        let parent = standardizedCandidate.deletingLastPathComponent().standardizedFileURL
+        let parentPath = parent.path
+        if parentPath == rootPath || parentPath.hasPrefix(rootPath + "/") {
+            return parent
+        }
+        return standardizedRoot
+    }
+
+    private func resolvedProjectItemURL(_ candidate: URL, root: URL) -> URL? {
+        let standardizedRoot = root.standardizedFileURL
+        let standardizedCandidate = candidate.standardizedFileURL
+        let candidatePath = standardizedCandidate.path
+        let rootPath = standardizedRoot.path
+        let isInsideRoot = candidatePath == rootPath || candidatePath.hasPrefix(rootPath + "/")
+        guard isInsideRoot else { return nil }
+        guard FileManager.default.fileExists(atPath: candidatePath) else { return nil }
+        return standardizedCandidate
+    }
+
+    private func uniqueDuplicateURL(for sourceURL: URL, isDirectory: Bool) -> URL {
+        let fm = FileManager.default
+        let parent = sourceURL.deletingLastPathComponent()
+        let ext = sourceURL.pathExtension
+        let stem = ext.isEmpty ? sourceURL.lastPathComponent : sourceURL.deletingPathExtension().lastPathComponent
+
+        let firstName: String
+        if ext.isEmpty {
+            firstName = "\(stem) copy"
+        } else {
+            firstName = "\(stem) copy.\(ext)"
+        }
+        var candidateURL = parent.appendingPathComponent(firstName, isDirectory: isDirectory)
+        if !fm.fileExists(atPath: candidateURL.path) {
+            return candidateURL
+        }
+
+        for index in 2...500 {
+            let candidateName: String
+            if ext.isEmpty {
+                candidateName = "\(stem) copy \(index)"
+            } else {
+                candidateName = "\(stem) copy \(index).\(ext)"
+            }
+            candidateURL = parent.appendingPathComponent(candidateName, isDirectory: isDirectory)
+            if !fm.fileExists(atPath: candidateURL.path) {
+                return candidateURL
+            }
+        }
+        return parent.appendingPathComponent(UUID().uuidString, isDirectory: isDirectory)
+    }
+
+    private func isCaseOnlyRename(from sourceURL: URL, to destinationURL: URL) -> Bool {
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let destinationPath = destinationURL.standardizedFileURL.path
+        guard sourcePath != destinationPath else { return false }
+        return sourcePath.compare(destinationPath, options: [.caseInsensitive]) == .orderedSame
+    }
+
+    private func temporaryRenameHopURL(for sourceURL: URL, isDirectory: Bool) -> URL {
+        let parent = sourceURL.deletingLastPathComponent()
+        return parent.appendingPathComponent(".nve-rename-\(UUID().uuidString)", isDirectory: isDirectory)
+    }
+
+    private func relinkOpenTabsIfNeeded(from sourceURL: URL, to destinationURL: URL, isDirectory: Bool) {
+        let sourcePath = sourceURL.standardizedFileURL.path
+        let destinationPath = destinationURL.standardizedFileURL.path
+        for tab in viewModel.tabs {
+            guard let tabURL = tab.fileURL?.standardizedFileURL else { continue }
+            let tabPath = tabURL.path
+            if !isDirectory, tabPath == sourcePath {
+                viewModel.remapTabFileURL(tabID: tab.id, to: destinationURL)
+                continue
+            }
+            if isDirectory, (tabPath == sourcePath || tabPath.hasPrefix(sourcePath + "/")) {
+                let suffix = String(tabPath.dropFirst(sourcePath.count))
+                let remappedURL = URL(fileURLWithPath: destinationPath + suffix).standardizedFileURL
+                viewModel.remapTabFileURL(tabID: tab.id, to: remappedURL)
+            }
+        }
+    }
+
+    private func closeCleanOpenTabsIfDeletedItemWasOpen(_ deletedURL: URL, isDirectory: Bool) {
+        let deletedPath = deletedURL.standardizedFileURL.path
+        let tabsToClose = viewModel.tabs.compactMap { tab -> UUID? in
+            guard !tab.isDirty, let tabURL = tab.fileURL?.standardizedFileURL else { return nil }
+            if isDirectory {
+                let tabPath = tabURL.path
+                if tabPath == deletedPath || tabPath.hasPrefix(deletedPath + "/") {
+                    return tab.id
+                }
+                return nil
+            }
+            return tabURL.path == deletedPath ? tab.id : nil
+        }
+        for tabID in tabsToClose {
+            viewModel.closeTab(tabID: tabID)
+        }
+    }
+
+    /// Sync-to-current-file for the project sidebar.
+    /// - If the active file is inside the current project root, reveal it in
+    ///   the tree (expand ancestor folders, trigger scroll via revealURL).
+    /// - If outside the root (or no root yet), open the file's containing
+    ///   folder as the new root, then reveal it after the tree loads.
+    func syncProjectSidebarToCurrentFile() {
+        guard let fileURL = viewModel.selectedTab?.fileURL?.standardizedFileURL else { return }
+        showProjectStructureSidebar = true
+        utilitySidebarMode = .project
+        let parentFolder = fileURL.deletingLastPathComponent()
+        if let root = projectRootFolderURL?.standardizedFileURL,
+           fileURL.path.hasPrefix(root.path + "/") || fileURL.path == root.path {
+            revealProjectItem(fileURL)
+        } else {
+            setProjectFolder(parentFolder)
+            // The tree needs one tick to load before reveal can match a path.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak viewModel] in
+                guard let viewModel, viewModel.selectedTab?.fileURL?.standardizedFileURL == fileURL else { return }
+                self.revealProjectItem(fileURL)
+            }
+        }
+    }
+
+    func revealProjectItem(_ revealURL: URL) {
+        projectTreeRevealURL = revealURL.standardizedFileURL
+        refreshProjectBrowserState(affectedDirectory: projectTreeRefreshDirectory(for: revealURL))
+        let revealedURL = revealURL.standardizedFileURL
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+            if self.projectTreeRevealURL?.standardizedFileURL == revealedURL {
+                self.projectTreeRevealURL = nil
+            }
+        }
+    }
+
+    func revealProjectItemInFileBrowser(_ itemURL: URL) {
+#if os(macOS)
+        NSWorkspace.shared.activateFileViewerSelecting([itemURL.standardizedFileURL])
+#endif
+    }
+
+    func copyProjectItemPath(_ itemURL: URL) {
+#if os(macOS)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(itemURL.standardizedFileURL.path, forType: .string)
+#elseif canImport(UIKit)
+        UIPasteboard.general.string = itemURL.standardizedFileURL.path
+#endif
+    }
+
+    private func projectTreeRefreshDirectory(for url: URL) -> URL {
+        guard let root = projectRootFolderURL else { return url.deletingLastPathComponent().standardizedFileURL }
+        let standardizedURL = url.standardizedFileURL
+        if standardizedURL == root.standardizedFileURL { return standardizedURL }
+        return standardizedURL.deletingLastPathComponent().standardizedFileURL
+    }
+
+    private func suggestedProjectItemName(for kind: ProjectSidebarCreationKind, in directory: URL) -> String {
+        let baseName: String = kind == .file ? "Untitled.txt" : "New Folder"
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: directory.appendingPathComponent(baseName, isDirectory: kind == .folder).path) {
+            return baseName
+        }
+
+        for index in 2...500 {
+            let candidate: String
+            if kind == .file {
+                candidate = "Untitled \(index).txt"
+            } else {
+                candidate = "New Folder \(index)"
+            }
+            let candidateURL = directory.appendingPathComponent(candidate, isDirectory: kind == .folder)
+            if !fm.fileExists(atPath: candidateURL.path) {
+                return candidate
+            }
+        }
+        return baseName
+    }
+
+    private nonisolated static func buildProjectTree(
+        at root: URL,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: root.path, isDirectory: &isDir), isDir.boolValue else { return [] }
+        return readChildren(
+            of: root,
+            recursive: false,
+            supportedOnly: supportedOnly,
+            includeHidden: includeHidden,
+            ignoredFolderNames: ignoredFolderNames
+        )
+    }
+
+    nonisolated static func projectTreeChildren(
+        at directory: URL,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        readChildren(
+            of: directory,
+            recursive: false,
+            supportedOnly: supportedOnly,
+            includeHidden: includeHidden,
+            ignoredFolderNames: ignoredFolderNames
+        )
+    }
+
+    nonisolated static func projectTreeNodesForTesting(
+        at root: URL,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        buildProjectTree(
+            at: root,
+            supportedOnly: supportedOnly,
+            includeHidden: includeHidden,
+            ignoredFolderNames: ignoredFolderNames
+        )
+    }
+
+    nonisolated static func projectTreeChildrenForTesting(
+        at directory: URL,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        projectTreeChildren(
+            at: directory,
+            supportedOnly: supportedOnly,
+            includeHidden: includeHidden,
+            ignoredFolderNames: ignoredFolderNames
+        )
+    }
+
+    nonisolated static func projectTreeNodesRecursivelyForTesting(
+        at root: URL,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        readChildren(
+            of: root,
+            recursive: true,
+            supportedOnly: supportedOnly,
+            includeHidden: includeHidden,
+            ignoredFolderNames: ignoredFolderNames
+        )
+    }
+
+    func loadProjectTreeChildren(for directory: URL) -> [ProjectTreeNode] {
+        Self.readChildren(
+            of: directory,
+            recursive: false,
+            supportedOnly: showSupportedProjectFilesOnly,
+            includeHidden: showHiddenProjectFiles,
+            ignoredFolderNames: ProjectIgnoredFolders.names(from: projectIgnoredFolderNamesRaw)
+        )
+    }
+
+    func setProjectFolder(_ folderURL: URL, synchronizeNativeTabs: Bool = true) {
+        markdownProjectPreviewSession.setProjectRoot(folderURL)
+#if os(macOS) || canImport(UIKit)
+        let standardizedTarget = folderURL.standardizedFileURL
+        if let previous = projectFolderSecurityURL?.standardizedFileURL,
+           previous != standardizedTarget {
+            projectFolderSecurityURL?.stopAccessingSecurityScopedResource()
+            projectFolderSecurityURL = nil
+        }
+        if projectFolderSecurityURL?.standardizedFileURL != standardizedTarget,
+           folderURL.startAccessingSecurityScopedResource() {
+            projectFolderSecurityURL = folderURL
+        }
+#endif
+        projectRootFolderURL = folderURL
+        RecentProjectFoldersStore.remember(folderURL)
+        projectTreeNodes = []
+        projectTreeRevealURL = nil
+        quickSwitcherProjectFileURLs = []
+        projectFileIndexSnapshot = .empty
+        isProjectFileIndexing = false
+        projectFileIndexHasCompleted = false
+        safeModeRecoveryPreparedForNextLaunch = false
+        applyProjectEditorOverrides(from: folderURL)
+        startProjectFolderObservation(for: folderURL)
+        refreshProjectBrowserState()
+        persistSessionIfReady()
+        gitViewModel.setProjectURL(folderURL)
+#if os(macOS)
+        if synchronizeNativeTabs {
+            MacDocumentWindowTabs.shared.synchronizeProjectFolder(folderURL, from: viewModel)
+        }
+#endif
+    }
+
+    func clearProjectEditorOverrides() {
+        projectOverrideIndentWidth = nil
+        projectOverrideLineWrapEnabled = nil
+        if viewModel.isLineWrapEnabled != settingsLineWrapEnabled {
+            viewModel.isLineWrapEnabled = settingsLineWrapEnabled
+        }
+    }
+
+    func applyProjectEditorOverrides(from folderURL: URL) {
+        let configURL = folderURL.appendingPathComponent(".neon-editor.json")
+        guard let data = try? Data(contentsOf: configURL, options: [.mappedIfSafe]),
+              let overrides = try? JSONDecoder().decode(ProjectEditorOverrides.self, from: data) else {
+            clearProjectEditorOverrides()
+            return
+        }
+
+        if let width = overrides.indentWidth {
+            projectOverrideIndentWidth = min(max(width, 2), 8)
+        } else {
+            projectOverrideIndentWidth = nil
+        }
+
+        projectOverrideLineWrapEnabled = overrides.lineWrapEnabled
+        if let lineWrapEnabled = overrides.lineWrapEnabled,
+           viewModel.isLineWrapEnabled != lineWrapEnabled {
+            viewModel.isLineWrapEnabled = lineWrapEnabled
+        } else if overrides.lineWrapEnabled == nil, viewModel.isLineWrapEnabled != settingsLineWrapEnabled {
+            viewModel.isLineWrapEnabled = settingsLineWrapEnabled
+        }
+    }
+
+    private nonisolated static func readChildren(
+        of directory: URL,
+        recursive: Bool,
+        supportedOnly: Bool,
+        includeHidden: Bool,
+        ignoredFolderNames: Set<String>
+    ) -> [ProjectTreeNode] {
+        if Task.isCancelled { return [] }
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isHiddenKey, .nameKey]
+        guard let urls = try? fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: keys, options: [.skipsPackageDescendants, .skipsSubdirectoryDescendants]) else {
+            return []
+        }
+
+        let sorted = urls.sorted { lhs, rhs in
+            let lhsValues = try? lhs.resourceValues(forKeys: [.isDirectoryKey])
+            let rhsValues = try? rhs.resourceValues(forKeys: [.isDirectoryKey])
+            let lhsIsDirectory = lhsValues?.isDirectory == true
+            let rhsIsDirectory = rhsValues?.isDirectory == true
+            if lhsIsDirectory != rhsIsDirectory {
+                return lhsIsDirectory && !rhsIsDirectory
+            }
+            return lhs.lastPathComponent.localizedCaseInsensitiveCompare(rhs.lastPathComponent) == .orderedAscending
+        }
+        var nodes: [ProjectTreeNode] = []
+        for url in sorted {
+            if Task.isCancelled { break }
+            guard let values = try? url.resourceValues(forKeys: Set(keys)) else { continue }
+            if values.isDirectory == true, ignoredFolderNames.contains(url.lastPathComponent) { continue }
+            if !includeHidden && values.isHidden == true { continue }
+            let isDirectory = values.isDirectory == true
+            if !isDirectory && supportedOnly && !EditorViewModel.isSupportedEditorFileURL(url) {
+                continue
+            }
+            let children = (isDirectory && recursive)
+                ? readChildren(
+                    of: url,
+                    recursive: true,
+                    supportedOnly: supportedOnly,
+                    includeHidden: includeHidden,
+                    ignoredFolderNames: ignoredFolderNames
+                )
+                : []
+            nodes.append(
+                ProjectTreeNode(
+                    url: url,
+                    isDirectory: isDirectory,
+                    children: children,
+                    childrenLoaded: isDirectory && recursive
+                )
+            )
+        }
+        return nodes
+    }
+
+    private func presentUnsupportedFileAlert(for url: URL) {
+        unsupportedFileName = url.lastPathComponent
+        findStatusMessage = "Unsupported file type."
+        showUnsupportedFileAlert = true
+    }
+
+    nonisolated static func projectFileURLs(from nodes: [ProjectTreeNode]) -> [URL] {
+        var results: [URL] = []
+        var stack = nodes
+        while let node = stack.popLast() {
+            if node.isDirectory {
+                stack.append(contentsOf: node.children)
+            } else {
+                results.append(node.url)
+            }
+        }
+        return results
+    }
+
+    nonisolated static func projectTreeNodesReplacingChildren(
+        replacingChildrenOf directory: URL,
+        with children: [ProjectTreeNode],
+        in nodes: [ProjectTreeNode]
+    ) -> [ProjectTreeNode] {
+        let targetPath = directory.standardizedFileURL.path
+        return nodes.map { node in
+            guard node.isDirectory else { return node }
+            if node.url.standardizedFileURL.path == targetPath {
+                return ProjectTreeNode(url: node.url, isDirectory: true, children: children, childrenLoaded: true)
+            }
+            return ProjectTreeNode(
+                url: node.url,
+                isDirectory: node.isDirectory,
+                children: projectTreeNodesReplacingChildren(replacingChildrenOf: directory, with: children, in: node.children),
+                childrenLoaded: node.childrenLoaded
+            )
+        }
+    }
+
+    nonisolated static func findInFiles(
+        root: URL,
+        candidateFiles: [URL]?,
+        query: String,
+        caseSensitive: Bool,
+        maxResults: Int,
+        ignoredFolderNames: Set<String> = Set(ProjectIgnoredFolders.defaultNames)
+    ) async -> [FindInFilesMatch] {
+        await Task.detached(priority: .userInitiated) {
+            guard maxResults > 0, !query.isEmpty else { return [] }
+            let rules = ProjectSearchIgnoreRules(root: root, excludedFolders: ignoredFolderNames)
+            let searchFiles = searchCandidateFiles(root: root, candidateFiles: candidateFiles, rules: rules)
+            guard !searchFiles.isEmpty else { return [] }
+            #if os(macOS)
+            if let ripgrepMatches = findInFilesWithRipgrep(
+                root: root,
+                candidateFiles: searchFiles,
+                query: query,
+                caseSensitive: caseSensitive,
+                maxResults: maxResults
+            ) {
+                return ripgrepMatches
+            }
+            #endif
+
+            var results: [FindInFilesMatch] = []
+            results.reserveCapacity(min(maxResults, 200))
+
+            for file in searchFiles {
+                if Task.isCancelled || results.count >= maxResults { break }
+                let matches = findMatches(
+                    in: file,
+                    query: query,
+                    caseSensitive: caseSensitive,
+                    maxRemaining: maxResults - results.count
+                )
+                if !matches.isEmpty {
+                    results.append(contentsOf: matches)
+                }
+            }
+            return results
+        }.value
+    }
+
+#if os(macOS)
+    private nonisolated static func findInFilesWithRipgrep(
+        root: URL,
+        candidateFiles: [URL],
+        query: String,
+        caseSensitive: Bool,
+        maxResults: Int
+    ) -> [FindInFilesMatch]? {
+        guard maxResults > 0 else { return [] }
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.currentDirectoryURL = root
+        var arguments = [
+            "rg",
+            "--json",
+            "--line-number",
+            "--column",
+            "--max-count",
+            String(maxResults),
+            caseSensitive ? "-s" : "-i",
+            "--fixed-strings",
+            "--",
+            query
+        ]
+        if let ripgrepFileArguments = ripgrepPathArguments(root: root, candidateFiles: candidateFiles) {
+            arguments.append(contentsOf: ripgrepFileArguments)
+        } else {
+            // Never widen the search when the explicit file list exceeds argv limits.
+            return nil
+        }
+        process.arguments = arguments
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+        } catch {
+            return nil
+        }
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 || process.terminationStatus == 1 else {
+            return nil
+        }
+        guard !data.isEmpty else { return [] }
+
+        var results: [FindInFilesMatch] = []
+        results.reserveCapacity(min(maxResults, 200))
+        var lineStartsByPath: [String: [Int]] = [:]
+        let lines = String(decoding: data, as: UTF8.self).split(separator: "\n", omittingEmptySubsequences: true)
+        for line in lines {
+            if results.count >= maxResults { break }
+            guard let eventData = line.data(using: .utf8),
+                  let json = try? JSONSerialization.jsonObject(with: eventData) as? [String: Any],
+                  (json["type"] as? String) == "match",
+                  let payload = json["data"] as? [String: Any],
+                  let path = (payload["path"] as? [String: Any])?["text"] as? String,
+                  let lineNumber = payload["line_number"] as? Int,
+                  let linesDict = payload["lines"] as? [String: Any],
+                  let lineText = linesDict["text"] as? String,
+                  let submatches = payload["submatches"] as? [[String: Any]],
+                  let first = submatches.first,
+                  let start = first["start"] as? Int,
+                  let end = first["end"] as? Int else {
+                continue
+            }
+
+            let column = max(1, start + 1)
+            let length = max(1, end - start)
+            let snippet = lineText.trimmingCharacters(in: .newlines)
+            let fileURL = (path.hasPrefix("/") ? URL(fileURLWithPath: path) : root.appendingPathComponent(path)).standardizedFileURL
+            let lineStarts: [Int] = {
+                if let cached = lineStartsByPath[path] {
+                    return cached
+                }
+                let loaded = String(decoding: (try? Data(contentsOf: fileURL, options: [.mappedIfSafe])) ?? Data(), as: UTF8.self)
+                let starts = lineStartOffsets(for: loaded)
+                lineStartsByPath[path] = starts
+                return starts
+            }()
+            let offset = lineStartOffset(lineOneBased: lineNumber, lineStarts: lineStarts)
+            results.append(
+                FindInFilesMatch(
+                    id: "\(path)#\(offset + start)",
+                    fileURL: fileURL,
+                    line: lineNumber,
+                    column: column,
+                    snippet: snippet.isEmpty ? "(empty line)" : snippet,
+                    rangeLocation: offset + start,
+                    rangeLength: length
+                )
+            )
+        }
+        return results
+    }
+
+#endif
+
+    private nonisolated static func searchCandidateFiles(root: URL, candidateFiles: [URL]?, rules: ProjectSearchIgnoreRules) -> [URL] {
+        if let candidateFiles {
+            return candidateFiles.filter {
+                guard !rules.excludes($0, isDirectory: false),
+                      let values = try? $0.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]),
+                      values.isRegularFile == true, values.isSymbolicLink != true,
+                      let size = values.fileSize, size > 0, size <= 2_000_000 else { return false }
+                return true
+            }
+        }
+        return searchableProjectFiles(at: root, rules: rules)
+    }
+
+#if os(macOS)
+    private nonisolated static func ripgrepPathArguments(root: URL, candidateFiles: [URL]) -> [String]? {
+        guard !candidateFiles.isEmpty else { return [] }
+        var arguments: [String] = []
+        arguments.reserveCapacity(candidateFiles.count)
+        var combinedLength = 0
+
+        for fileURL in candidateFiles {
+            let candidatePath: String
+            let standardizedFileURL = fileURL.standardizedFileURL
+            let standardizedRoot = root.standardizedFileURL
+            if standardizedFileURL.path.hasPrefix(standardizedRoot.path + "/") {
+                candidatePath = String(standardizedFileURL.path.dropFirst(standardizedRoot.path.count + 1))
+            } else if standardizedFileURL == standardizedRoot {
+                candidatePath = standardizedFileURL.lastPathComponent
+            } else {
+                candidatePath = standardizedFileURL.path
+            }
+            combinedLength += candidatePath.utf8.count + 1
+            if candidateFiles.count > 2_000 || combinedLength > 120_000 {
+                return nil
+            }
+            arguments.append(candidatePath)
+        }
+
+        return arguments
+    }
+#endif
+
+    private nonisolated static func searchableProjectFiles(at root: URL, rules: ProjectSearchIgnoreRules) -> [URL] {
+        let fm = FileManager.default
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey, .isHiddenKey, .fileSizeKey]
+        guard let enumerator = fm.enumerator(
+            at: root,
+            includingPropertiesForKeys: Array(keys),
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, _ in true }
+        ) else {
+            return []
+        }
+
+        var files: [URL] = []
+        for case let url as URL in enumerator {
+            if Task.isCancelled { break }
+            guard let values = try? url.resourceValues(forKeys: keys) else { continue }
+            if values.isSymbolicLink == true || rules.excludes(url, isDirectory: values.isDirectory == true) {
+                if values.isDirectory == true { enumerator.skipDescendants() }
+                continue
+            }
+            guard values.isHidden != true, values.isRegularFile == true else { continue }
+            let size = values.fileSize ?? 0
+            if size <= 0 || size > 2_000_000 { continue }
+            files.append(url)
+        }
+        return files
+    }
+
+    private nonisolated static func findMatches(
+        in fileURL: URL,
+        query: String,
+        caseSensitive: Bool,
+        maxRemaining: Int
+    ) -> [FindInFilesMatch] {
+        guard maxRemaining > 0 else { return [] }
+        guard let data = try? Data(contentsOf: fileURL, options: [.mappedIfSafe]) else { return [] }
+        if data.prefix(4096).contains(0) { return [] }
+        let content = String(decoding: data, as: UTF8.self)
+        let nsContent = content as NSString
+        if nsContent.length == 0 { return [] }
+
+        let options: NSString.CompareOptions = caseSensitive ? [] : [.caseInsensitive]
+        let queryLength = (query as NSString).length
+        if queryLength == 0 { return [] }
+
+        var output: [FindInFilesMatch] = []
+        output.reserveCapacity(min(maxRemaining, 16))
+        var lineStarts: [Int]?
+
+        var searchRange = NSRange(location: 0, length: nsContent.length)
+        while searchRange.length > 0 && output.count < maxRemaining {
+            let found = nsContent.range(of: query, options: options, range: searchRange)
+            if found.location == NSNotFound { break }
+
+            let lineRange = nsContent.lineRange(for: NSRange(location: found.location, length: 0))
+            let lineTextRaw = nsContent.substring(with: lineRange).trimmingCharacters(in: .newlines)
+            if lineStarts == nil {
+                lineStarts = lineStartOffsets(for: content)
+            }
+            let position = lineAndColumn(at: found.location, lineStarts: lineStarts ?? [0])
+            let column = found.location - lineRange.location + 1
+            let safeSnippet = lineTextRaw.isEmpty ? "(empty line)" : lineTextRaw
+
+            output.append(
+                FindInFilesMatch(
+                    id: "\(fileURL.path)#\(found.location)",
+                    fileURL: fileURL,
+                    line: position.line,
+                    column: max(1, column),
+                    snippet: safeSnippet,
+                    rangeLocation: found.location,
+                    rangeLength: found.length
+                )
+            )
+
+            let nextLocation = found.location + max(1, found.length)
+            if nextLocation >= nsContent.length { break }
+            searchRange = NSRange(location: nextLocation, length: nsContent.length - nextLocation)
+        }
+
+        return output
+    }
+
+    private nonisolated static func lineStartOffsets(for content: String) -> [Int] {
+        var starts = [0]
+        starts.reserveCapacity(max(1, content.utf16.count / 80))
+        var offset = 0
+        for codeUnit in content.utf16 {
+            offset += 1
+            if codeUnit == 10 {
+                starts.append(offset)
+            }
+        }
+        return starts
+    }
+
+    private nonisolated static func lineStartOffset(lineOneBased: Int, lineStarts: [Int]) -> Int {
+        let index = max(0, min(lineOneBased - 1, lineStarts.count - 1))
+        return lineStarts[index]
+    }
+
+    private nonisolated static func lineAndColumn(at location: Int, lineStarts: [Int]) -> (line: Int, column: Int) {
+        var low = 0
+        var high = lineStarts.count
+        while low < high {
+            let mid = (low + high) / 2
+            if lineStarts[mid] <= location {
+                low = mid + 1
+            } else {
+                high = mid
+            }
+        }
+        let index = max(0, low - 1)
+        return (index + 1, location - lineStarts[index] + 1)
+    }
+}

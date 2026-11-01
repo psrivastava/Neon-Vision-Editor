@@ -1,0 +1,584 @@
+import XCTest
+#if os(macOS)
+import AppKit
+#endif
+@testable import Neon_Vision_Editor
+
+@MainActor
+final class ToolbarActionSelectionTests: XCTestCase {
+#if os(macOS)
+    func testLanguageMenuDefersRowsUntilRequestedAndKeepsSelectionAndSearch() throws {
+        var reads = 0
+        var selected = "markdown"
+        var searched = false
+        func configuration() -> MacEditorLanguageMenu {
+            MacEditorLanguageMenu(selectedLanguage: selected, options: {
+                reads += 1
+                return ["markdown", "swift", "json"]
+            }, label: { $0.uppercased() }, tint: .systemBlue,
+                select: { selected = $0 }, search: { searched = true })
+        }
+        let coordinator = MacEditorLanguageMenu.Coordinator(configuration())
+        let button = coordinator.makeButton()
+        let menu = try XCTUnwrap(button.menu)
+        _ = button.intrinsicContentSize
+        coordinator.updateButton(button)
+        XCTAssertEqual(reads, 0, "Constructing/sizing an unopened toolbar must not build every language row")
+        XCTAssertEqual(menu.numberOfItems, 1)
+        XCTAssertFalse(button.accessibilityLabel()?.isEmpty ?? true)
+        coordinator.menuNeedsUpdate(menu)
+        XCTAssertEqual(reads, 1)
+        XCTAssertEqual(menu.numberOfItems, 6)
+        XCTAssertEqual(menu.item(at: 1)?.state, .on)
+        coordinator.chooseLanguage(try XCTUnwrap(menu.items.first { ($0.representedObject as? String) == "swift" }))
+        XCTAssertEqual(selected, "swift")
+        coordinator.searchLanguages(try XCTUnwrap(menu.item(at: 2)))
+        XCTAssertTrue(searched)
+        coordinator.configuration = configuration()
+        coordinator.updateButton(button)
+        XCTAssertEqual(menu.item(at: 0)?.title, "SWIFT")
+        coordinator.menuNeedsUpdate(menu)
+        XCTAssertEqual(menu.item(at: 1)?.representedObject as? String, "swift")
+        XCTAssertEqual(menu.items.compactMap { $0.representedObject as? String }.sorted(), ["json", "markdown", "swift"])
+    }
+#endif
+    func testMacChooserIncludesPreviouslyMandatoryControlsAndPreservesSavedOrder() {
+        let catalog = ToolbarActionSelection.customizableMacActionIDs
+        XCTAssertTrue(catalog.contains("toolbarPreset"))
+        XCTAssertTrue(catalog.contains("providerBadge"))
+        XCTAssertEqual(Set(catalog).count, catalog.count)
+        XCTAssertTrue(catalog.allSatisfy { ToolbarIconOption(rawValue: $0) != nil || ["newWindow", "toolbarPreset", "providerBadge"].contains($0) })
+        XCTAssertEqual(ToolbarActionSelection.orderedIDs(from: "providerBadge,previewActions,toolbarPreset", fallback: []),
+                       ["providerBadge", "previewActions", "toolbarPreset"])
+        XCTAssertEqual(ToolbarActionSelection.toggledSelectionRawValue(toggledID: "toolbarPreset",
+                       currentRawValue: "providerBadge,previewActions,toolbarPreset", orderedIDs: catalog, limit: catalog.count),
+                       "providerBadge,previewActions")
+    }
+    func testSettingsCanMoveBetweenCustomActionsWhileRemainingAvailable() {
+        let actions = ["openFile", "findReplace", "settings", "help"]
+        XCTAssertEqual(ToolbarActionSelection.orderedActions(actions, customIDsRawValue: "settings,findReplace,openFile", id: { $0 }), ["settings", "findReplace", "openFile", "help"])
+        XCTAssertEqual(ToolbarActionSelection.orderedActions(actions, customIDsRawValue: "findReplace,settings,openFile", id: { $0 }), ["findReplace", "settings", "openFile", "help"])
+    }
+    private enum TestAction: String, CaseIterable {
+        case openFile
+        case undo
+        case settings
+        case help
+        case clearEditor
+        case insertTemplate
+        case newTab
+        case saveFile
+        case findReplace
+    }
+
+    func testVisibleLimitSupportsSevenActions() {
+        XCTAssertEqual(ToolbarActionSelection.visibleLimit(requestedCount: 7, fallback: TestAction.allCases.count), 7)
+    }
+
+    func testLanguageGlyphUsesRecognizableSymbolsForCommonFormats() {
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: "swift", displayName: "Swift"),
+            .systemImage("swift")
+        )
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: "markdown", displayName: "Markdown"),
+            .initial("M")
+        )
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: "json", displayName: "JSON"),
+            .systemImage("curlybraces")
+        )
+    }
+
+    func testLanguageGlyphFallsBackToUppercaseDisplayNameInitial() {
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: "python", displayName: "Python"),
+            .initial("P")
+        )
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: " objective-c ", displayName: "Objective-C"),
+            .initial("O")
+        )
+    }
+
+    func testLanguageGlyphUsesFileSymbolForMissingDisplayName() {
+        XCTAssertEqual(
+            ToolbarLanguageGlyph.resolve(language: "unknown", displayName: "  "),
+            .systemImage("doc")
+        )
+    }
+
+    func testCustomVisibleActionsRespectSelectedCountAndToolbarOrder() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 7
+        )
+
+        XCTAssertEqual(
+            visible.map(\.rawValue),
+            [
+                "openFile",
+                "undo",
+                "settings",
+                "help",
+                "clearEditor",
+                "insertTemplate",
+                "newTab"
+            ]
+        )
+    }
+
+    func testVisibleActionsUseTheToolbarOrderAndRequestedCount() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 4
+        )
+
+        XCTAssertEqual(visible.map(\.rawValue), ["openFile", "undo", "settings", "help"])
+    }
+
+    func testCustomVisibleActionsReservePersistentIPhoneControls() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 6,
+            preset: .custom,
+            reservedControlCount: ToolbarActionSelection.persistentMobileControlCount,
+            requiredActions: [.settings, .help]
+        )
+
+        XCTAssertEqual(visible.map(\.rawValue), ["openFile", "undo", "settings", "help"])
+        XCTAssertEqual(visible.count + ToolbarActionSelection.persistentMobileControlCount, 6)
+    }
+
+    func testRequiredActionsRemainVisibleAtMinimumCustomCount() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 4,
+            preset: .custom,
+            reservedControlCount: ToolbarActionSelection.persistentMobileControlCount,
+            requiredActions: [.settings, .help]
+        )
+
+        XCTAssertEqual(visible, [.settings, .help])
+        XCTAssertEqual(visible.count + ToolbarActionSelection.persistentMobileControlCount, 4)
+    }
+
+    func testCustomSelectableLimitMatchesConfiguredActionCount() {
+        XCTAssertEqual(
+            ToolbarActionSelection.customSelectableActionLimit(
+                requestedCount: 6,
+                fallback: TestAction.allCases.count
+            ),
+            6
+        )
+    }
+
+    func testAllCustomActionsAreNotReducedByPersistentControls() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 99,
+            preset: .custom,
+            reservedControlCount: ToolbarActionSelection.persistentMobileControlCount
+        )
+
+        XCTAssertEqual(visible.map(\.rawValue), TestAction.allCases.map(\.rawValue))
+    }
+
+    func testLimitedSelectedIDsDropsStaleSelectionBeyondCurrentLimit() {
+        let selected = ToolbarActionSelection.limitedSelectedIDs(
+            from: "openFile,undo,settings,help,clearEditor,insertTemplate,newTab",
+            orderedIDs: TestAction.allCases.map(\.rawValue),
+            excluding: ToolbarActionSelection.universallyAvailableMobileActionIDs,
+            limit: 2
+        )
+
+        XCTAssertEqual(selected, Set(["openFile", "undo"]))
+    }
+
+    func testAllActionsPresetBypassesThePinnedActionLimit() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 4,
+            preset: .all
+        )
+
+        XCTAssertEqual(visible.map(\.rawValue), TestAction.allCases.map(\.rawValue))
+    }
+
+    func testNamedPresetBypassesThePinnedActionLimit() {
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: TestAction.allCases,
+            requestedCount: 4,
+            preset: .developer
+        )
+
+        XCTAssertEqual(visible.map(\.rawValue), TestAction.allCases.map(\.rawValue))
+    }
+
+    func testToggledSelectionPreservesDeclaredOrderAndCapsAtLimit() {
+        let orderedIDs = TestAction.allCases.map(\.rawValue)
+        var rawValue = ""
+        for action in TestAction.allCases {
+            rawValue = ToolbarActionSelection.toggledSelectionRawValue(
+                toggledID: action.rawValue,
+                currentRawValue: rawValue,
+                orderedIDs: orderedIDs,
+                limit: 7
+            )
+        }
+
+        XCTAssertEqual(rawValue, "openFile,undo,settings,help,clearEditor,insertTemplate,newTab")
+
+        let removed = ToolbarActionSelection.toggledSelectionRawValue(
+            toggledID: "settings",
+            currentRawValue: rawValue,
+            orderedIDs: orderedIDs,
+            limit: 7
+        )
+        XCTAssertEqual(removed, "openFile,undo,help,clearEditor,insertTemplate,newTab")
+    }
+
+    func testCustomSelectionKeepsUserChosenOrder() {
+        let orderedIDs = TestAction.allCases.map(\.rawValue)
+        var rawValue = ""
+        for action in [TestAction.findReplace, .saveFile, .openFile] {
+            rawValue = ToolbarActionSelection.toggledSelectionRawValue(
+                toggledID: action.rawValue,
+                currentRawValue: rawValue,
+                orderedIDs: orderedIDs,
+                limit: 6
+            )
+        }
+
+        XCTAssertEqual(rawValue, "findReplace,saveFile,openFile")
+        XCTAssertEqual(
+            ToolbarActionSelection.orderedActions(
+                [TestAction.openFile, .saveFile, .findReplace],
+                customIDsRawValue: rawValue,
+                id: \.rawValue
+            ),
+            [.findReplace, .saveFile, .openFile]
+        )
+    }
+
+    func testMarkdownOpenModeDefaultsToSplitAndKeepsReadingOptIn() {
+        XCTAssertEqual(MarkdownPreviewOpenMode.defaultMode, .preview)
+        XCTAssertEqual(MarkdownPreviewOpenMode.edit.previewMode, .none)
+        XCTAssertFalse(MarkdownPreviewOpenMode.edit.presentsAsReadingView)
+        XCTAssertEqual(MarkdownPreviewOpenMode.preview.previewMode, .markdown)
+        XCTAssertFalse(MarkdownPreviewOpenMode.preview.presentsAsReadingView)
+        XCTAssertEqual(MarkdownPreviewOpenMode(rawValue: "preview"), .preview)
+        XCTAssertEqual(MarkdownPreviewOpenMode.reading.previewMode, .markdown)
+        XCTAssertTrue(MarkdownPreviewOpenMode.reading.presentsAsReadingView)
+    }
+
+    func testMarkdownPreviewToggleUsesChosenLayoutAndClosesEitherLayout() {
+        let split = MarkdownPreviewPresentationPolicy.toggledPresentation(
+            previewIsActive: false,
+            selectedMode: .preview
+        )
+        XCTAssertEqual(split.previewMode, .markdown)
+        XCTAssertFalse(split.isReadingMode)
+
+        let editorOnly = MarkdownPreviewPresentationPolicy.toggledPresentation(
+            previewIsActive: false,
+            selectedMode: .edit
+        )
+        XCTAssertEqual(editorOnly.previewMode, .markdown)
+        XCTAssertFalse(editorOnly.isReadingMode)
+
+        let reading = MarkdownPreviewPresentationPolicy.toggledPresentation(
+            previewIsActive: false,
+            selectedMode: .reading
+        )
+        XCTAssertEqual(reading.previewMode, .markdown)
+        XCTAssertTrue(reading.isReadingMode)
+
+        let closed = MarkdownPreviewPresentationPolicy.toggledPresentation(
+            previewIsActive: true,
+            selectedMode: .reading
+        )
+        XCTAssertEqual(closed.previewMode, .none)
+        XCTAssertFalse(closed.isReadingMode)
+    }
+
+    func testMarkdownReadingModeReplacesRatherThanSplitsTheEditor() {
+        let readingViewVisible = MarkdownPreviewPresentationPolicy.showsReadingView(
+            isReadingMode: true,
+            isMarkdownDocument: true,
+            isPreviewActive: true,
+            isSafeMode: false,
+            isBrainDumpLayout: false,
+            isFocusMode: false
+        )
+
+        XCTAssertTrue(readingViewVisible)
+        XCTAssertFalse(MarkdownPreviewPresentationPolicy.showsSplitPane(
+            canShowPane: true,
+            isMarkdownDocument: true,
+            isPreviewActive: true,
+            readingViewVisible: readingViewVisible,
+            isSafeMode: false,
+            isBrainDumpLayout: false,
+            isFocusMode: false
+        ))
+        XCTAssertTrue(MarkdownPreviewPresentationPolicy.showsSplitPane(
+            canShowPane: true,
+            isMarkdownDocument: true,
+            isPreviewActive: true,
+            readingViewVisible: false,
+            isSafeMode: false,
+            isBrainDumpLayout: false,
+            isFocusMode: false
+        ))
+    }
+
+    func testToolbarPresetsExposeStablePlatformActions() {
+        XCTAssertEqual(ToolbarPreset.standard.macOSIDs.first, "openFile")
+        XCTAssertTrue(ToolbarPreset.standard.macOSIDs.contains("undo"))
+        XCTAssertTrue(ToolbarPreset.standard.macOSIDs.contains("markdownPreview"))
+        XCTAssertTrue(ToolbarPreset.standard.macOSIDs.contains("markdownProjectPreview"))
+        XCTAssertTrue(ToolbarPreset.developer.macOSIDs.contains("gitChanges"))
+        XCTAssertTrue(ToolbarPreset.writing.mobileIDs.contains("markdownPreview"))
+        XCTAssertTrue(ToolbarPreset.writing.macOSIDs.contains("markdownProjectPreview"))
+        XCTAssertTrue(ToolbarPreset.standard.mobileIDs.contains("markdownProjectPreview"))
+        XCTAssertTrue(ToolbarPreset.writing.mobileIDs.contains("markdownProjectPreview"))
+        XCTAssertFalse(ToolbarPreset.focus.mobileIDs.contains("gitChanges"))
+        XCTAssertTrue(ToolbarPreset.all.macOSIDs.contains("help"))
+        XCTAssertTrue(ToolbarPreset.all.macOSIDs.contains("markdownProjectPreview"))
+        XCTAssertTrue(ToolbarPreset.all.mobileIDs.contains("markdownProjectPreview"))
+        XCTAssertTrue(ToolbarPreset.all.mobileIDs.contains("fontIncrease"))
+        XCTAssertEqual(ToolbarPreset.mobileSelectableIDs.count, Set(ToolbarPreset.mobileSelectableIDs).count)
+    }
+
+    func testEveryMobileToolbarActionHasAReadableButtonLabel() {
+        let labeledActionIDs = Set(ToolbarIconOption.allCases.map(\.rawValue))
+        XCTAssertTrue(Set(ToolbarPreset.mobileSelectableIDs).isSubset(of: labeledActionIDs))
+    }
+
+    func testAllActionsPresetUsesDistinctOverflowSymbol() {
+        XCTAssertEqual(ToolbarPreset.all.icon, "ellipsis.circle")
+        XCTAssertNotEqual(ToolbarPreset.all.icon, "square.grid.3x3")
+    }
+
+    func testMobileToolbarUsesCompactSingleLinePresentation() {
+        XCTAssertEqual(MobileToolbarPresentationPolicy.standardHeight, 52)
+        XCTAssertEqual(MobileToolbarPresentationPolicy.labeledItemWidth, 52)
+        XCTAssertTrue(MobileToolbarPresentationPolicy.showsButtonLabels(
+            preferenceEnabled: true,
+            toolbarMinimized: false
+        ))
+        XCTAssertFalse(MobileToolbarPresentationPolicy.showsButtonLabels(
+            preferenceEnabled: true,
+            toolbarMinimized: true
+        ))
+        XCTAssertEqual(MobileToolbarPresentationPolicy.symbolSize(usesLargeSymbols: true), 25)
+        XCTAssertEqual(MobileToolbarPresentationPolicy.symbolSize(usesLargeSymbols: false), 20)
+        XCTAssertEqual(MobileToolbarPresentationPolicy.compactTitle("Indentation Guides"), "Guides")
+        XCTAssertEqual(MobileToolbarPresentationPolicy.compactTitle("Decrease Font Size"), "Font −")
+        XCTAssertEqual(MobileToolbarPresentationPolicy.compactTitle("Export PDF"), "PDF")
+        XCTAssertEqual(MobileToolbarPresentationPolicy.compactTitle("Settings"), "Settings")
+    }
+
+    func testUnavailableContextualActionsDoNotReserveBlankToolbarSlots() {
+        XCTAssertFalse(MobileToolbarPresentationPolicy.isContextualActionAvailable(
+            actionID: "codeMinimap",
+            supportsMinimap: false,
+            showsMarkdownPreview: false,
+            isMarkdownDocument: false
+        ))
+        for actionID in ["markdownPreviewExport", "markdownPreviewStyle"] {
+            XCTAssertFalse(MobileToolbarPresentationPolicy.isContextualActionAvailable(
+                actionID: actionID,
+                supportsMinimap: true,
+                showsMarkdownPreview: false,
+                isMarkdownDocument: true
+            ))
+            XCTAssertTrue(MobileToolbarPresentationPolicy.isContextualActionAvailable(
+                actionID: actionID,
+                supportsMinimap: true,
+                showsMarkdownPreview: true,
+                isMarkdownDocument: true
+            ))
+        }
+    }
+
+    func testNamedPresetsIgnoreCustomActionIDs() {
+        XCTAssertFalse(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "gitChanges",
+                preset: .writing,
+                customIDsRawValue: "gitChanges"
+            )
+        )
+        XCTAssertFalse(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "openFile",
+                preset: .custom,
+                customIDsRawValue: "gitChanges"
+            )
+        )
+    }
+
+    func testOverflowContainsOnlyEnabledActionsThatAreNotVisible() {
+        let enabled = TestAction.allCases
+        let visible = ToolbarActionSelection.visibleActions(
+            enabledActions: enabled,
+            requestedCount: 4
+        )
+        let overflow = ToolbarActionSelection.overflowActions(
+            enabledActions: enabled,
+            visibleActions: visible
+        )
+
+        XCTAssertEqual(overflow.map(\.rawValue), ["clearEditor", "insertTemplate", "newTab", "saveFile", "findReplace"])
+        XCTAssertTrue(Set(visible).isDisjoint(with: Set(overflow)))
+    }
+
+    func testCompactActionsKeepPriorityAndLeaveTheRestAccessible() {
+        let enabled = TestAction.allCases
+        let compact = ToolbarActionSelection.compactActions(
+            enabledActions: enabled,
+            priority: [.saveFile, .findReplace, .saveFile, .newTab],
+            limit: 3
+        )
+        let remaining = ToolbarActionSelection.overflowActions(
+            enabledActions: enabled,
+            visibleActions: compact
+        )
+
+        XCTAssertEqual(compact, [.saveFile, .findReplace, .newTab])
+        XCTAssertTrue(Set(compact).isDisjoint(with: Set(remaining)))
+        XCTAssertEqual(Set(compact + remaining), Set(enabled))
+    }
+
+    func testPrimaryAndOverflowActionsGiveEachActionOneRoute() {
+        let enabled = TestAction.allCases
+        let primary = ToolbarActionSelection.visibleActions(
+            enabledActions: enabled.filter { $0 != .settings && $0 != .help },
+            requestedCount: 4
+        )
+        let overflow = ToolbarActionSelection.overflowActions(
+            enabledActions: enabled,
+            visibleActions: primary
+        )
+
+        XCTAssertEqual(primary.map(\.rawValue), ["openFile", "undo", "clearEditor", "insertTemplate"])
+        XCTAssertEqual(overflow.map(\.rawValue), ["settings", "help", "newTab", "saveFile", "findReplace"])
+        XCTAssertTrue(Set(primary).isDisjoint(with: Set(overflow)))
+        XCTAssertEqual(Set(primary + overflow), Set(enabled))
+    }
+
+    func testNamedPresetsDoNotApplyCustomSectionVisibility() {
+        XCTAssertFalse(ToolbarActionSelection.honorsSectionVisibility(preset: .standard))
+        XCTAssertFalse(ToolbarActionSelection.honorsSectionVisibility(preset: .all))
+        XCTAssertTrue(ToolbarActionSelection.honorsSectionVisibility(preset: .custom))
+    }
+
+    func testSettingsRemainVisibleAndNamedPresetsIgnoreLegacyVisibility() {
+        XCTAssertTrue(
+            ToolbarActionSelection.shouldIncludeConfiguredAction(
+                actionID: "settings",
+                isConfiguredVisible: false,
+                preset: .custom
+            )
+        )
+        XCTAssertTrue(
+            ToolbarActionSelection.shouldIncludeConfiguredAction(
+                actionID: "help",
+                isConfiguredVisible: false,
+                preset: .all
+            )
+        )
+        XCTAssertTrue(
+            ToolbarActionSelection.shouldIncludeConfiguredAction(
+                actionID: "openFile",
+                isConfiguredVisible: false,
+                preset: .standard
+            )
+        )
+        XCTAssertFalse(
+            ToolbarActionSelection.shouldIncludeConfiguredAction(
+                actionID: "help",
+                isConfiguredVisible: false,
+                preset: .custom
+            )
+        )
+    }
+
+    func testPresetFilteringControlsPrimaryAndOverflowActions() {
+        XCTAssertTrue(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "openFile",
+                preset: .standard,
+                customIDsRawValue: ""
+            ), "standard openFile"
+        )
+        XCTAssertFalse(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "compareTabs",
+                preset: .writing,
+                customIDsRawValue: ""
+            ), "writing compareTabs"
+        )
+        XCTAssertTrue(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "gitChanges",
+                preset: .developer,
+                customIDsRawValue: ""
+            ), "developer gitChanges"
+        )
+        XCTAssertTrue(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "settings",
+                preset: .custom,
+                customIDsRawValue: "openFile",
+                universalIDs: ToolbarActionSelection.universallyAvailableMobileActionIDs
+            ), "custom settings"
+        )
+        XCTAssertTrue(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "help",
+                preset: .writing,
+                customIDsRawValue: "",
+                universalIDs: ToolbarActionSelection.universallyAvailableMobileActionIDs
+            ), "writing help"
+        )
+        XCTAssertFalse(
+            ToolbarActionSelection.isAllowedByPreset(
+                actionID: "gitChanges",
+                preset: .custom,
+                customIDsRawValue: "openFile",
+                universalIDs: ["settings", "help"]
+            ), "custom gitChanges"
+        )
+    }
+
+    func testOrderedIDsPreserveSavedOrderAndAppendNewDefinitions() {
+        XCTAssertEqual(
+            ToolbarActionSelection.orderedIDs(from: "findReplace,openFile,findReplace", fallback: ["openFile", "saveFile", "findReplace"]),
+            ["findReplace", "openFile", "saveFile"]
+        )
+    }
+
+    func testPreviewModeOpensRequestedPreviewFromNone() {
+        XCTAssertEqual(
+            ContentView.PreviewMode.none.toggled(for: .markdown),
+            .markdown
+        )
+    }
+
+    func testPreviewModeClosesWhenTogglingSamePreview() {
+        XCTAssertEqual(
+            ContentView.PreviewMode.web.toggled(for: .web),
+            .none
+        )
+    }
+
+    func testPreviewModeSwitchesDirectlyBetweenMarkdownAndWeb() {
+        XCTAssertEqual(
+            ContentView.PreviewMode.markdown.toggled(for: .web),
+            .web
+        )
+    }
+}

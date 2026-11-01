@@ -8,12 +8,43 @@
 
 /* Begin PBXBuildFile section */
 		35740DC4950C44A5B1D2D090 /* AppClipApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 15DB2C3F19EB434E90605663 /* AppClipApp.swift */; };
-		6D06675379ED4C65BF3A958B /* Neon Vision Editor/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7C70FD27D1214B44BF86A1F5 /* Neon Vision Editor/Resources/Assets.xcassets */; };
 		9825C2092ED77CF3007D8698 /* SwiftData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9825C2082ED77CF3007D8698 /* SwiftData.framework */; };
+		9827D2AA3015F7A80009A4A8 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7C70FD27D1214B44BF86A1F5 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets */; };
+		9827D2AB3015F7A80009A4A8 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 7C70FD27D1214B44BF86A1F5 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets */; };
+		98AB77E63011389800F533FA /* SwiftData.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9825C2082ED77CF3007D8698 /* SwiftData.framework */; };
 		9F1705BB206C43C1ADCE1966 /* Neon Vision Editor App Clip.app in Embed App Clips */ = {isa = PBXBuildFile; fileRef = E196E7CAA131439C8281ADCC /* Neon Vision Editor App Clip.app */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		A10000000000000000000001 /* ShareViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000005 /* ShareViewController.swift */; };
 		A10000000000000000000002 /* Neon Vision Editor Share Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */; platformFilters = (macos, ); };
+		A11000000000000000000009 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = A11000000000000000000008 /* Localizable.strings */; };
+		B11000000000000000000009 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = B11000000000000000000008 /* Localizable.strings */; };
+		B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; platformFilters = (macos, ); productRef = B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */; };
+		A1B2C3D40000000000000011 /* SwiftTreeSitter in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40000000000000001 /* SwiftTreeSitter */; };
+		A1B2C3D40000000000000012 /* TreeSitterHTML in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D40000000000000002 /* TreeSitterHTML */; };
+		A1B2C3D4000000000000B001 /* TreeSitterCSS in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C001 /* TreeSitterCSS */; };
+		A1B2C3D4000000000000B002 /* TreeSitterJSON in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C002 /* TreeSitterJSON */; };
+		A1B2C3D4000000000000B003 /* TreeSitterJavaScript in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C003 /* TreeSitterJavaScript */; };
+		A1B2C3D4000000000000B004 /* TreeSitterPython in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C004 /* TreeSitterPython */; };
+		A1B2C3D4000000000000B005 /* TreeSitterC in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C005 /* TreeSitterC */; };
+		A1B2C3D4000000000000B006 /* TreeSitterBash in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C006 /* TreeSitterBash */; };
+		A1B2C3D4000000000000B007 /* TreeSitterGo in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C007 /* TreeSitterGo */; };
+		A1B2C3D4000000000000B008 /* TreeSitterRuby in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C008 /* TreeSitterRuby */; };
+		A1B2C3D4000000000000B009 /* TreeSitterRust in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C009 /* TreeSitterRust */; };
+		A1B2C3D4000000000000B010 /* TreeSitterJava in Frameworks */ = {isa = PBXBuildFile; productRef = A1B2C3D4000000000000C010 /* TreeSitterJava */; };
+		D20000000000000000000008 /* Neon Vision Editor Share Extension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */; platformFilters = (ios, macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E30000000000000000000001 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */; };
+		E30000000000000000000003 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */; };
+		E30000000000000000000004 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */; };
+		E30000000000000000000005 /* Neon Pulse.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = E30000000000000000000006 /* Neon Pulse.app */; platformFilter = ios; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E30000000000000000000007 /* Neon Pulse Widget.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = E30000000000000000000008 /* Neon Pulse Widget.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		E30000000000000000000027 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */; };
+		E3000000000000000000003C /* CaptureInNeonIntent.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000036 /* CaptureInNeonIntent.swift */; };
+		E3000000000000000000003D /* NeonPulseRootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000038 /* NeonPulseRootView.swift */; };
+		E3000000000000000000003E /* NeonPulseWatchApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000039 /* NeonPulseWatchApp.swift */; };
+		E3000000000000000000003F /* NeonPulseWatchModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = E3000000000000000000003A /* NeonPulseWatchModel.swift */; };
+		E30000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E3000000000000000000003B /* Assets.xcassets */; };
+		E30000000000000000000045 /* Localizable.strings in Resources */ = {isa = PBXBuildFile; fileRef = E30000000000000000000044 /* Localizable.strings */; };
+		F10000000000000000000001 /* Neon Vision Editor Quick Look.appex in Embed Quick Look */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* Neon Vision Editor Quick Look.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		F10000000000000000000002 /* Neon Vision Editor Quick Look.appex in Embed Quick Look */ = {isa = PBXBuildFile; fileRef = F10000000000000000000008 /* Neon Vision Editor Quick Look.appex */; platformFilters = (macos, ); settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -38,6 +69,27 @@
 			remoteGlobalIDString = A1000000000000000000000B;
 			remoteInfo = "Neon Vision Editor Share Extension";
 		};
+		E30000000000000000000009 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98EAE62B2E5F15E80050E579 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E30000000000000000000010;
+			remoteInfo = "Neon Pulse Watch App";
+		};
+		E30000000000000000000011 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98EAE62B2E5F15E80050E579 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = E30000000000000000000012;
+			remoteInfo = "Neon Pulse Widget";
+		};
+		F10000000000000000000003 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 98EAE62B2E5F15E80050E579 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = F1000000000000000000000B;
+			remoteInfo = "Neon Vision Editor Quick Look";
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -59,32 +111,133 @@
 			);
 			name = "Embed Foundation Extensions";
 		};
+		D20000000000000000000007 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				D20000000000000000000008 /* Neon Vision Editor Share Extension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+		E30000000000000000000013 /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolder = Product;
+			files = (
+				E30000000000000000000005 /* Neon Pulse.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+		};
+		E30000000000000000000014 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				E30000000000000000000007 /* Neon Pulse Widget.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+		};
+		F10000000000000000000004 /* Embed Quick Look */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				F10000000000000000000001 /* Neon Vision Editor Quick Look.appex in Embed Quick Look */,
+			);
+			name = "Embed Quick Look";
+		};
+		F10000000000000000000005 /* Embed Quick Look */ = {
+			isa = PBXCopyFilesBuildPhase;
+			dstPath = "";
+			dstSubfolder = PlugIns;
+			files = (
+				F10000000000000000000002 /* Neon Vision Editor Quick Look.appex in Embed Quick Look */,
+			);
+			name = "Embed Quick Look";
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		15DB2C3F19EB434E90605663 /* AppClipApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppClipApp.swift; sourceTree = "<group>"; };
 		7BED8C80E7234BC98B621ADA /* Neon Vision EditorTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = "Neon Vision EditorTests.xctest"; sourceTree = BUILT_PRODUCTS_DIR; };
-		7C70FD27D1214B44BF86A1F5 /* Neon Vision Editor/Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Neon Vision Editor/Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
+		7C70FD27D1214B44BF86A1F5 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = "Project/Sources/Neon Vision Editor/Resources/Assets.xcassets"; sourceTree = SOURCE_ROOT; };
 		9341E5E582F1456FAFAC3725 /* Neon Vision Editor App Clip.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Neon Vision Editor App Clip.entitlements"; sourceTree = "<group>"; };
 		9825C2082ED77CF3007D8698 /* SwiftData.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftData.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.1.sdk/System/Library/Frameworks/SwiftData.framework; sourceTree = DEVELOPER_DIR; };
+		9827D2A83015F5650009A4A8 /* Neon Vision Editor App ClipRelease-GitHub.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Neon Vision Editor App ClipRelease-GitHub.entitlements"; sourceTree = "<group>"; };
 		98EAE6332E5F15E80050E579 /* Neon Vision Editor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Neon Vision Editor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A10000000000000000000005 /* ShareViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShareViewController.swift; sourceTree = "<group>"; };
 		A10000000000000000000006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		A10000000000000000000007 /* Neon Vision Editor Share Extension.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Neon Vision Editor Share Extension.entitlements"; sourceTree = "<group>"; };
 		A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Neon Vision Editor Share Extension.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		A11000000000000000000001 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000002 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000003 /* da */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = da; path = da.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000004 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000005 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000006 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		A11000000000000000000007 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		B11000000000000000000001 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000002 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000003 /* da */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = da; path = da.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000004 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000005 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000006 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		B11000000000000000000007 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
 		B1335E8482E74A43AB1206A1 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		D20000000000000000000001 /* Neon Vision Editor.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Neon Vision Editor.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 		E196E7CAA131439C8281ADCC /* Neon Vision Editor App Clip.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Neon Vision Editor App Clip.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "Project/Sources/Neon Pulse Shared/NeonPulseShared.swift"; sourceTree = SOURCE_ROOT; };
+		E30000000000000000000006 /* Neon Pulse.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Neon Pulse.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E30000000000000000000008 /* Neon Pulse Widget.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Neon Pulse Widget.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
+		E30000000000000000000036 /* CaptureInNeonIntent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CaptureInNeonIntent.swift; sourceTree = "<group>"; };
+		E30000000000000000000037 /* Neon Pulse Watch App.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = "Neon Pulse Watch App.entitlements"; sourceTree = "<group>"; };
+		E30000000000000000000038 /* NeonPulseRootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonPulseRootView.swift; sourceTree = "<group>"; };
+		E30000000000000000000039 /* NeonPulseWatchApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonPulseWatchApp.swift; sourceTree = "<group>"; };
+		E3000000000000000000003A /* NeonPulseWatchModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NeonPulseWatchModel.swift; sourceTree = "<group>"; };
+		E3000000000000000000003B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		E30000000000000000000041 /* en */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = en; path = en.lproj/Localizable.strings; sourceTree = "<group>"; };
+		E30000000000000000000042 /* de */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = de; path = de.lproj/Localizable.strings; sourceTree = "<group>"; };
+		E30000000000000000000043 /* zh-Hans */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = "zh-Hans"; path = "zh-Hans.lproj/Localizable.strings"; sourceTree = "<group>"; };
+		E30000000000000000000046 /* da */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = da; path = da.lproj/Localizable.strings; sourceTree = "<group>"; };
+		E30000000000000000000047 /* fr */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = fr; path = fr.lproj/Localizable.strings; sourceTree = "<group>"; };
+		E30000000000000000000048 /* es */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = es; path = es.lproj/Localizable.strings; sourceTree = "<group>"; };
+		E30000000000000000000049 /* ja */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ja; path = ja.lproj/Localizable.strings; sourceTree = "<group>"; };
+		F10000000000000000000008 /* Neon Vision Editor Quick Look.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = "Neon Vision Editor Quick Look.appex"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		F1000000000000000000000A /* Exceptions for "Project/Sources/Neon Vision Editor Quick Look" folder in "Neon Vision Editor Quick Look" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = F1000000000000000000000B /* Neon Vision Editor Quick Look */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
-		98EAE6352E5F15E80050E579 /* Neon Vision Editor */ = {
+		98EAE6352E5F15E80050E579 /* Project/Sources/Neon Vision Editor */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Neon Vision Editor";
+			path = "Project/Sources/Neon Vision Editor";
 			sourceTree = "<group>";
 		};
-		FCA13954DC9E4188A1DC88BE /* Neon Vision EditorTests */ = {
+		E30000000000000000000016 /* Project/Sources/Neon Pulse Widget */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			path = "Neon Vision EditorTests";
+			path = "Project/Sources/Neon Pulse Widget";
+			sourceTree = "<group>";
+		};
+		F10000000000000000000009 /* Project/Sources/Neon Vision Editor Quick Look */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				F1000000000000000000000A /* Exceptions for "Project/Sources/Neon Vision Editor Quick Look" folder in "Neon Vision Editor Quick Look" target */,
+			);
+			path = "Project/Sources/Neon Vision Editor Quick Look";
+			sourceTree = "<group>";
+		};
+		FCA13954DC9E4188A1DC88BE /* Project/Tests/Neon Vision EditorTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = "Project/Tests/Neon Vision EditorTests";
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -104,10 +257,43 @@
 			isa = PBXFrameworksBuildPhase;
 			files = (
 				9825C2092ED77CF3007D8698 /* SwiftData.framework in Frameworks */,
-				B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */,
 			);
 		};
 		A10000000000000000000009 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		D20000000000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+				98AB77E63011389800F533FA /* SwiftData.framework in Frameworks */,
+				B4E89D5A4B8248FBB1F8E3C1 /* Sparkle in Frameworks */,
+				A1B2C3D40000000000000011 /* SwiftTreeSitter in Frameworks */,
+				A1B2C3D40000000000000012 /* TreeSitterHTML in Frameworks */,
+				A1B2C3D4000000000000B001 /* TreeSitterCSS in Frameworks */,
+				A1B2C3D4000000000000B002 /* TreeSitterJSON in Frameworks */,
+				A1B2C3D4000000000000B003 /* TreeSitterJavaScript in Frameworks */,
+				A1B2C3D4000000000000B004 /* TreeSitterPython in Frameworks */,
+				A1B2C3D4000000000000B005 /* TreeSitterC in Frameworks */,
+				A1B2C3D4000000000000B006 /* TreeSitterBash in Frameworks */,
+				A1B2C3D4000000000000B007 /* TreeSitterGo in Frameworks */,
+				A1B2C3D4000000000000B008 /* TreeSitterRuby in Frameworks */,
+				A1B2C3D4000000000000B009 /* TreeSitterRust in Frameworks */,
+				A1B2C3D4000000000000B010 /* TreeSitterJava in Frameworks */,
+			);
+		};
+		E30000000000000000000017 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		E30000000000000000000018 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			files = (
+			);
+		};
+		F1000000000000000000000E /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
 			);
@@ -118,10 +304,14 @@
 		98EAE62A2E5F15E80050E579 = {
 			isa = PBXGroup;
 			children = (
-				98EAE6352E5F15E80050E579 /* Neon Vision Editor */,
-				C4DB32978E63402B963CF1EF /* Neon Vision Editor App Clip */,
-				A1000000000000000000000A /* Neon Vision Editor Share Extension */,
-				FCA13954DC9E4188A1DC88BE /* Neon Vision EditorTests */,
+				98EAE6352E5F15E80050E579 /* Project/Sources/Neon Vision Editor */,
+				E30000000000000000000015 /* Project/Sources/Neon Pulse Watch App */,
+				E30000000000000000000016 /* Project/Sources/Neon Pulse Widget */,
+				E30000000000000000000002 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift */,
+				C4DB32978E63402B963CF1EF /* Project/Sources/Neon Vision Editor App Clip */,
+				A1000000000000000000000A /* Project/Sources/Neon Vision Editor Share Extension */,
+				FCA13954DC9E4188A1DC88BE /* Project/Tests/Neon Vision EditorTests */,
+				F10000000000000000000009 /* Project/Sources/Neon Vision Editor Quick Look */,
 				98EAE6532E5F175B0050E579 /* Frameworks */,
 				98EAE6342E5F15E80050E579 /* Products */,
 			);
@@ -131,9 +321,13 @@
 			isa = PBXGroup;
 			children = (
 				98EAE6332E5F15E80050E579 /* Neon Vision Editor.app */,
+				D20000000000000000000001 /* Neon Vision Editor.app */,
 				E196E7CAA131439C8281ADCC /* Neon Vision Editor App Clip.app */,
 				A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */,
 				7BED8C80E7234BC98B621ADA /* Neon Vision EditorTests.xctest */,
+				E30000000000000000000006 /* Neon Pulse.app */,
+				E30000000000000000000008 /* Neon Pulse Widget.appex */,
+				F10000000000000000000008 /* Neon Vision Editor Quick Look.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -146,25 +340,42 @@
 			name = Frameworks;
 			sourceTree = "<group>";
 		};
-		A1000000000000000000000A /* Neon Vision Editor Share Extension */ = {
+		A1000000000000000000000A /* Project/Sources/Neon Vision Editor Share Extension */ = {
 			isa = PBXGroup;
 			children = (
 				A10000000000000000000005 /* ShareViewController.swift */,
 				A10000000000000000000006 /* Info.plist */,
 				A10000000000000000000007 /* Neon Vision Editor Share Extension.entitlements */,
+				A11000000000000000000008 /* Localizable.strings */,
 			);
-			path = "Neon Vision Editor Share Extension";
+			path = "Project/Sources/Neon Vision Editor Share Extension";
 			sourceTree = "<group>";
 		};
-		C4DB32978E63402B963CF1EF /* Neon Vision Editor App Clip */ = {
+		C4DB32978E63402B963CF1EF /* Project/Sources/Neon Vision Editor App Clip */ = {
 			isa = PBXGroup;
 			children = (
+				9827D2A83015F5650009A4A8 /* Neon Vision Editor App ClipRelease-GitHub.entitlements */,
 				15DB2C3F19EB434E90605663 /* AppClipApp.swift */,
 				B1335E8482E74A43AB1206A1 /* Info.plist */,
 				9341E5E582F1456FAFAC3725 /* Neon Vision Editor App Clip.entitlements */,
-				7C70FD27D1214B44BF86A1F5 /* Neon Vision Editor/Resources/Assets.xcassets */,
+				7C70FD27D1214B44BF86A1F5 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets */,
+				B11000000000000000000008 /* Localizable.strings */,
 			);
-			path = "Neon Vision Editor App Clip";
+			path = "Project/Sources/Neon Vision Editor App Clip";
+			sourceTree = "<group>";
+		};
+		E30000000000000000000015 /* Project/Sources/Neon Pulse Watch App */ = {
+			isa = PBXGroup;
+			children = (
+				E30000000000000000000036 /* CaptureInNeonIntent.swift */,
+				E30000000000000000000037 /* Neon Pulse Watch App.entitlements */,
+				E30000000000000000000038 /* NeonPulseRootView.swift */,
+				E30000000000000000000039 /* NeonPulseWatchApp.swift */,
+				E3000000000000000000003A /* NeonPulseWatchModel.swift */,
+				E3000000000000000000003B /* Assets.xcassets */,
+				E30000000000000000000044 /* Localizable.strings */,
+			);
+			path = "Project/Sources/Neon Pulse Watch App";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -184,7 +395,7 @@
 				98D001C72F3A432F00AA505C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				FCA13954DC9E4188A1DC88BE /* Neon Vision EditorTests */,
+				FCA13954DC9E4188A1DC88BE /* Project/Tests/Neon Vision EditorTests */,
 			);
 			name = "Neon Vision EditorTests";
 			productName = "Neon Vision EditorTests";
@@ -208,7 +419,7 @@
 		};
 		98EAE6322E5F15E80050E579 /* Neon Vision Editor */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 98EAE6402E5F15EC0050E579 /* Build configuration list for PBXNativeTarget "Neon Vision Editor" */;
+			buildConfigurationList = 98EAE6402E5F15EC0050E579 /* Build configuration list for PBXNativeTarget "Neon Vision Editor Direct" */;
 			buildPhases = (
 				98EAE62F2E5F15E80050E579 /* Sources */,
 				98EAE6302E5F15E80050E579 /* Frameworks */,
@@ -216,15 +427,19 @@
 				B21000000000000000000001 /* Strip GitHub-only Command Line Helper */,
 				501502363A7C4A34A23DF158 /* Embed App Clips */,
 				A10000000000000000000004 /* Embed Foundation Extensions */,
+				E30000000000000000000013 /* Embed Watch Content */,
+				F10000000000000000000004 /* Embed Quick Look */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				554D4CE27A1B4B4D89CA60F5 /* PBXTargetDependency */,
 				A1000000000000000000000D /* PBXTargetDependency */,
+				E30000000000000000000019 /* PBXTargetDependency */,
+				F1000000000000000000000C /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
-				98EAE6352E5F15E80050E579 /* Neon Vision Editor */,
+				98EAE6352E5F15E80050E579 /* Project/Sources/Neon Vision Editor */,
 			);
 			name = "Neon Vision Editor";
 			productName = "Neon Vision Editor";
@@ -237,12 +452,108 @@
 			buildPhases = (
 				A1000000000000000000000C /* Sources */,
 				A10000000000000000000009 /* Frameworks */,
+				A1100000000000000000000A /* Resources */,
 			);
 			buildRules = (
 			);
 			name = "Neon Vision Editor Share Extension";
 			productName = "Neon Vision Editor Share Extension";
 			productReference = A10000000000000000000008 /* Neon Vision Editor Share Extension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D20000000000000000000003 /* Neon Vision Editor Direct */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 98EAE6402E5F15EC0050E579 /* Build configuration list for PBXNativeTarget "Neon Vision Editor Direct" */;
+			buildPhases = (
+				D20000000000000000000004 /* Sources */,
+				D20000000000000000000002 /* Frameworks */,
+				D20000000000000000000005 /* Resources */,
+				D20000000000000000000006 /* Prepare Apple Silicon Direct Bundle */,
+				D20000000000000000000007 /* Embed Foundation Extensions */,
+				F10000000000000000000005 /* Embed Quick Look */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				A1000000000000000000000D /* PBXTargetDependency */,
+				F1000000000000000000000C /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				98EAE6352E5F15E80050E579 /* Project/Sources/Neon Vision Editor */,
+			);
+			name = "Neon Vision Editor Direct";
+			packageProductDependencies = (
+				B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */,
+				A1B2C3D40000000000000001 /* SwiftTreeSitter */,
+				A1B2C3D40000000000000002 /* TreeSitterHTML */,
+				A1B2C3D4000000000000C001 /* TreeSitterCSS */,
+				A1B2C3D4000000000000C002 /* TreeSitterJSON */,
+				A1B2C3D4000000000000C003 /* TreeSitterJavaScript */,
+				A1B2C3D4000000000000C004 /* TreeSitterPython */,
+				A1B2C3D4000000000000C005 /* TreeSitterC */,
+				A1B2C3D4000000000000C006 /* TreeSitterBash */,
+				A1B2C3D4000000000000C007 /* TreeSitterGo */,
+				A1B2C3D4000000000000C008 /* TreeSitterRuby */,
+				A1B2C3D4000000000000C009 /* TreeSitterRust */,
+				A1B2C3D4000000000000C010 /* TreeSitterJava */,
+			);
+			productName = "Neon Vision Editor";
+			productReference = D20000000000000000000001 /* Neon Vision Editor.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E30000000000000000000010 /* Neon Pulse Watch App */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E30000000000000000000020 /* Build configuration list for PBXNativeTarget "Neon Pulse Watch App" */;
+			buildPhases = (
+				E30000000000000000000021 /* Sources */,
+				E30000000000000000000017 /* Frameworks */,
+				E30000000000000000000022 /* Resources */,
+				E30000000000000000000014 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				E30000000000000000000023 /* PBXTargetDependency */,
+			);
+			name = "Neon Pulse Watch App";
+			productName = "Neon Pulse Watch App";
+			productReference = E30000000000000000000006 /* Neon Pulse.app */;
+			productType = "com.apple.product-type.application";
+		};
+		E30000000000000000000012 /* Neon Pulse Widget */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = E30000000000000000000024 /* Build configuration list for PBXNativeTarget "Neon Pulse Widget" */;
+			buildPhases = (
+				E30000000000000000000025 /* Sources */,
+				E30000000000000000000018 /* Frameworks */,
+				E30000000000000000000026 /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				E30000000000000000000016 /* Project/Sources/Neon Pulse Widget */,
+			);
+			name = "Neon Pulse Widget";
+			productName = "Neon Pulse Widget";
+			productReference = E30000000000000000000008 /* Neon Pulse Widget.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		F1000000000000000000000B /* Neon Vision Editor Quick Look */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F10000000000000000000020 /* Build configuration list for PBXNativeTarget "Neon Vision Editor Quick Look" */;
+			buildPhases = (
+				F1000000000000000000000D /* Sources */,
+				F1000000000000000000000E /* Frameworks */,
+				F1000000000000000000000F /* Resources */,
+			);
+			buildRules = (
+			);
+			fileSystemSynchronizedGroups = (
+				F10000000000000000000009 /* Project/Sources/Neon Vision Editor Quick Look */,
+			);
+			name = "Neon Vision Editor Quick Look";
+			productName = "Neon Vision Editor Quick Look";
+			productReference = F10000000000000000000008 /* Neon Vision Editor Quick Look.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
@@ -268,6 +579,18 @@
 					A1000000000000000000000B = {
 						CreatedOnToolsVersion = 26.0;
 					};
+					D20000000000000000000003 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					E30000000000000000000010 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					E30000000000000000000012 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					F1000000000000000000000B = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = 98EAE62E2E5F15E80050E579 /* Build configuration list for PBXProject "Neon Vision Editor" */;
@@ -277,12 +600,28 @@
 				en,
 				Base,
 				de,
+				da,
+				fr,
+				es,
+				ja,
 				"zh-Hans",
 			);
 			mainGroup = 98EAE62A2E5F15E80050E579;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */,
+				A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */,
+				A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */,
+				A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */,
+				A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */,
+				A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */,
+				A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */,
+				A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */,
+				A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */,
+				A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */,
+				A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */,
+				A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */,
+				A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */,
 			);
 			preferredProjectObjectVersion = 100;
 			productRefGroup = 98EAE6342E5F15E80050E579 /* Products */;
@@ -290,37 +629,23 @@
 			projectRoot = "";
 			targets = (
 				98EAE6322E5F15E80050E579 /* Neon Vision Editor */,
+				D20000000000000000000003 /* Neon Vision Editor Direct */,
 				61F0E4E95A9E435E9BA83FC8 /* Neon Vision Editor App Clip */,
 				A1000000000000000000000B /* Neon Vision Editor Share Extension */,
 				50864E55167D4016920786DF /* Neon Vision EditorTests */,
+				E30000000000000000000010 /* Neon Pulse Watch App */,
+				E30000000000000000000012 /* Neon Pulse Widget */,
+				F1000000000000000000000B /* Neon Vision Editor Quick Look */,
 			);
 		};
 /* End PBXProject section */
-
-/* Begin XCRemoteSwiftPackageReference section */
-		B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/sparkle-project/Sparkle";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 2.9.0;
-			};
-		};
-/* End XCRemoteSwiftPackageReference section */
-
-/* Begin XCSwiftPackageProductDependency section */
-		B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */;
-			productName = Sparkle;
-		};
-/* End XCSwiftPackageProductDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		26A5163C8EC64A83BE577872 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
-				6D06675379ED4C65BF3A958B /* Neon Vision Editor/Resources/Assets.xcassets in Resources */,
+				9827D2AB3015F7A80009A4A8 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets in Resources */,
+				B11000000000000000000009 /* Localizable.strings in Resources */,
 			);
 		};
 		4699081BD5B546B78CCFFADD /* Resources */ = {
@@ -329,6 +654,35 @@
 			);
 		};
 		98EAE6312E5F15E80050E579 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		A1100000000000000000000A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				A11000000000000000000009 /* Localizable.strings in Resources */,
+			);
+		};
+		D20000000000000000000005 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		E30000000000000000000022 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+				E30000000000000000000040 /* Assets.xcassets in Resources */,
+				E30000000000000000000045 /* Localizable.strings in Resources */,
+				9827D2AA3015F7A80009A4A8 /* Project/Sources/Neon Vision Editor/Resources/Assets.xcassets in Resources */,
+			);
+		};
+		E30000000000000000000026 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			files = (
+			);
+		};
+		F1000000000000000000000F /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
 			);
@@ -348,6 +702,18 @@
 				"",
 			);
 		};
+		D20000000000000000000006 /* Prepare Apple Silicon Direct Bundle */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			name = "Prepare Apple Silicon Direct Bundle";
+			shellPath = /bin/sh;
+			shellScript = (
+				"if [ \"${APP_STORE_BUILD:-NO}\" = \"YES\" ]; then",
+				"  rm -f \"${TARGET_BUILD_DIR}/${UNLOCALIZED_RESOURCES_FOLDER_PATH}/nve\"",
+				"fi",
+				"",
+			);
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -359,6 +725,7 @@
 		98EAE62F2E5F15E80050E579 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
+				E30000000000000000000001 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */,
 			);
 		};
 		A1000000000000000000000C /* Sources */ = {
@@ -367,10 +734,37 @@
 				A10000000000000000000001 /* ShareViewController.swift in Sources */,
 			);
 		};
+		D20000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				E30000000000000000000027 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */,
+			);
+		};
+		E30000000000000000000021 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				E30000000000000000000003 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */,
+				E3000000000000000000003C /* CaptureInNeonIntent.swift in Sources */,
+				E3000000000000000000003D /* NeonPulseRootView.swift in Sources */,
+				E3000000000000000000003E /* NeonPulseWatchApp.swift in Sources */,
+				E3000000000000000000003F /* NeonPulseWatchModel.swift in Sources */,
+			);
+		};
+		E30000000000000000000025 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
+				E30000000000000000000004 /* Project/Sources/Neon Pulse Shared/NeonPulseShared.swift in Sources */,
+			);
+		};
 		E42EA16BFFED441BAB19310E /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
 				35740DC4950C44A5B1D2D090 /* AppClipApp.swift in Sources */,
+			);
+		};
+		F1000000000000000000000D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			files = (
 			);
 		};
 /* End PBXSourcesBuildPhase section */
@@ -396,7 +790,71 @@
 			target = A1000000000000000000000B /* Neon Vision Editor Share Extension */;
 			targetProxy = A10000000000000000000003 /* PBXContainerItemProxy */;
 		};
+		E30000000000000000000019 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilter = ios;
+			target = E30000000000000000000010 /* Neon Pulse Watch App */;
+			targetProxy = E30000000000000000000009 /* PBXContainerItemProxy */;
+		};
+		E30000000000000000000023 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = E30000000000000000000012 /* Neon Pulse Widget */;
+			targetProxy = E30000000000000000000011 /* PBXContainerItemProxy */;
+		};
+		F1000000000000000000000C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			platformFilters = (
+				macos,
+			);
+			target = F1000000000000000000000B /* Neon Vision Editor Quick Look */;
+			targetProxy = F10000000000000000000003 /* PBXContainerItemProxy */;
+		};
 /* End PBXTargetDependency section */
+
+/* Begin PBXVariantGroup section */
+		A11000000000000000000008 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				A11000000000000000000001 /* en */,
+				A11000000000000000000002 /* de */,
+				A11000000000000000000003 /* da */,
+				A11000000000000000000004 /* fr */,
+				A11000000000000000000005 /* es */,
+				A11000000000000000000006 /* ja */,
+				A11000000000000000000007 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+		B11000000000000000000008 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				B11000000000000000000001 /* en */,
+				B11000000000000000000002 /* de */,
+				B11000000000000000000003 /* da */,
+				B11000000000000000000004 /* fr */,
+				B11000000000000000000005 /* es */,
+				B11000000000000000000006 /* ja */,
+				B11000000000000000000007 /* zh-Hans */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+		E30000000000000000000044 /* Localizable.strings */ = {
+			isa = PBXVariantGroup;
+			children = (
+				E30000000000000000000041 /* en */,
+				E30000000000000000000042 /* de */,
+				E30000000000000000000043 /* zh-Hans */,
+				E30000000000000000000046 /* da */,
+				E30000000000000000000047 /* fr */,
+				E30000000000000000000048 /* es */,
+				E30000000000000000000049 /* ja */,
+			);
+			name = Localizable.strings;
+			sourceTree = "<group>";
+		};
+/* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
 		367E90CC7EA3481E8407473A /* Release configuration for PBXNativeTarget "Neon Vision Editor App Clip" */ = {
@@ -405,23 +863,25 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon-iOS";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = "Neon Vision Editor App Clip/Neon Vision Editor App Clip.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor App Clip/Neon Vision Editor App Clip.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Neon Vision Editor App Clip/Info.plist";
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor App Clip/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Appclip";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.Clip";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -441,24 +901,26 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon-iOS";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = "Neon Vision Editor App Clip/Neon Vision Editor App Clip.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor App Clip/Neon Vision Editor App Clip.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Neon Vision Editor App Clip/Info.plist";
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor App Clip/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Appclip";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6.0;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.Clip";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
@@ -480,9 +942,9 @@
 				"BUNDLE_LOADER[sdk=iphonesimulator*]" = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = CS727NF72U;
 				GENERATE_INFOPLIST_FILE = YES;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision EditorTests";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
@@ -491,6 +953,25 @@
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = USE_FOUNDATION_MODELS;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx27.*]" = "$(inherited) MACOS_27_AGENTIC_EDITOR";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Neon Vision Editor";
 				"TEST_HOST[sdk=iphoneos*]" = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/Neon Vision Editor";
@@ -501,32 +982,56 @@
 		98AF65222FD88D510006115C /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor App Clip" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = "AppIcon-iOS";
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
-				CODE_SIGN_STYLE = Manual;
-				DEVELOPMENT_TEAM = "";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor App Clip/Neon Vision Editor App ClipRelease-GitHub.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor App Clip/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Appclip";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6.0;
 				MACOSX_DEPLOYMENT_TARGET = "$(RECOMMENDED_MACOSX_DEPLOYMENT_TARGET)";
-				"PRODUCT_BUNDLE_IDENTIFIER[sdk=macosx*]" = "h3p.Neon-Vision-Editor.Clip";
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.Clip";
 				PRODUCT_NAME = "Neon Vision Editor App Clip";
 				PROVISIONING_PROFILE_SPECIFIER = "";
+				REGISTER_APP_GROUPS = YES;
 			};
 			name = "Release-GitHub";
 		};
 		98AF65232FD88D510006115C /* Release-GitHub configuration for PBXNativeTarget "Neon Vision EditorTests" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				"BUNDLE_LOADER[sdk=iphoneos*]" = "$(TEST_HOST)";
+				"BUNDLE_LOADER[sdk=iphonesimulator*]" = "$(TEST_HOST)";
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = YES;
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-EditorTests";
 				PRODUCT_NAME = "Neon Vision EditorTests";
+				SDKROOT = auto;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Neon Vision Editor";
+				"TEST_HOST[sdk=iphoneos*]" = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/Neon Vision Editor";
+				"TEST_HOST[sdk=iphonesimulator*]" = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/Neon Vision Editor";
 			};
 			name = "Release-GitHub";
 		};
-		98BD22182FB3D6AF005BB89C /* Debug configuration for PBXNativeTarget "Neon Vision Editor" */ = {
+		98BD22182FB3D6AF005BB89C /* Debug configuration for PBXNativeTarget "Neon Vision Editor Direct" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos27.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator27.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = "AppIcon-iOS";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx26.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx27.*]" = AppIcon;
@@ -536,13 +1041,13 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Neon Vision Editor/Neon Vision Editor macOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor macOS.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_APP_SANDBOX = YES;
@@ -566,11 +1071,15 @@
 				"GENERATE_INFOPLIST_FILE[sdk=iphoneos*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=iphonesimulator*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=macosx*]" = NO;
+				"ICON_FILE[sdk=iphoneos26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphoneos27.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator27.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx26.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx27.*]" = AppIcon.icon;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -592,9 +1101,9 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Neon Vision Editor";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -623,6 +1132,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				"ARCHS[sdk=macosx*]" = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -675,15 +1185,34 @@
 				GCC_WARN_UNUSED_FUNCTION = YES;
 				GCC_WARN_UNUSED_VARIABLE = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = USE_FOUNDATION_MODELS;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx27.*]" = "$(inherited) MACOS_27_AGENTIC_EDITOR";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_VERSION = 6.0;
 			};
@@ -693,6 +1222,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				"ARCHS[sdk=macosx*]" = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -744,17 +1274,40 @@
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = USE_FOUNDATION_MODELS;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx27.*]" = "$(inherited) MACOS_27_AGENTIC_EDITOR";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
 		};
-		98EAE6422E5F15EC0050E579 /* Release configuration for PBXNativeTarget "Neon Vision Editor" */ = {
+		98EAE6422E5F15EC0050E579 /* Release configuration for PBXNativeTarget "Neon Vision Editor Direct" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				APP_STORE_BUILD = YES;
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos27.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator27.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = "AppIcon-iOS";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx26.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx27.*]" = AppIcon;
@@ -764,12 +1317,11 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Neon Vision Editor/Neon Vision Editor macOS.entitlements";
-				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor macOS.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_APP_SANDBOX = YES;
@@ -792,11 +1344,15 @@
 				"GENERATE_INFOPLIST_FILE[sdk=iphoneos*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=iphonesimulator*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=macosx*]" = NO;
+				"ICON_FILE[sdk=iphoneos26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphoneos27.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator27.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx26.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx27.*]" = AppIcon.icon;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -818,9 +1374,9 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Neon Vision Editor";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				REGISTER_APP_GROUPS = YES;
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -834,6 +1390,7 @@
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx xros xrsimulator";
 				SUPPORTS_MACCATALYST = NO;
 				SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD = NO;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) APP_STORE_BUILD";
 				SWIFT_APPROACHABLE_CONCURRENCY = NO;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -849,6 +1406,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
+				"ARCHS[sdk=macosx*]" = arm64;
 				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
@@ -897,19 +1455,45 @@
 				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				NVE_APP_PROFILE_NAME = "Neon Vision Editor Developer ID G2 App 20260609003243";
+				NVE_DEVELOPER_ID_IDENTITY = 62FF5D2240E836ABBA9571C2C370C94C3A789EFF;
+				NVE_SHARE_EXTENSION_PROFILE_NAME = "Neon Vision Editor Developer ID G2 Share Extension 20260609003246";
 				ONLY_ACTIVE_ARCH = YES;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = USE_FOUNDATION_MODELS;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx27.*]" = "$(inherited) MACOS_27_AGENTIC_EDITOR";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_VERSION = 6.0;
 			};
 			name = "Release-GitHub";
 		};
-		98EAE6442E5F15EC0050E579 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor" */ = {
+		98EAE6442E5F15EC0050E579 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor Direct" */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = AppIcon;
-				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphoneos27.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator*]" = "AppIcon-iOS";
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator26.*]" = AppIcon;
+				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=iphonesimulator27.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx*]" = "AppIcon-iOS";
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx26.*]" = AppIcon;
 				"ASSETCATALOG_COMPILER_APPICON_NAME[sdk=macosx27.*]" = AppIcon;
@@ -919,17 +1503,16 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				AUTOMATION_APPLE_EVENTS = NO;
 				CODE_SIGNING_ALLOWED = YES;
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Neon Vision Editor/Neon Vision Editor iOS.entitlements";
-				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Neon Vision Editor/Neon Vision Editor macOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphoneos*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor iOS.entitlements";
+				"CODE_SIGN_ENTITLEMENTS[sdk=macosx*]" = "Project/Sources/Neon Vision Editor/Neon Vision Editor macOS.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "$(NVE_DEVELOPER_ID_IDENTITY)";
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
-				"DEVELOPMENT_TEAM[sdk=macosx*]" = CS727NF72U;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -949,11 +1532,15 @@
 				"GENERATE_INFOPLIST_FILE[sdk=iphoneos*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=iphonesimulator*]" = NO;
 				"GENERATE_INFOPLIST_FILE[sdk=macosx*]" = NO;
+				"ICON_FILE[sdk=iphoneos26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphoneos27.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator26.*]" = AppIcon.icon;
+				"ICON_FILE[sdk=iphonesimulator27.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx26.*]" = AppIcon.icon;
 				"ICON_FILE[sdk=macosx27.*]" = AppIcon.icon;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor";
 				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.developer-tools";
@@ -975,9 +1562,9 @@
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				"LD_RUNPATH_SEARCH_PATHS[sdk=macosx*]" = "@executable_path/../Frameworks";
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor";
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Neon Vision Editor";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				"PROVISIONING_PROFILE_SPECIFIER[sdk=macosx*]" = "$(NVE_APP_PROFILE_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -1008,24 +1595,25 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = "Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Share";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.ShareExtension";
 				PRODUCT_NAME = "Neon Vision Editor Share Extension";
 				REGISTER_APP_GROUPS = YES;
@@ -1049,10 +1637,9 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = "Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
-				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
 				ENABLE_APP_SANDBOX = YES;
@@ -1069,14 +1656,15 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Share";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.ShareExtension";
 				PRODUCT_NAME = "Neon Vision Editor Share Extension";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1101,14 +1689,15 @@
 			buildSettings = {
 				APPLICATION_EXTENSION_API_ONLY = YES;
 				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = "Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Share Extension/Neon Vision Editor Share Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
-				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Developer ID Application";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "$(NVE_DEVELOPER_ID_IDENTITY)";
 				CODE_SIGN_STYLE = Automatic;
 				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
-				CURRENT_PROJECT_VERSION = 841;
+				CURRENT_PROJECT_VERSION = 1130;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = CS727NF72U;
+				"DEVELOPMENT_TEAM[sdk=macosx*]" = CS727NF72U;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
@@ -1123,14 +1712,15 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Share Extension/Info.plist";
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Share";
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
-				MARKETING_VERSION = 0.9.3;
+				MARKETING_VERSION = 2.1.3;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.ShareExtension";
 				PRODUCT_NAME = "Neon Vision Editor Share Extension";
 				PROVISIONING_PROFILE_SPECIFIER = "";
@@ -1159,23 +1749,295 @@
 				"BUNDLE_LOADER[sdk=iphonesimulator*]" = "$(TEST_HOST)";
 				DEVELOPMENT_TEAM = CS727NF72U;
 				GENERATE_INFOPLIST_FILE = YES;
-				"INFOPLIST_FILE[sdk=iphoneos*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Info-iOS.plist";
-				"INFOPLIST_FILE[sdk=macosx*]" = "Info-macOS.plist";
+				"INFOPLIST_FILE[sdk=iphoneos*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=iphonesimulator*]" = "Project/Configuration/Info-iOS.plist";
+				"INFOPLIST_FILE[sdk=macosx*]" = "Project/Configuration/Info-macOS.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision EditorTests";
-				IPHONEOS_DEPLOYMENT_TARGET = "$(RECOMMENDED_IPHONEOS_DEPLOYMENT_TARGET)";
+				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				MACOSX_DEPLOYMENT_TARGET = 15.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-EditorTests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = auto;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator macosx";
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = USE_FOUNDATION_MODELS;
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=macosx27.*]" = "$(inherited) MACOS_27_AGENTIC_EDITOR";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphoneos27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.1*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.2*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.3*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.4*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.5*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.6*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.7*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.8*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
+				"SWIFT_ACTIVE_COMPILATION_CONDITIONS[sdk=iphonesimulator27.9*]" = "$(inherited) IOS_27_1_DUO_LAYOUT";
 				SWIFT_VERSION = 6.0;
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Neon Vision Editor";
 				"TEST_HOST[sdk=iphoneos*]" = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/Neon Vision Editor";
 				"TEST_HOST[sdk=iphonesimulator*]" = "$(BUILT_PRODUCTS_DIR)/Neon Vision Editor.app/Neon Vision Editor";
 			};
 			name = Release;
+		};
+		E30000000000000000000028 /* Debug configuration for PBXNativeTarget "Neon Pulse Watch App" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Watch App/Neon Pulse Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Pulse";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "h3p.Neon-Vision-Editor";
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				INFOPLIST_KEY_WKWatchKitApp = YES;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp";
+				PRODUCT_NAME = "Neon Pulse";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Debug;
+		};
+		E30000000000000000000029 /* Release configuration for PBXNativeTarget "Neon Pulse Watch App" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"ARCHS[sdk=watchsimulator*]" = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Watch App/Neon Pulse Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Pulse";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "h3p.Neon-Vision-Editor";
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				INFOPLIST_KEY_WKWatchKitApp = YES;
+				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp";
+				PRODUCT_NAME = "Neon Pulse";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Release;
+		};
+		E30000000000000000000030 /* Release-GitHub configuration for PBXNativeTarget "Neon Pulse Watch App" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				"ARCHS[sdk=watchsimulator*]" = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Watch App/Neon Pulse Watch App.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "Neon Vision Editor Pulse";
+				INFOPLIST_KEY_ITSAppUsesNonExemptEncryption = NO;
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = "h3p.Neon-Vision-Editor";
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				INFOPLIST_KEY_WKWatchKitApp = YES;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp";
+				PRODUCT_NAME = "Neon Pulse";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = "Release-GitHub";
+		};
+		E30000000000000000000031 /* Debug configuration for PBXNativeTarget "Neon Pulse Widget" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Widget/Neon Pulse Widget.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Project/Configuration/Info.plist.widget;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp.NeonPulseWidget";
+				PRODUCT_NAME = "Neon Pulse Widget";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Debug;
+		};
+		E30000000000000000000032 /* Release configuration for PBXNativeTarget "Neon Pulse Widget" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Widget/Neon Pulse Widget.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Project/Configuration/Info.plist.widget;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp.NeonPulseWidget";
+				PRODUCT_NAME = "Neon Pulse Widget";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = Release;
+		};
+		E30000000000000000000033 /* Release-GitHub configuration for PBXNativeTarget "Neon Pulse Widget" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Pulse Widget/Neon Pulse Widget.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Project/Configuration/Info.plist.widget;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.watchkitapp.NeonPulseWidget";
+				PRODUCT_NAME = "Neon Pulse Widget";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "watchos watchsimulator";
+				SWIFT_APPROACHABLE_CONCURRENCY = NO;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 11.0;
+			};
+			name = "Release-GitHub";
+		};
+		F10000000000000000000021 /* Debug configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Quick Look/Neon Vision Editor Quick Look.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				ENABLE_APP_SANDBOX = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Quick Look/Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.QuickLook";
+				PRODUCT_NAME = "Neon Vision Editor Quick Look";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Debug;
+		};
+		F10000000000000000000022 /* Release configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Quick Look/Neon Vision Editor Quick Look.entitlements";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Quick Look/Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.QuickLook";
+				PRODUCT_NAME = "Neon Vision Editor Quick Look";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = Release;
+		};
+		F10000000000000000000023 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGNING_ALLOWED = YES;
+				CODE_SIGN_ENTITLEMENTS = "Project/Sources/Neon Vision Editor Quick Look/Neon Vision Editor Quick Look.entitlements";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "$(NVE_DEVELOPER_ID_IDENTITY)";
+				CODE_SIGN_STYLE = Automatic;
+				"CODE_SIGN_STYLE[sdk=macosx*]" = Manual;
+				CURRENT_PROJECT_VERSION = 1130;
+				DEVELOPMENT_TEAM = CS727NF72U;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = "Project/Sources/Neon Vision Editor Quick Look/Info.plist";
+				MACOSX_DEPLOYMENT_TARGET = 14.6;
+				MARKETING_VERSION = 2.1.3;
+				PRODUCT_BUNDLE_IDENTIFIER = "h3p.Neon-Vision-Editor.QuickLook";
+				PRODUCT_NAME = "Neon Vision Editor Quick Look";
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = macosx;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 6.0;
+				WRAPPER_EXTENSION = appex;
+			};
+			name = "Release-GitHub";
 		};
 /* End XCBuildConfiguration section */
 
@@ -1198,12 +2060,12 @@
 			);
 			defaultConfigurationName = Release;
 		};
-		98EAE6402E5F15EC0050E579 /* Build configuration list for PBXNativeTarget "Neon Vision Editor" */ = {
+		98EAE6402E5F15EC0050E579 /* Build configuration list for PBXNativeTarget "Neon Vision Editor Direct" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				98EAE6422E5F15EC0050E579 /* Release configuration for PBXNativeTarget "Neon Vision Editor" */,
-				98EAE6442E5F15EC0050E579 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor" */,
-				98BD22182FB3D6AF005BB89C /* Debug configuration for PBXNativeTarget "Neon Vision Editor" */,
+				98EAE6422E5F15EC0050E579 /* Release configuration for PBXNativeTarget "Neon Vision Editor Direct" */,
+				98EAE6442E5F15EC0050E579 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor Direct" */,
+				98BD22182FB3D6AF005BB89C /* Debug configuration for PBXNativeTarget "Neon Vision Editor Direct" */,
 			);
 			defaultConfigurationName = Release;
 		};
@@ -1225,7 +2087,209 @@
 			);
 			defaultConfigurationName = Release;
 		};
+		E30000000000000000000020 /* Build configuration list for PBXNativeTarget "Neon Pulse Watch App" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E30000000000000000000028 /* Debug configuration for PBXNativeTarget "Neon Pulse Watch App" */,
+				E30000000000000000000029 /* Release configuration for PBXNativeTarget "Neon Pulse Watch App" */,
+				E30000000000000000000030 /* Release-GitHub configuration for PBXNativeTarget "Neon Pulse Watch App" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		E30000000000000000000024 /* Build configuration list for PBXNativeTarget "Neon Pulse Widget" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E30000000000000000000031 /* Debug configuration for PBXNativeTarget "Neon Pulse Widget" */,
+				E30000000000000000000032 /* Release configuration for PBXNativeTarget "Neon Pulse Widget" */,
+				E30000000000000000000033 /* Release-GitHub configuration for PBXNativeTarget "Neon Pulse Widget" */,
+			);
+			defaultConfigurationName = Release;
+		};
+		F10000000000000000000020 /* Build configuration list for PBXNativeTarget "Neon Vision Editor Quick Look" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F10000000000000000000021 /* Debug configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */,
+				F10000000000000000000022 /* Release configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */,
+				F10000000000000000000023 /* Release-GitHub configuration for PBXNativeTarget "Neon Vision Editor Quick Look" */,
+			);
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.5;
+			};
+		};
+		A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/ChimeHQ/SwiftTreeSitter";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.9.0;
+			};
+		};
+		A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-html";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.23.2;
+			};
+		};
+		A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-css";
+			requirement = {
+				kind = exactVersion;
+				version = 0.23.2;
+			};
+		};
+		A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-json";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.24.8;
+			};
+		};
+		A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-javascript";
+			requirement = {
+				kind = exactVersion;
+				version = 0.23.1;
+			};
+		};
+		A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-python";
+			requirement = {
+				kind = exactVersion;
+				version = 0.23.6;
+			};
+		};
+		A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-c";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.24.2;
+			};
+		};
+		A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-bash";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.25.1;
+			};
+		};
+		A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-go";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.25.0;
+			};
+		};
+		A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-ruby";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.23.1;
+			};
+		};
+		A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-rust";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.24.2;
+			};
+		};
+		A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/tree-sitter/tree-sitter-java";
+			requirement = {
+				kind = upToNextMinorVersion;
+				minimumVersion = 0.23.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		B4E89D5B4B8248FBB1F8E3C1 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B4E89D5C4B8248FBB1F8E3C1 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+		A1B2C3D40000000000000001 /* SwiftTreeSitter */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D40000000000000003 /* XCRemoteSwiftPackageReference "SwiftTreeSitter" */;
+			productName = SwiftTreeSitter;
+		};
+		A1B2C3D40000000000000002 /* TreeSitterHTML */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D40000000000000013 /* XCRemoteSwiftPackageReference "tree-sitter-html" */;
+			productName = TreeSitterHTML;
+		};
+		A1B2C3D4000000000000C001 /* TreeSitterCSS */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D001 /* XCRemoteSwiftPackageReference "tree-sitter-css" */;
+			productName = TreeSitterCSS;
+		};
+		A1B2C3D4000000000000C002 /* TreeSitterJSON */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D002 /* XCRemoteSwiftPackageReference "tree-sitter-json" */;
+			productName = TreeSitterJSON;
+		};
+		A1B2C3D4000000000000C003 /* TreeSitterJavaScript */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D003 /* XCRemoteSwiftPackageReference "tree-sitter-javascript" */;
+			productName = TreeSitterJavaScript;
+		};
+		A1B2C3D4000000000000C004 /* TreeSitterPython */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D004 /* XCRemoteSwiftPackageReference "tree-sitter-python" */;
+			productName = TreeSitterPython;
+		};
+		A1B2C3D4000000000000C005 /* TreeSitterC */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D005 /* XCRemoteSwiftPackageReference "tree-sitter-c" */;
+			productName = TreeSitterC;
+		};
+		A1B2C3D4000000000000C006 /* TreeSitterBash */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D006 /* XCRemoteSwiftPackageReference "tree-sitter-bash" */;
+			productName = TreeSitterBash;
+		};
+		A1B2C3D4000000000000C007 /* TreeSitterGo */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D007 /* XCRemoteSwiftPackageReference "tree-sitter-go" */;
+			productName = TreeSitterGo;
+		};
+		A1B2C3D4000000000000C008 /* TreeSitterRuby */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D008 /* XCRemoteSwiftPackageReference "tree-sitter-ruby" */;
+			productName = TreeSitterRuby;
+		};
+		A1B2C3D4000000000000C009 /* TreeSitterRust */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D009 /* XCRemoteSwiftPackageReference "tree-sitter-rust" */;
+			productName = TreeSitterRust;
+		};
+		A1B2C3D4000000000000C010 /* TreeSitterJava */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A1B2C3D4000000000000D010 /* XCRemoteSwiftPackageReference "tree-sitter-java" */;
+			productName = TreeSitterJava;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 98EAE62B2E5F15E80050E579 /* Project object */;
 }

@@ -1,0 +1,1 @@
+../../Sources/Neon Vision Editor/Core/LanguageDetector.swift

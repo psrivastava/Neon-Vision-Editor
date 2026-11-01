@@ -1,0 +1,285 @@
+import SwiftUI
+import Foundation
+
+// MARK: - Web Preview UI
+
+extension ContentView {
+    @ViewBuilder
+    var webPreviewPane: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            webPreviewHeader
+            if viewModel.selectedTab?.usesFileBackedStorage == true {
+                Text("Web preview is unavailable for large virtual documents.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel("Web preview unavailable for large virtual documents")
+            } else {
+                MarkdownPreviewWebView(
+                    html: webPreviewHTML(from: currentContent),
+                    baseURL: localWebPreviewBaseURL,
+                    // HTML/SVG preview is intentionally browser-like. Keep
+                    // Markdown preview inert, but allow authored web content to
+                    // use WebKit's normal JavaScript rendering path here.
+                    allowsContentJavaScript: true
+                )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel("\(webPreviewTitle) Content")
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(editorSurfaceBackgroundStyle)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(webPreviewTitle)
+    }
+
+    var localWebPreviewBaseURL: URL? {
+        guard let fileURL = viewModel.selectedTab?.fileURL, fileURL.isFileURL else { return nil }
+        return fileURL.deletingLastPathComponent()
+    }
+
+    private var webPreviewHeader: some View {
+        previewPaneHeader(
+            title: webPreviewTitle,
+            iconName: webPreviewIconName,
+            metadata: webPreviewStatusText,
+            onClose: closeCurrentPreview
+        ) {
+            EmptyView()
+        }
+    }
+
+    private var webPreviewTitle: String {
+        isSVGDocument ? "SVG Preview" : "HTML Preview"
+    }
+
+    private var webPreviewIconName: String {
+        isSVGDocument ? "photo" : "safari"
+    }
+
+    private var webPreviewStatusText: String {
+        previewFileSizeText(for: viewModel.selectedTab?.fileURL)
+            ?? ByteCountFormatter.string(fromByteCount: Int64(currentContent.utf8.count), countStyle: .file)
+    }
+
+    func webPreviewHTML(from source: String) -> String {
+        let trimmed = source.trimmingCharacters(in: .whitespacesAndNewlines)
+        if isSVGDocument {
+            guard trimmed.localizedCaseInsensitiveContains("<svg") else {
+                return webPreviewMessageHTML("No SVG root element found.")
+            }
+            return svgPreviewHTML(from: trimmed)
+        }
+        guard !trimmed.isEmpty else {
+            return webPreviewMessageHTML("No HTML content found.")
+        }
+        return htmlPreviewHTML(from: trimmed)
+    }
+
+    private func svgPreviewHTML(from source: String) -> String {
+        return """
+        <!doctype html>
+        <html class="svg-preview">
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        \(webPreviewCSPMeta)
+        <style>
+        html, body {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          background: transparent;
+          color: CanvasText;
+        }
+        body {
+          min-width: 0;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          box-sizing: border-box;
+          padding: 16px;
+          overflow: auto;
+        }
+        .svg-stage {
+          width: 100%;
+          height: 100%;
+          min-width: 0;
+          min-height: 0;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        .svg-stage > svg {
+          display: block;
+          flex: 0 1 auto;
+          width: 100% !important;
+          height: 100% !important;
+          max-width: 100%;
+          max-height: 100%;
+        }
+        </style>
+        </head>
+        <body>
+        <div class="svg-stage">
+        \(source)
+        </div>
+        </body>
+        </html>
+        """
+    }
+
+    private func htmlPreviewHTML(from source: String) -> String {
+        webPreviewSourceWithCSP(source)
+    }
+
+    private var webPreviewCSPMeta: String {
+        """
+        <meta http-equiv="Content-Security-Policy" content="default-src 'self' data: blob: file: https:; img-src data: blob: file: https:; script-src 'unsafe-inline' 'unsafe-eval' data: blob: file: https:; style-src 'unsafe-inline' data: blob: file: https:; font-src data: blob: file: https:; media-src data: blob: file: https:; connect-src data: blob: file: https: wss:; frame-src data: blob: file: https:;">
+        """
+    }
+
+    private func webPreviewSourceWithCSP(_ source: String) -> String {
+        let previewHeadPreamble = "\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">\n\(webPreviewCSPMeta)\n"
+        let responsiveStyle = "\n\(webPreviewBaseStyle)\n"
+        if let headRange = source.range(of: "<head", options: [.caseInsensitive]),
+           let headEnd = source[headRange.lowerBound...].firstIndex(of: ">") {
+            let openingHeadEnd = source.index(after: headEnd)
+            let prefix = source[..<openingHeadEnd]
+            let remaining = source[openingHeadEnd...]
+            if let closingHeadRange = remaining.range(of: "</head>", options: [.caseInsensitive]) {
+                return "\(prefix)\(previewHeadPreamble)\(remaining[..<closingHeadRange.lowerBound])\(responsiveStyle)\(remaining[closingHeadRange.lowerBound...])"
+            }
+            return "\(prefix)\(previewHeadPreamble)\(responsiveStyle)\(remaining)"
+        }
+        if let htmlRange = source.range(of: "<html", options: [.caseInsensitive]),
+           let htmlEnd = source[htmlRange.lowerBound...].firstIndex(of: ">") {
+            var output = source
+            output.insert(contentsOf: "\n<head>\n<meta charset=\"utf-8\">\(previewHeadPreamble)\(responsiveStyle)</head>", at: source.index(after: htmlEnd))
+            return output
+        }
+        return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        \(previewHeadPreamble)
+        \(responsiveStyle)
+        </head>
+        <body>
+        \(source)
+        </body>
+        </html>
+        """
+    }
+
+    private var webPreviewBaseStyle: String {
+        """
+        <style>
+        html, body {
+          margin: 0;
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+          min-height: 100vh;
+          color-scheme: \(webPreviewColorSchemeCSS);
+          background: \(webPreviewCanvasBackgroundCSS);
+          color: \(webPreviewCanvasForegroundCSS);
+        }
+        body {
+          box-sizing: border-box;
+          padding: 20px 24px;
+          overflow-wrap: anywhere;
+          overflow-x: auto;
+        }
+        *, *::before, *::after {
+          box-sizing: border-box;
+        }
+        /* Preview-only: reflow legacy documents with inline pixel dimensions. */
+        body > * {
+          min-width: 0 !important;
+          max-width: 100% !important;
+        }
+        table {
+          width: 100% !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+          height: auto !important;
+        }
+        th, td {
+          width: auto !important;
+          min-width: 0 !important;
+          max-width: 100% !important;
+          height: auto !important;
+          white-space: normal !important;
+          overflow-wrap: anywhere;
+        }
+        img, picture, video, canvas, svg {
+          max-width: 100% !important;
+          height: auto !important;
+        }
+        iframe, embed, object {
+          max-width: 100% !important;
+        }
+        pre, code {
+          max-width: 100% !important;
+          white-space: pre-wrap;
+          overflow-wrap: anywhere;
+        }
+        </style>
+        """
+    }
+
+    private var webPreviewCanvasBackgroundCSS: String {
+        colorScheme == .dark
+        ? "#1b1d21"
+        : "#f8f9fb"
+    }
+
+    private var webPreviewCanvasForegroundCSS: String {
+        colorScheme == .dark
+        ? "#f2f2f7"
+        : "#1c1c1e"
+    }
+
+    private var webPreviewColorSchemeCSS: String {
+        colorScheme == .dark ? "dark" : "light"
+    }
+
+    private func webPreviewMessageHTML(_ message: String) -> String {
+        let escapedMessage = Self.webPreviewEscapedHTML(message)
+        return """
+        <!doctype html>
+        <html>
+        <head>
+        <meta charset="utf-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
+        <style>
+        html, body {
+          margin: 0;
+          width: 100%;
+          height: 100%;
+          display: grid;
+          place-items: center;
+          font: 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #6b7280;
+          background: transparent;
+        }
+        </style>
+        </head>
+        <body>\(escapedMessage)</body>
+        </html>
+        """
+    }
+
+    private static func webPreviewEscapedHTML(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+}

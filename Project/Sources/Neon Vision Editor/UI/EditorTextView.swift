@@ -1,0 +1,879 @@
+import SwiftUI
+import Foundation
+#if canImport(JavaScriptCore)
+import JavaScriptCore
+#endif
+
+struct EditorTextMutation {
+    let documentID: UUID
+    let range: NSRange
+    let replacement: String
+    let viewport: EditorDocumentViewport?
+
+    init(documentID: UUID, range: NSRange, replacement: String, viewport: EditorDocumentViewport? = nil) {
+        self.documentID = documentID
+        self.range = range
+        self.replacement = replacement
+        self.viewport = viewport
+    }
+}
+
+enum EditorLineMoveDirection: String {
+    case up
+    case down
+}
+
+struct EditorLineMoveResult: Equatable {
+    let replacementRange: NSRange
+    let replacement: String
+    let selectedRange: NSRange
+}
+
+func editorLineMove(
+    in text: String,
+    selectedRange rawSelection: NSRange,
+    direction: EditorLineMoveDirection
+) -> EditorLineMoveResult? {
+    let nsText = text as NSString
+    guard rawSelection.location != NSNotFound else { return nil }
+    let selectionLocation = min(max(0, rawSelection.location), nsText.length)
+    let selectionLength = min(max(0, rawSelection.length), max(0, nsText.length - selectionLocation))
+    let selection = NSRange(location: selectionLocation, length: selectionLength)
+
+    let lines = text.components(separatedBy: "\n")
+    guard lines.count > 1 else { return nil }
+
+    var lineStarts: [Int] = [0]
+    lineStarts.reserveCapacity(lines.count)
+    for index in 0..<(lines.count - 1) {
+        lineStarts.append(lineStarts[index] + (lines[index] as NSString).length + 1)
+    }
+
+    func lineIndex(atUTF16Location location: Int) -> Int {
+        var lower = 0
+        var upper = lineStarts.count
+        while lower + 1 < upper {
+            let midpoint = (lower + upper) / 2
+            if lineStarts[midpoint] <= location {
+                lower = midpoint
+            } else {
+                upper = midpoint
+            }
+        }
+        return lower
+    }
+
+    let firstLine = lineIndex(atUTF16Location: selection.location)
+    let endProbe = selection.length > 0
+        ? max(selection.location, NSMaxRange(selection) - 1)
+        : selection.location
+    let lastLine = lineIndex(atUTF16Location: min(endProbe, nsText.length))
+    let lastMovableLine = text.hasSuffix("\n") ? lines.count - 2 : lines.count - 1
+
+    switch direction {
+    case .up:
+        guard firstLine > 0 else { return nil }
+    case .down:
+        guard lastLine < lastMovableLine else { return nil }
+    }
+
+    var reordered = lines
+    let movedLines = Array(reordered[firstLine...lastLine])
+    reordered.removeSubrange(firstLine...lastLine)
+    let destinationLine: Int
+    let affectedFirstLine: Int
+    let affectedLastLine: Int
+    switch direction {
+    case .up:
+        destinationLine = firstLine - 1
+        affectedFirstLine = firstLine - 1
+        affectedLastLine = lastLine
+    case .down:
+        destinationLine = firstLine + 1
+        affectedFirstLine = firstLine
+        affectedLastLine = lastLine + 1
+    }
+    reordered.insert(contentsOf: movedLines, at: destinationLine)
+
+    let reorderedText = reordered.joined(separator: "\n") as NSString
+    let affectedStart = lineStarts[affectedFirstLine]
+    let affectedEnd = affectedLastLine + 1 < lineStarts.count
+        ? lineStarts[affectedLastLine + 1]
+        : nsText.length
+    let replacementRange = NSRange(location: affectedStart, length: affectedEnd - affectedStart)
+    let replacement = reorderedText.substring(with: replacementRange)
+
+    var reorderedStarts: [Int] = [0]
+    reorderedStarts.reserveCapacity(reordered.count)
+    for index in 0..<(reordered.count - 1) {
+        reorderedStarts.append(reorderedStarts[index] + (reordered[index] as NSString).length + 1)
+    }
+    let startOffsetWithinLine = selection.location - lineStarts[firstLine]
+    let newSelectionLocation = reorderedStarts[destinationLine] + startOffsetWithinLine
+
+    return EditorLineMoveResult(
+        replacementRange: replacementRange,
+        replacement: replacement,
+        selectedRange: NSRange(location: newSelectionLocation, length: selection.length)
+    )
+}
+
+func htmlAutoCloseInsertion(
+    in text: NSString,
+    insertionRange: NSRange,
+    language: String
+) -> (replacement: String, caretOffset: Int)? {
+    let normalizedLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    guard normalizedLanguage == "html" || normalizedLanguage == "xhtml" || normalizedLanguage == "expressionengine",
+          insertionRange.location != NSNotFound,
+          insertionRange.length == 0,
+          insertionRange.location <= text.length else {
+        return nil
+    }
+
+    let scanStart = max(0, insertionRange.location - 512)
+    let prefix = text.substring(with: NSRange(location: scanStart, length: insertionRange.location - scanStart))
+    guard let openingBracket = prefix.lastIndex(of: "<") else { return nil }
+    let tagFragment = String(prefix[openingBracket...])
+    guard !tagFragment.contains(">"),
+          !tagFragment.hasPrefix("</"),
+          !tagFragment.hasPrefix("<!"),
+          !tagFragment.hasPrefix("<?"),
+          !tagFragment.trimmingCharacters(in: .whitespacesAndNewlines).hasSuffix("/") else {
+        return nil
+    }
+
+    let nameStart = tagFragment.index(after: tagFragment.startIndex)
+    let remainder = tagFragment[nameStart...]
+    let tagName = remainder.prefix { character in
+        character.isLetter || character.isNumber || character == "-" || character == ":" || character == "_"
+    }
+    guard let first = tagName.first, first.isLetter else { return nil }
+
+    let normalizedTag = tagName.lowercased()
+    let voidTags: Set<String> = [
+        "area", "base", "br", "col", "embed", "hr", "img", "input",
+        "link", "meta", "param", "source", "track", "wbr"
+    ]
+    guard !voidTags.contains(normalizedTag) else { return nil }
+
+    let closing = "</\(tagName)>"
+    return (replacement: ">\(closing)", caretOffset: 1)
+}
+
+nonisolated func shouldPreserveEditorViewportDuringContentInstall(
+    didSwitchDocumentResource: Bool,
+    didFinishTabLoad: Bool
+) -> Bool {
+    // External refreshes update the current document in place. Only a resource
+    // switch or the completion of an explicit file-open load resets its viewport.
+    !didSwitchDocumentResource && !didFinishTabLoad
+}
+
+private let continuedMarkdownListPrefixRegex = try! NSRegularExpression(
+    pattern: #"^([ \t]*)([-*+]|\d+[.)])([ \t]+)(.*)$"#
+)
+
+func continuedMarkdownListPrefix(for linePrefix: String, normalizedIndent: String) -> String? {
+    let nsLine = linePrefix as NSString
+    let fullRange = NSRange(location: 0, length: nsLine.length)
+    guard let match = continuedMarkdownListPrefixRegex.firstMatch(in: linePrefix, options: [], range: fullRange),
+          match.numberOfRanges >= 5 else { return nil }
+    let trailingContent = nsLine.substring(with: match.range(at: 4))
+    guard !trailingContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    let marker = nsLine.substring(with: match.range(at: 2))
+    let spacer = nsLine.substring(with: match.range(at: 3))
+    let continuedMarker: String
+    if let delimiter = marker.last, delimiter == "." || delimiter == ")",
+       let value = Int(marker.dropLast()), value < Int.max {
+        continuedMarker = "\(value + 1)\(delimiter)"
+    } else {
+        continuedMarker = marker
+    }
+    return normalizedIndent + continuedMarker + spacer
+}
+
+func autoIndentReturnContext(
+    in text: NSString,
+    proposedRange: NSRange,
+    selectedRange: NSRange
+) -> (replacementRange: NSRange, linePrefix: String)? {
+    guard proposedRange.location != NSNotFound,
+          proposedRange.location >= 0,
+          proposedRange.length >= 0,
+          NSMaxRange(proposedRange) <= text.length else {
+        return nil
+    }
+
+    let shouldPreserveKeyboardReplacement =
+        proposedRange.length > 0 &&
+        selectedRange.length == 0 &&
+        selectedRange.location == NSMaxRange(proposedRange)
+    let insertionRange = shouldPreserveKeyboardReplacement
+        ? NSRange(location: NSMaxRange(proposedRange), length: 0)
+        : proposedRange
+    let lineRange = text.lineRange(for: NSRange(location: insertionRange.location, length: 0))
+    let prefixRange = NSRange(
+        location: lineRange.location,
+        length: max(0, insertionRange.location - lineRange.location)
+    )
+    return (insertionRange, text.substring(with: prefixRange))
+}
+
+enum LargeFileInstallRuntime {
+    static let chunkUTF16 = 32_768
+}
+
+@MainActor
+enum EmmetExpander {
+    private final class BundleMarker: NSObject {}
+
+    private static let supportedMarkupLanguages: Set<String> = ["html", "xml", "svg", "php"]
+    private static let supportedStylesheetLanguages: Set<String> = ["css", "scss", "sass", "less", "stylus", "sss"]
+
+#if canImport(JavaScriptCore)
+    private static let engine: JSValue? = {
+        let bundles = [Bundle.main, Bundle(for: BundleMarker.self)]
+        let resourceURL = bundles.lazy.compactMap { bundle in
+            bundle.url(forResource: "emmet.bundle", withExtension: "js", subdirectory: "Emmet")
+                ?? bundle.url(forResource: "emmet.bundle", withExtension: "js")
+        }.first
+        guard let resourceURL,
+              let script = try? String(contentsOf: resourceURL, encoding: .utf8),
+              let context = JSContext() else { return nil }
+        context.exceptionHandler = { _, _ in }
+        context.evaluateScript(script)
+        return context.objectForKeyedSubscript("NeonEmmet")?.objectForKeyedSubscript("expandAt")
+    }()
+#endif
+
+    static func expansionIfPossible(
+        in text: String,
+        cursorUTF16Location: Int,
+        language: String,
+        indentStyle: String = "spaces",
+        indentWidth: Int = 4
+    ) -> (range: NSRange, expansion: String, caretOffset: Int)? {
+        let normalizedLanguage = language.lowercased()
+        guard supportedMarkupLanguages.contains(normalizedLanguage)
+                || supportedStylesheetLanguages.contains(normalizedLanguage) else { return nil }
+        if normalizedLanguage == "php" && !isHTMLContextInPHP(text: text, cursorUTF16Location: cursorUTF16Location) {
+            return nil
+        }
+#if canImport(JavaScriptCore)
+        guard let engine else { return nil }
+        let source = text as NSString
+        let clampedCursor = min(max(0, cursorUTF16Location), source.length)
+        let syntax = resolvedSyntax(
+            language: normalizedLanguage,
+            text: source,
+            cursor: clampedCursor
+        )
+        let indentUnit = EditorCommandSemantics.indentation(style: indentStyle, width: indentWidth)
+        let lineRange = source.lineRange(for: NSRange(location: clampedCursor, length: 0))
+        let linePrefixLength = max(0, min(clampedCursor - lineRange.location, lineRange.length))
+        let linePrefix = source.substring(with: NSRange(location: lineRange.location, length: linePrefixLength))
+        let baseIndent = String(linePrefix.prefix { $0 == " " || $0 == "\t" })
+        guard let result = engine.call(withArguments: [text, clampedCursor, syntax, indentUnit, baseIndent]),
+              !result.isNull, !result.isUndefined,
+              let dictionary = result.toDictionary() as? [String: Any],
+              let location = dictionary["location"] as? Int,
+              let abbreviation = dictionary["abbreviation"] as? String,
+              let expansion = dictionary["expansion"] as? String,
+              let caretOffset = dictionary["caretOffset"] as? Int,
+              location >= 0,
+              location <= clampedCursor,
+              !abbreviation.isEmpty,
+              !expansion.isEmpty else { return nil }
+        return (
+            NSRange(location: location, length: clampedCursor - location),
+            expansion,
+            min(max(0, caretOffset), expansion.utf16.count)
+        )
+#else
+        return nil
+#endif
+    }
+
+    private static func resolvedSyntax(language: String, text: NSString, cursor: Int) -> String {
+        if language == "svg" { return "xml" }
+        guard language == "html" || language == "php" else { return language }
+        let prefix = text.substring(to: cursor) as NSString
+        let lastStyleOpen = prefix.range(of: "<style", options: [.backwards, .caseInsensitive]).location
+        let lastStyleClose = prefix.range(of: "</style", options: [.backwards, .caseInsensitive]).location
+        if lastStyleOpen != NSNotFound && (lastStyleClose == NSNotFound || lastStyleOpen > lastStyleClose) {
+            return "css"
+        }
+        let lineRange = prefix.lineRange(for: NSRange(location: prefix.length, length: 0))
+        let line = prefix.substring(with: lineRange)
+        if line.range(of: #"style\s*=\s*["'][^"']*$"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return "css"
+        }
+        return "html"
+    }
+
+    private static func isHTMLContextInPHP(text: String, cursorUTF16Location: Int) -> Bool {
+        let ns = text as NSString
+        let clamped = min(max(0, cursorUTF16Location), ns.length)
+        let search = NSRange(location: 0, length: clamped)
+        let openRanges = [
+            ns.range(of: "<?php", options: .backwards, range: search),
+            ns.range(of: "<?=", options: .backwards, range: search),
+            ns.range(of: "<?", options: .backwards, range: search)
+        ]
+        let latestOpen = openRanges.compactMap { $0.location == NSNotFound ? nil : $0.location }.max() ?? -1
+        let latestCloseRange = ns.range(of: "?>", options: .backwards, range: search)
+        let latestClose = latestCloseRange.location
+        return latestOpen == -1 || (latestClose != NSNotFound && latestClose > latestOpen)
+    }
+}
+
+// MARK: - Paste Notifications
+extension Notification.Name {
+    static let pastedFileURL = Notification.Name("pastedFileURL")
+    static let editorSelectionDidChange = Notification.Name("editorSelectionDidChange")
+    static let editorRequestCodeSnapshotFromSelection = Notification.Name("editorRequestCodeSnapshotFromSelection")
+    static let editorFocusDidChange = Notification.Name("editorFocusDidChange")
+    static let markdownFormattingRequested = Notification.Name("markdownFormattingRequested")
+}
+
+// MARK: - Scope Match Models
+// Bracket-based scope data used for highlighting and guide rendering.
+struct BracketScopeMatch {
+    let openRange: NSRange
+    let closeRange: NSRange
+    let scopeRange: NSRange?
+    let guideMarkerRanges: [NSRange]
+}
+
+// Indentation-based scope data used for Python/YAML style highlighting.
+struct IndentationScopeMatch {
+    let scopeRange: NSRange
+    let guideMarkerRanges: [NSRange]
+}
+
+// MARK: - Bracket/Indent Scope Helpers
+func matchingOpeningBracket(for closing: unichar) -> unichar? {
+    switch UnicodeScalar(closing) {
+    case "}": return unichar(UnicodeScalar("{").value)
+    case "]": return unichar(UnicodeScalar("[").value)
+    case ")": return unichar(UnicodeScalar("(").value)
+    default: return nil
+    }
+}
+
+func matchingClosingBracket(for opening: unichar) -> unichar? {
+    switch UnicodeScalar(opening) {
+    case "{": return unichar(UnicodeScalar("}").value)
+    case "[": return unichar(UnicodeScalar("]").value)
+    case "(": return unichar(UnicodeScalar(")").value)
+    default: return nil
+    }
+}
+
+func isBracket(_ c: unichar) -> Bool {
+    matchesAny(c, ["{", "}", "[", "]", "(", ")"])
+}
+
+func matchesAny(_ c: unichar, _ chars: [Character]) -> Bool {
+    guard let scalar = UnicodeScalar(c) else { return false }
+    return chars.contains(Character(scalar))
+}
+
+func computeBracketScopeMatch(text: String, caretLocation: Int) -> BracketScopeMatch? {
+    let ns = text as NSString
+    let length = ns.length
+    guard length > 0 else { return nil }
+
+    func matchFrom(start: Int) -> BracketScopeMatch? {
+        guard start >= 0 && start < length else { return nil }
+        let startChar = ns.character(at: start)
+        let openIndex: Int
+        let closeIndex: Int
+
+        if let wantedClose = matchingClosingBracket(for: startChar) {
+            var depth = 0
+            var found: Int?
+            for i in start..<length {
+                let c = ns.character(at: i)
+                if c == startChar { depth += 1 }
+                if c == wantedClose {
+                    depth -= 1
+                    if depth == 0 {
+                        found = i
+                        break
+                    }
+                }
+            }
+            guard let found else { return nil }
+            openIndex = start
+            closeIndex = found
+        } else if let wantedOpen = matchingOpeningBracket(for: startChar) {
+            var depth = 0
+            var found: Int?
+            var i = start
+            while i >= 0 {
+                let c = ns.character(at: i)
+                if c == startChar { depth += 1 }
+                if c == wantedOpen {
+                    depth -= 1
+                    if depth == 0 {
+                        found = i
+                        break
+                    }
+                }
+                i -= 1
+            }
+            guard let found else { return nil }
+            openIndex = found
+            closeIndex = start
+        } else {
+            return nil
+        }
+
+        let openRange = NSRange(location: openIndex, length: 1)
+        let closeRange = NSRange(location: closeIndex, length: 1)
+        let scopeLength = max(0, closeIndex - openIndex - 1)
+        let scopeRange: NSRange? = scopeLength > 0 ? NSRange(location: openIndex + 1, length: scopeLength) : nil
+
+        let openLineRange = ns.lineRange(for: NSRange(location: openIndex, length: 0))
+        let closeLineRange = ns.lineRange(for: NSRange(location: closeIndex, length: 0))
+        let column = openIndex - openLineRange.location
+
+        var markers: [NSRange] = []
+        var lineStart = openLineRange.location
+        while lineStart <= closeLineRange.location && lineStart < length {
+            let lineRange = ns.lineRange(for: NSRange(location: lineStart, length: 0))
+            let lineEndExcludingNewline = lineRange.location + max(0, lineRange.length - 1)
+            if lineEndExcludingNewline > lineRange.location {
+                let markerLoc = min(lineRange.location + column, lineEndExcludingNewline - 1)
+                if markerLoc >= lineRange.location && markerLoc < lineEndExcludingNewline {
+                    markers.append(NSRange(location: markerLoc, length: 1))
+                }
+            }
+            let nextLineStart = lineRange.location + lineRange.length
+            if nextLineStart <= lineStart { break }
+            lineStart = nextLineStart
+        }
+
+        return BracketScopeMatch(
+            openRange: openRange,
+            closeRange: closeRange,
+            scopeRange: scopeRange,
+            guideMarkerRanges: markers
+        )
+    }
+
+    let safeCaret = max(0, min(caretLocation, length))
+    var probeIndices: [Int] = [safeCaret]
+    if safeCaret > 0 { probeIndices.append(safeCaret - 1) }
+
+    var candidateIndices: [Int] = []
+    var seenCandidates = Set<Int>()
+    func addCandidate(_ index: Int) {
+        guard index >= 0 && index < length else { return }
+        if seenCandidates.insert(index).inserted {
+            candidateIndices.append(index)
+        }
+    }
+    for idx in probeIndices where idx >= 0 && idx < length {
+        if isBracket(ns.character(at: idx)) {
+            addCandidate(idx)
+        }
+    }
+
+    // If caret is not directly on a bracket, find the nearest enclosing opening
+    // bracket whose matching close still contains the caret.
+    var stack: [Int] = []
+    if safeCaret > 0 {
+        for i in 0..<safeCaret {
+            let c = ns.character(at: i)
+            if matchingClosingBracket(for: c) != nil {
+                stack.append(i)
+                continue
+            }
+            if let wantedOpen = matchingOpeningBracket(for: c), let last = stack.last, ns.character(at: last) == wantedOpen {
+                stack.removeLast()
+            }
+        }
+    }
+    while let candidate = stack.popLast() {
+        let c = ns.character(at: candidate)
+        guard let wantedClose = matchingClosingBracket(for: c) else { continue }
+        var depth = 0
+        var foundClose: Int?
+        for i in candidate..<length {
+            let current = ns.character(at: i)
+            if current == c { depth += 1 }
+            if current == wantedClose {
+                depth -= 1
+                if depth == 0 {
+                    foundClose = i
+                    break
+                }
+            }
+        }
+        if let close = foundClose, safeCaret >= candidate && safeCaret <= close {
+            addCandidate(candidate)
+        }
+    }
+
+    // Bounded fallback keeps scope highlighting responsive in large files when
+    // the caret is not directly on, or inside, a bracketed scope.
+    let fallbackStart = max(0, safeCaret - EditorRuntimeLimits.bracketScopeNearestFallbackWindowUTF16)
+    let fallbackEnd = min(length, safeCaret + EditorRuntimeLimits.bracketScopeNearestFallbackWindowUTF16)
+    var left = safeCaret - 1
+    var right = safeCaret
+    while left >= fallbackStart || right < fallbackEnd {
+        if left >= fallbackStart {
+            if isBracket(ns.character(at: left)) {
+                addCandidate(left)
+            }
+            left -= 1
+        }
+        if right < fallbackEnd {
+            if isBracket(ns.character(at: right)) {
+                addCandidate(right)
+            }
+            right += 1
+        }
+    }
+
+    for candidate in candidateIndices {
+        if let match = matchFrom(start: candidate) {
+            return match
+        }
+    }
+    return nil
+}
+
+func supportsScopeGuideVisuals(language: String) -> Bool {
+    let lang = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return lang != "swift"
+}
+
+func supportsIndentationScopes(language: String) -> Bool {
+    let lang = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    return lang == "python" || lang == "yaml" || lang == "yml"
+}
+
+func computeIndentationScopeMatch(text: String, caretLocation: Int) -> IndentationScopeMatch? {
+    let ns = text as NSString
+    let length = ns.length
+    guard length > 0 else { return nil }
+
+    struct LineInfo {
+        let range: NSRange
+        let contentEnd: Int
+        let indent: Int?
+    }
+
+    func lineIndent(_ lineRange: NSRange) -> Int? {
+        guard lineRange.length > 0 else { return nil }
+        let line = ns.substring(with: lineRange)
+        var indent = 0
+        var sawContent = false
+        for ch in line {
+            if ch == " " {
+                indent += 1
+                continue
+            }
+            if ch == "\t" {
+                indent += 4
+                continue
+            }
+            if ch == "\n" || ch == "\r" {
+                continue
+            }
+            sawContent = true
+            break
+        }
+        return sawContent ? indent : nil
+    }
+
+    var lines: [LineInfo] = []
+    var lineStart = 0
+    while lineStart < length {
+        let lr = ns.lineRange(for: NSRange(location: lineStart, length: 0))
+        let contentEnd = lr.location + max(0, lr.length - 1)
+        lines.append(LineInfo(range: lr, contentEnd: contentEnd, indent: lineIndent(lr)))
+        let next = lr.location + lr.length
+        if next <= lineStart { break }
+        lineStart = next
+    }
+    guard !lines.isEmpty else { return nil }
+
+    let safeCaret = max(0, min(caretLocation, max(0, length - 1)))
+    guard let caretLineIndex = lines.firstIndex(where: { NSLocationInRange(safeCaret, $0.range) }) else { return nil }
+
+    var blockStart = caretLineIndex
+    var baseIndent: Int? = lines[caretLineIndex].indent
+
+    // If caret is on a block header line (e.g. Python ":"), use the next indented line.
+    if baseIndent == nil || baseIndent == 0 {
+        let currentLine = ns.substring(with: lines[caretLineIndex].range).trimmingCharacters(in: .whitespacesAndNewlines)
+        if currentLine.hasSuffix(":") {
+            var next = caretLineIndex + 1
+            while next < lines.count {
+                if let nextIndent = lines[next].indent, nextIndent > 0 {
+                    baseIndent = nextIndent
+                    blockStart = next
+                    break
+                }
+                next += 1
+            }
+        }
+    }
+
+    guard let indentLevel = baseIndent, indentLevel > 0 else { return nil }
+
+    var start = blockStart
+    while start > 0 {
+        let prev = lines[start - 1]
+        guard let prevIndent = prev.indent else {
+            start -= 1
+            continue
+        }
+        if prevIndent >= indentLevel {
+            start -= 1
+            continue
+        }
+        break
+    }
+
+    var end = blockStart
+    var idx = blockStart + 1
+    while idx < lines.count {
+        let info = lines[idx]
+        if let infoIndent = info.indent {
+            if infoIndent < indentLevel { break }
+            end = idx
+            idx += 1
+            continue
+        }
+        // Keep blank lines inside the current block.
+        end = idx
+        idx += 1
+    }
+
+    let startLoc = lines[start].range.location
+    let endLoc = lines[end].contentEnd
+    guard endLoc > startLoc else { return nil }
+
+    var guideMarkers: [NSRange] = []
+    for i in start...end {
+        let info = lines[i]
+        guard info.contentEnd > info.range.location else { continue }
+        guard let infoIndent = info.indent, infoIndent >= indentLevel else { continue }
+        let marker = min(info.range.location + max(0, indentLevel - 1), info.contentEnd - 1)
+        if marker >= info.range.location && marker < info.contentEnd {
+            guideMarkers.append(NSRange(location: marker, length: 1))
+        }
+    }
+
+    return IndentationScopeMatch(
+        scopeRange: NSRange(location: startLoc, length: endLoc - startLoc),
+        guideMarkerRanges: guideMarkers
+    )
+}
+
+func isValidRange(_ range: NSRange, utf16Length: Int) -> Bool {
+    isSyntaxHighlightRangeValid(range, utf16Length: utf16Length)
+}
+
+/// Font-only ranges in the original source; markup and escaped/code text stay intact.
+nonisolated func markdownSourceFontRanges(_ source: String) -> [(range: NSRange, bold: Bool, italic: Bool)] {
+    let options = AttributedString.MarkdownParsingOptions(appliesSourcePositionAttributes: true)
+    guard let parsed = try? AttributedString(markdown: source, options: options) else { return [] }
+    return parsed.runs.compactMap { run in
+        guard let intent = run.inlinePresentationIntent,
+              !intent.contains(.code),
+              intent.contains(.stronglyEmphasized) || intent.contains(.emphasized),
+              let position = run.markdownSourcePosition,
+              let range = Range(position, in: source) else { return nil }
+        return (NSRange(range, in: source), intent.contains(.stronglyEmphasized), intent.contains(.emphasized))
+    }
+}
+
+nonisolated func fastSyntaxColorRanges(
+    language: String,
+    profile: SyntaxPatternProfile,
+    text: NSString,
+    in range: NSRange,
+    colors: SyntaxColors
+) -> [(NSRange, Color)]? {
+    let lower = language.lowercased()
+
+    // FORK-SEAM(tree-sitter): when the engine toggle (Settings → Syntax Highlighting Engine) is set
+    // to tree-sitter and a grammar is loaded for this language, use the structural parser. Returns
+    // nil for any language without a grammar, so the CSV/HTML/regex paths below stay the fallback.
+    // Replay: re-insert this block at the top of fastSyntaxColorRanges after `lower` is defined.
+    if forkCurrentSyntaxEngine() == .treeSitter,
+       let treeSitterRanges = forkTreeSitterColorRanges(language: lower, text: text, in: range, colors: colors) {
+        return treeSitterRanges
+    }
+
+    let useCSVFastProfile: Bool = {
+        switch profile {
+        case .csvFast:
+            return true
+        case .full:
+            return lower == "csv" && range.length >= 180_000
+        default:
+            return false
+        }
+    }()
+    if useCSVFastProfile {
+        let rangeEnd = NSMaxRange(range)
+        var out: [(NSRange, Color)] = []
+        var i = range.location
+        let budgetDeadline = CFAbsoluteTimeGetCurrent() + EditorRuntimeLimits.largeFileCSVTokenBudgetSeconds
+        while i < rangeEnd {
+            if CFAbsoluteTimeGetCurrent() >= budgetDeadline {
+                break
+            }
+            let ch = text.character(at: i)
+            if ch == 34 { // "
+                let start = i
+                i += 1
+                while i < rangeEnd {
+                    let c = text.character(at: i)
+                    if c == 34 {
+                        if i + 1 < rangeEnd && text.character(at: i + 1) == 34 {
+                            i += 2
+                            continue
+                        }
+                        i += 1
+                        break
+                    }
+                    i += 1
+                }
+                out.append((NSRange(location: start, length: max(0, i - start)), colors.string))
+                continue
+            }
+            if ch == 44 { // ,
+                out.append((NSRange(location: i, length: 1), colors.property))
+            }
+            i += 1
+        }
+        return out
+    }
+
+    if isHTMLLikeSyntaxLanguage(lower) || lower == "xml" {
+        return fastHTMLSyntaxColorRanges(text: text, in: range, colors: colors)
+    }
+
+    let useJSONScanner: Bool = {
+        switch profile {
+        case .full, .jsonFast:
+            return isJSONLikeLanguage(lower)
+        default:
+            return false
+        }
+    }()
+    if useJSONScanner {
+        let isBudgeted: Bool = {
+            if case .jsonFast = profile { return true }
+            return false
+        }()
+        // A single string/number can be megabytes long. The outer-loop time
+        // budget alone cannot interrupt those token scans.
+        let rangeEnd = isBudgeted
+            ? range.location + min(range.length, EditorRuntimeLimits.maximumSyntaxPassUTF16Length)
+            : NSMaxRange(range)
+        var out: [(NSRange, Color)] = []
+        var i = range.location
+        let budgetDeadline = CFAbsoluteTimeGetCurrent() + EditorRuntimeLimits.largeFileJSONTokenBudgetSeconds
+        while i < rangeEnd {
+            if isBudgeted && CFAbsoluteTimeGetCurrent() >= budgetDeadline {
+                break
+            }
+            let ch = text.character(at: i)
+            if isJSONWhitespace(ch) {
+                i += 1
+                continue
+            }
+            if ch == 34 { // "
+                let start = i
+                i += 1
+                while i < rangeEnd {
+                    let c = text.character(at: i)
+                    if c == 92 { // \
+                        i += min(2, rangeEnd - i)
+                        continue
+                    }
+                    i += 1
+                    if c == 34 {
+                        break
+                    }
+                }
+                let tokenRange = NSRange(location: start, length: max(0, i - start))
+                var lookahead = i
+                while lookahead < rangeEnd && isJSONWhitespace(text.character(at: lookahead)) {
+                    lookahead += 1
+                }
+                let tokenColor = (lookahead < rangeEnd && text.character(at: lookahead) == 58)
+                    ? colors.property
+                    : colors.string
+                out.append((tokenRange, tokenColor))
+                continue
+            }
+            if ch == 123 || ch == 125 || ch == 91 || ch == 93 || ch == 58 || ch == 44 {
+                out.append((NSRange(location: i, length: 1), colors.meta))
+                i += 1
+                continue
+            }
+            if ch == 45 || isJSONDigit(ch) {
+                let start = i
+                if ch == 45 {
+                    i += 1
+                }
+                while i < rangeEnd && isJSONDigit(text.character(at: i)) {
+                    i += 1
+                }
+                if i < rangeEnd && text.character(at: i) == 46 {
+                    i += 1
+                    while i < rangeEnd && isJSONDigit(text.character(at: i)) {
+                        i += 1
+                    }
+                }
+                if i < rangeEnd {
+                    let exp = text.character(at: i)
+                    if exp == 69 || exp == 101 {
+                        i += 1
+                        if i < rangeEnd {
+                            let sign = text.character(at: i)
+                            if sign == 43 || sign == 45 {
+                                i += 1
+                            }
+                        }
+                        while i < rangeEnd && isJSONDigit(text.character(at: i)) {
+                            i += 1
+                        }
+                    }
+                }
+                if i > start {
+                    out.append((NSRange(location: start, length: i - start), colors.number))
+                    continue
+                }
+            }
+            if isJSONLetter(ch) {
+                let start = i
+                i += 1
+                while i < rangeEnd && isJSONLetter(text.character(at: i)) {
+                    i += 1
+                }
+                let wordRange = NSRange(location: start, length: i - start)
+                if isJSONLiteral(text, range: wordRange, literal: [116, 114, 117, 101]) ||
+                    isJSONLiteral(text, range: wordRange, literal: [102, 97, 108, 115, 101]) ||
+                    isJSONLiteral(text, range: wordRange, literal: [110, 117, 108, 108]) {
+                    out.append((wordRange, colors.keyword))
+                }
+                continue
+            }
+            i += 1
+        }
+        return out
+    }
+    return nil
+}

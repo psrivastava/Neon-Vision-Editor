@@ -1,0 +1,2871 @@
+import SwiftUI
+import Foundation
+
+// MARK: - Sidebar Table of Contents
+
+struct SidebarView: View {
+    private enum TOCItemKind: String, Hashable {
+        case heading
+        case type
+        case function
+        case property
+        case comment
+        case content
+        case placeholder
+    }
+
+    private struct TOCItem: Identifiable, Hashable {
+        let id: String
+        let title: String
+        let line: Int?
+        let level: Int
+        let kind: TOCItemKind
+    }
+
+    let content: String
+    let language: String
+    let contentUTF16Length: Int?
+    let documentID: UUID?
+    let translucentBackgroundEnabled: Bool
+    let onItemSelected: (() -> Void)?
+    let onJumpToLine: ((Int) -> Void)?
+    var onToggleSidebar: (() -> Void)? = nil
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @State private var tocItems: [TOCItem] = [
+        TOCItem(id: "empty", title: "No content available", line: nil, level: 1, kind: .placeholder)
+    ]
+    @State private var tocRefreshTask: Task<Void, Never>?
+    @State private var selectedTOCItemID: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+#if os(macOS)
+            if let onToggleSidebar {
+                tocHeader(onToggleSidebar: onToggleSidebar)
+            }
+#endif
+            tocList
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous)
+                .fill(sidebarSurfaceFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous)
+                        .stroke(sidebarSurfaceStroke, lineWidth: 1.2)
+                )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous))
+        .padding(sidebarOuterPaddingInsets)
+        .onAppear {
+            scheduleTOCRefresh()
+        }
+        .onChange(of: content) { _, _ in
+            scheduleTOCRefresh()
+        }
+        .onChange(of: language) { _, _ in
+            scheduleTOCRefresh()
+        }
+        .onDisappear {
+            tocRefreshTask?.cancel()
+        }
+    }
+
+#if os(macOS)
+    private func tocHeader(onToggleSidebar: @escaping () -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text("Outline")
+                .font(.headline.weight(.semibold))
+            Spacer(minLength: 8)
+            // The toggle lives in the editor title row so it survives collapse.
+        }
+        .padding(.horizontal, 16)
+        // Clears the traffic lights, which float over this card's top-left
+        // corner now that the shell ignores the top safe area.
+        .padding(.top, 38)
+        .padding(.bottom, 4)
+    }
+#endif
+
+    private var tocList: some View {
+        List {
+            ForEach(tocItems) { item in
+                Button {
+                    selectedTOCItemID = item.id
+                    jump(to: item)
+                } label: {
+                    tocRow(for: item)
+                }
+                .buttonStyle(.plain)
+                .disabled(item.line == nil)
+                .listRowInsets(tocListRowInsets)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .accessibilityLabel(accessibilityLabel(for: item))
+                .accessibilityAddTraits(selectedTOCItemID == item.id ? [.isSelected] : [])
+                .macOverlayScrollerStyle(item.id == tocItems.first?.id)
+            }
+        }
+        .listStyle(platformListStyle)
+#if os(iOS)
+        .environment(\.defaultMinListRowHeight, isCompactTOCWidth ? 28 : 44)
+#endif
+        .scrollIndicators(.automatic)
+        .scrollContentBackground(.hidden)
+        .background(Color.clear)
+    }
+
+    private var sidebarSurfaceFill: AnyShapeStyle {
+        if translucentBackgroundEnabled {
+#if os(macOS)
+            return AnyShapeStyle(Color.clear)
+            #else
+            return AnyShapeStyle(.ultraThinMaterial)
+            #endif
+        }
+#if os(macOS)
+        // One elevation step off the editor surface so the card reads as a
+        // distinct pane against both the editor and the shell backdrop.
+        return AnyShapeStyle(ForkSurfaceStyle.panelCardFill(
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background,
+            isDark: colorScheme == .dark))
+#else
+        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
+#endif
+    }
+
+    private var sidebarSurfaceStroke: Color {
+        return colorScheme == .dark
+            ? Color.white.opacity(0.20)
+            : Color.black.opacity(0.14)
+    }
+
+    private var platformListStyle: some ListStyle {
+#if os(iOS)
+        PlainListStyle()
+#else
+        SidebarListStyle()
+#endif
+    }
+
+    @ViewBuilder
+    private func tocRow(for item: TOCItem) -> some View {
+        let isSelected = selectedTOCItemID == item.id
+        HStack(spacing: isCompactTOCWidth ? 6 : 8) {
+            RoundedRectangle(cornerRadius: 2, style: .continuous)
+                .fill(tocMarkerColor(for: item, isSelected: isSelected))
+                .frame(width: isCompactTOCWidth ? 2.5 : 3, height: item.line == nil ? 16 : tocMarkerHeight)
+
+            tocLeadingSymbol(for: item, isSelected: isSelected)
+
+            Text(item.title)
+                .font(tocTitleFont(for: item))
+                .foregroundStyle(isSelected ? Color.accentColor : Color.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+
+            Spacer(minLength: isCompactTOCWidth ? 6 : 8)
+
+            if let line = item.line {
+                Text("L\(line)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundStyle(isSelected ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.78))
+            }
+        }
+        .padding(.leading, CGFloat(max(0, min(item.level, 6) - 1)) * tocIndentWidth)
+        .padding(.vertical, tocRowVerticalPadding)
+        .padding(.horizontal, tocRowHorizontalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: tocRowCornerRadius, style: .continuous)
+                .fill(tocRowBackground(isSelected: isSelected))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: tocRowCornerRadius, style: .continuous)
+                .stroke(isSelected ? Color.accentColor.opacity(0.62) : Color.clear, lineWidth: 1)
+        )
+    }
+
+    private func tocRowBackground(isSelected: Bool) -> Color {
+#if os(macOS)
+        isSelected ? Color.accentColor.opacity(colorScheme == .dark ? 0.22 : 0.16) : Color.clear
+#else
+        isSelected ? Color.accentColor.opacity(colorScheme == .dark ? 0.26 : 0.20) : Color.clear
+#endif
+    }
+
+    private var tocRowCornerRadius: CGFloat {
+#if os(macOS)
+        6
+#else
+        12
+#endif
+    }
+
+    @ViewBuilder
+    private func tocLeadingSymbol(for item: TOCItem, isSelected: Bool) -> some View {
+        let color = isSelected ? Color.accentColor : tocMarkerColor(for: item, isSelected: false)
+        if item.kind == .heading, language == "markdown" {
+            EmptyView()
+        } else if item.kind == .heading {
+            Text(String(repeating: "#", count: max(1, min(item.level, 3))))
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(color)
+                .frame(width: 24, alignment: .leading)
+        } else {
+            Image(systemName: tocIconName(for: item.kind))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(color)
+                .frame(width: 18)
+        }
+    }
+
+    private func tocTitleFont(for item: TOCItem) -> Font {
+        if language == "markdown", item.kind == .heading {
+            switch item.level {
+            case 1:
+                return .system(size: 13, weight: .bold)
+            case 2:
+                return .system(size: 12.5, weight: .semibold)
+            case 3:
+                return .system(size: 12, weight: .medium)
+            default:
+                return .system(size: 12, weight: .regular)
+            }
+        }
+
+        switch item.level {
+        case 1:
+            return .system(size: 13, weight: .semibold)
+        case 2:
+            return .system(size: 12.5, weight: .medium)
+        default:
+            return .system(size: 12, weight: .regular)
+        }
+    }
+
+    private func tocMarkerColor(for item: TOCItem, isSelected: Bool) -> Color {
+        if isSelected {
+            return Color.accentColor
+        }
+        switch item.kind {
+        case .heading:
+            return Color.accentColor.opacity(0.70)
+        case .type:
+            return Color.purple.opacity(0.65)
+        case .function:
+            return Color.blue.opacity(0.62)
+        case .property:
+            return Color.orange.opacity(0.66)
+        case .comment:
+            return Color.green.opacity(0.60)
+        case .content:
+            return Color.secondary.opacity(0.45)
+        case .placeholder:
+            return Color.secondary.opacity(0.28)
+        }
+    }
+
+    private func tocIconName(for kind: TOCItemKind) -> String {
+        switch kind {
+        case .heading:
+            return "number"
+        case .type:
+            return "shippingbox"
+        case .function:
+            return "function"
+        case .property:
+            return "tag"
+        case .comment:
+            return "text.bubble"
+        case .content:
+            return "doc.text"
+        case .placeholder:
+            return "circle"
+        }
+    }
+
+    private func accessibilityLabel(for item: TOCItem) -> String {
+        if let line = item.line {
+            return "\(item.title), line \(line)"
+        }
+        return item.title
+    }
+
+    private var tocListRowInsets: EdgeInsets {
+#if os(iOS)
+        // Keep the compact row itself tight while separating adjacent entries
+        // by roughly 3 points to improve heading scanability.
+        let verticalInset: CGFloat = isCompactTOCWidth ? 1.5 : 1
+        return EdgeInsets(
+            top: verticalInset,
+            leading: isCompactTOCWidth ? 6 : 0,
+            bottom: verticalInset,
+            trailing: isCompactTOCWidth ? 6 : 0
+        )
+#else
+        return EdgeInsets(top: 3, leading: 0, bottom: 3, trailing: 0)
+#endif
+    }
+
+    private var tocRowVerticalPadding: CGFloat {
+#if os(iOS)
+        isCompactTOCWidth ? 2.5 : 6
+#else
+        4
+#endif
+    }
+
+    private var tocRowHorizontalPadding: CGFloat {
+#if os(iOS)
+        isCompactTOCWidth ? 7 : 10
+#else
+        10
+#endif
+    }
+
+    private var tocMarkerHeight: CGFloat {
+#if os(iOS)
+        isCompactTOCWidth ? 20 : 24
+#else
+        24
+#endif
+    }
+
+    private var tocIndentWidth: CGFloat {
+#if os(iOS)
+        isCompactTOCWidth ? 9 : 12
+#else
+        12
+#endif
+    }
+
+    private var isCompactTOCWidth: Bool {
+#if os(iOS)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private var sidebarOuterPaddingInsets: EdgeInsets {
+#if os(iOS)
+        // Match the project sidebar's iPad card inset on every edge so the
+        // TOC surface shares its height and boundary with the adjacent bar.
+        horizontalSizeClass == .regular
+            ? EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6)
+            : EdgeInsets(top: 0, leading: 10, bottom: 10, trailing: 10)
+#else
+        // Shell redesign: the window shell provides the 6pt backdrop gutters
+        // around each card, so the card itself is flush in its column.
+        EdgeInsets()
+#endif
+    }
+
+    private var sidebarCornerRadius: CGFloat {
+#if os(macOS)
+        12
+#else
+        20
+#endif
+    }
+
+    private func jump(to item: TOCItem) {
+        guard let lineOneBased = item.line, lineOneBased > 0 else { return }
+        if let onJumpToLine {
+            onJumpToLine(lineOneBased)
+            onItemSelected?()
+            return
+        }
+        DispatchQueue.main.async {
+            var userInfo: [String: Any] = [:]
+            if let documentID {
+                userInfo[EditorCommandUserInfo.documentID] = documentID.uuidString
+            }
+#if os(iOS)
+            userInfo[EditorCommandUserInfo.focusEditor] = false
+#endif
+#if os(macOS)
+            if let windowNumber = NSApp.keyWindow?.windowNumber {
+                userInfo[EditorCommandUserInfo.windowNumber] = windowNumber
+            }
+#endif
+            NotificationCenter.default.post(
+                name: .moveCursorToLine,
+                object: lineOneBased,
+                userInfo: userInfo
+            )
+            onItemSelected?()
+        }
+    }
+
+    private func scheduleTOCRefresh() {
+        tocRefreshTask?.cancel()
+        if let contentUTF16Length, contentUTF16Length >= Self.tocLargeContentUTF16Threshold {
+            tocItems = [Self.placeholderTOCItem(id: "large", title: "Large file detected: TOC disabled for performance")]
+            return
+        }
+        let snapshotContent = content
+        let snapshotLanguage = language
+        tocRefreshTask = Task(priority: .utility) {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            let generated = SidebarView.generateTableOfContents(content: snapshotContent, language: snapshotLanguage)
+            await MainActor.run {
+                tocItems = generated
+            }
+        }
+    }
+
+    // Naive line-scanning TOC: looks for language-specific declarations or headers.
+    private static func generateTableOfContents(content: String, language: String) -> [TOCItem] {
+        guard !content.isEmpty else {
+            return [placeholderTOCItem(id: "empty", title: "No content available")]
+        }
+        if (content as NSString).length >= tocLargeContentUTF16Threshold {
+            return [placeholderTOCItem(id: "large", title: "Large file detected: TOC disabled for performance")]
+        }
+        let lines = content.components(separatedBy: .newlines)
+        if lines.count >= tocLargeLineCountThreshold {
+            return [placeholderTOCItem(id: "large-lines", title: "Large file detected: TOC disabled for performance")]
+        }
+        var toc: [TOCItem] = []
+
+        switch language {
+        case "swift":
+            toc = lines.enumerated().compactMap { index, line in
+                swiftTOCItem(for: line, index: index, language: language)
+            }
+        case "python":
+            toc = lines.enumerated().compactMap { index, line in
+                pythonTOCItem(for: line, index: index, language: language)
+            }
+        case "javascript":
+            toc = lines.enumerated().compactMap { index, line in
+                scriptTOCItem(for: line, index: index, language: language, idPrefix: "js")
+            }
+        case "java":
+            toc = lines.enumerated().compactMap { index, line in
+                jvmTOCItem(for: line, index: index, language: language, idPrefix: "java")
+            }
+        case "kotlin":
+            toc = lines.enumerated().compactMap { index, line in
+                kotlinTOCItem(for: line, index: index, language: language)
+            }
+        case "go":
+            toc = lines.enumerated().compactMap { index, line in
+                goTOCItem(for: line, index: index, language: language)
+            }
+        case "ruby":
+            toc = lines.enumerated().compactMap { index, line in
+                rubyTOCItem(for: line, index: index, language: language)
+            }
+        case "rust":
+            toc = lines.enumerated().compactMap { index, line in
+                rustTOCItem(for: line, index: index, language: language)
+            }
+        case "typescript":
+            toc = lines.enumerated().compactMap { index, line in
+                scriptTOCItem(for: line, index: index, language: language, idPrefix: "ts")
+            }
+        case "php":
+            toc = lines.enumerated().compactMap { index, line in
+                phpTOCItem(for: line, index: index, language: language)
+            }
+        case "objective-c":
+            toc = lines.enumerated().compactMap { index, line in
+                objectiveCTOCItem(for: line, index: index, language: language)
+            }
+        case "c", "cpp":
+            toc = lines.enumerated().compactMap { index, line in
+                cFamilyTOCItem(for: line, index: index, language: language)
+            }
+        case "bash", "zsh":
+            toc = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                // Simple function detection: name() { or function name { or name()\n{
+                if trimmed.range(of: "^([A-Za-z_][A-Za-z0-9_]*)\\s*\\(\\)\\s*\\{", options: .regularExpression) != nil ||
+                   trimmed.range(of: "^function\\s+[A-Za-z_][A-Za-z0-9_]*\\s*\\{", options: .regularExpression) != nil {
+                    return makeTOCItem(id: "sh-\(index)", title: trimmed, line: index + 1, language: language)
+                }
+                return nil
+            }
+        case "powershell":
+            toc = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.range(of: #"^function\s+[A-Za-z_][A-Za-z0-9_\-]*\s*\{"#, options: .regularExpression) != nil ||
+                   trimmed.hasPrefix("param(") {
+                    return makeTOCItem(id: "ps-\(index)", title: trimmed, line: index + 1, language: language)
+                }
+                return nil
+            }
+        case "html", "css", "json", "markdown", "csv":
+            toc = lines.enumerated().compactMap { index, line in
+                markupTOCItem(for: line, previousLine: index > 0 ? lines[index - 1] : nil, index: index, language: language)
+            }
+        case "csharp":
+            toc = lines.enumerated().compactMap { index, line in
+                csharpTOCItem(for: line, index: index, language: language)
+            }
+        default:
+            // For unknown or standard/plain, show first non-empty lines as headings
+            toc = lines.enumerated().compactMap { index, line in
+                let t = line.trimmingCharacters(in: .whitespaces)
+                if !t.isEmpty && t.count < 120 {
+                    return makeTOCItem(id: "default-\(index)", title: t, line: index + 1, language: language)
+                }
+                return nil
+            }
+        }
+
+        return toc.isEmpty
+            ? [placeholderTOCItem(id: "none", title: "No headers found")]
+            : toc
+    }
+
+    private static func swiftTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let leadingSpaces = line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { total, character in
+            total + (character == "\t" ? 4 : 1)
+        }
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("//MARK:") {
+            return makeTOCItem(id: "swift-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        guard leadingSpaces <= 8 else { return nil }
+
+        let declarationPrefixes = [
+            "struct ", "class ", "enum ", "actor ", "protocol ", "extension ",
+            "func ", "var ", "let ", "typealias ", "init(", "deinit"
+        ]
+        if declarationPrefixes.contains(where: { trimmed.hasPrefix($0) }) {
+            if swiftLineLooksLikeProperty(trimmed), leadingSpaces > 4 {
+                return nil
+            }
+            return makeTOCItem(id: "swift-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if leadingSpaces <= 4,
+           trimmed.hasPrefix("@"),
+           trimmed.contains(" var ") || trimmed.contains(" let ") ||
+           trimmed.contains(" func ") || trimmed.contains(" struct ") ||
+           trimmed.contains(" class ") || trimmed.contains(" enum ") {
+            return makeTOCItem(id: "swift-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let modifiers = [
+            "private", "fileprivate", "internal", "public", "open",
+            "static", "class", "final", "nonisolated", "override", "mutating",
+            "nonmutating", "lazy", "weak", "unowned", "@MainActor"
+        ]
+        let words = trimmed.split(separator: " ").map(String.init)
+        guard words.count >= 2 else { return nil }
+        var tokenIndex = 0
+        while tokenIndex < words.count {
+            let token = words[tokenIndex].trimmingCharacters(in: CharacterSet(charactersIn: "(),"))
+            if modifiers.contains(token) || token.hasPrefix("@") {
+                tokenIndex += 1
+            } else {
+                break
+            }
+        }
+        guard tokenIndex < words.count else { return nil }
+        let declarationToken = words[tokenIndex].trimmingCharacters(in: CharacterSet(charactersIn: "(),"))
+        if ["struct", "class", "enum", "actor", "protocol", "extension", "func", "var", "let", "typealias", "init", "deinit"].contains(declarationToken) {
+            if ["var", "let"].contains(declarationToken), leadingSpaces > 4 {
+                return nil
+            }
+            return makeTOCItem(id: "swift-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func pythonTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("# MARK:") || trimmed.hasPrefix("# region") {
+            return makeTOCItem(id: "python-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if trimmed.range(of: #"^(async\s+)?def\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#, options: .regularExpression) != nil ||
+           trimmed.range(of: #"^class\s+[A-Za-z_][A-Za-z0-9_]*(\(|:)"#, options: .regularExpression) != nil {
+            return makeTOCItem(id: "python-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func scriptTOCItem(for line: String, index: Int, language: String, idPrefix: String) -> TOCItem? {
+        let leadingSpaces = leadingIndentSpaces(in: line)
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "\(idPrefix)-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(export\s+default\s+|export\s+)?(abstract\s+)?class\s+[A-Za-z_$][A-Za-z0-9_$]*"#,
+            #"^(export\s+)?(interface|type|enum|namespace)\s+[A-Za-z_$][A-Za-z0-9_$]*"#,
+            #"^(export\s+)?(async\s+)?function\s+\*?\s*[A-Za-z_$][A-Za-z0-9_$]*\s*\("#,
+            #"^(export\s+)?(const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(async\s*)?(\([^=]*\)|[A-Za-z_$][A-Za-z0-9_$]*)\s*=>"#,
+            #"^(export\s+)?(const|let|var)\s+[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*(async\s+)?function"#,
+            #"^(public|private|protected|static|async|get|set)\s+.*\("#
+        ]
+        if leadingSpaces <= 8, patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "\(idPrefix)-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func jvmTOCItem(for line: String, index: Int, language: String, idPrefix: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "\(idPrefix)-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(public|protected|private|abstract|final|sealed|static|\s)*\s*(class|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*"#,
+            #"^(public|protected|private|static|final|synchronized|native|abstract|\s)+[\w<>\[\], ?]+\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#
+        ]
+        if patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "\(idPrefix)-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func kotlinTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "kotlin-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(public|private|protected|internal|data|sealed|open|abstract|enum|annotation|\s)*\s*(class|object|interface|enum class)\s+[A-Za-z_][A-Za-z0-9_]*"#,
+            #"^(public|private|protected|internal|override|suspend|inline|operator|\s)*\s*fun\s+[\w.<>, ]+"#,
+            #"^(public|private|protected|internal|override|lateinit|const|\s)*\s*(val|var)\s+[A-Za-z_][A-Za-z0-9_]*"#
+        ]
+        if leadingIndentSpaces(in: line) <= 8, patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "kotlin-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func goTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "go-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if trimmed.range(of: #"^func\s+(\([^)]+\)\s*)?[A-Za-z_][A-Za-z0-9_]*\s*\("#, options: .regularExpression) != nil ||
+           trimmed.range(of: #"^type\s+[A-Za-z_][A-Za-z0-9_]*\s+(struct|interface|func|\w+)"#, options: .regularExpression) != nil ||
+           trimmed.range(of: #"^(const|var)\s+(\(|[A-Za-z_][A-Za-z0-9_]*)"#, options: .regularExpression) != nil {
+            return makeTOCItem(id: "go-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func rubyTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("# MARK:") || trimmed.hasPrefix("# region") {
+            return makeTOCItem(id: "ruby-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if trimmed.range(of: #"^(def|class|module)\s+(self\.)?[A-Za-z_:][A-Za-z0-9_:!?=]*"#, options: .regularExpression) != nil {
+            return makeTOCItem(id: "ruby-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func rustTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "rust-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(pub(\([^)]*\))?\s+)?(async\s+)?fn\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
+            #"^(pub(\([^)]*\))?\s+)?(struct|enum|trait|impl|type|mod)\s+"#
+        ]
+        if patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "rust-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func phpTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "php-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(abstract\s+|final\s+)?(class|interface|trait|enum)\s+[A-Za-z_][A-Za-z0-9_]*"#,
+            #"^(public|protected|private|static|final|abstract|\s)*function\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#
+        ]
+        if patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "php-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func objectiveCTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("#pragma mark") || trimmed.hasPrefix("// MARK:") {
+            return makeTOCItem(id: "objc-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if trimmed.hasPrefix("@interface") || trimmed.hasPrefix("@implementation") ||
+           trimmed.range(of: #"^[+-]\s*\([^)]*\)\s*[A-Za-z_][A-Za-z0-9_:]*"#, options: .regularExpression) != nil {
+            return makeTOCItem(id: "objc-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func cFamilyTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("#pragma mark") || trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("// region") {
+            return makeTOCItem(id: "c-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(class|struct|enum|namespace|template)\b"#,
+            #"^([A-Za-z_][\w:<>\*&\s]+)\s+[A-Za-z_~][A-Za-z0-9_:~]*\s*\([^;]*\)\s*(const)?\s*(\{|$)"#
+        ]
+        if patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "c-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func csharpTOCItem(for line: String, index: Int, language: String) -> TOCItem? {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("// MARK:") || trimmed.hasPrefix("#region") {
+            return makeTOCItem(id: "cs-mark-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        let patterns = [
+            #"^(public|private|protected|internal|abstract|sealed|static|partial|\s)*\s*(class|struct|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*"#,
+            #"^(public|private|protected|internal|static|virtual|override|async|sealed|abstract|partial|\s)+[\w<>\[\], ?]+\s+[A-Za-z_][A-Za-z0-9_]*\s*\("#,
+            #"^(public|private|protected|internal|static|readonly|const|\s)+[\w<>\[\], ?]+\s+[A-Za-z_][A-Za-z0-9_]*\s*(=|\{)"#
+        ]
+        if leadingIndentSpaces(in: line) <= 8, patterns.contains(where: { trimmed.range(of: $0, options: .regularExpression) != nil }) {
+            return makeTOCItem(id: "cs-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        return nil
+    }
+
+    private static func markupTOCItem(for line: String, previousLine: String?, index: Int, language: String) -> TOCItem? {
+        let trimmed = line
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\u{FEFF}"))
+        guard !trimmed.isEmpty else { return nil }
+        if language == "markdown" {
+            let headingLevel = trimmed.prefix { $0 == "#" }.count
+            if (1...6).contains(headingLevel),
+               !trimmed.dropFirst(headingLevel).trimmingCharacters(in: .whitespaces).isEmpty {
+                return makeTOCItem(id: "markdown-\(index)", title: trimmed, line: index + 1, language: language)
+            }
+            if trimmed.range(of: #"^(-{3,}|={3,})$"#, options: .regularExpression) != nil,
+               let previous = previousLine?.trimmingCharacters(in: .whitespaces),
+               !previous.isEmpty,
+               !previous.hasPrefix("#"),
+               !previous.hasPrefix("```") {
+                let marker = trimmed.first == "=" ? "# " : "## "
+                return makeTOCItem(id: "markdown-setext-\(index)", title: marker + previous, line: index, language: language)
+            }
+            return nil
+        }
+        if language == "html",
+           trimmed.range(of: #"<h[1-6][^>]*>.*</h[1-6]>"#, options: [.regularExpression, .caseInsensitive]) != nil {
+            return makeTOCItem(id: "html-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if language == "css",
+           leadingIndentSpaces(in: line) == 0,
+           trimmed.hasSuffix("{"),
+           !trimmed.hasPrefix("@media") {
+            return makeTOCItem(id: "css-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if language == "json",
+           leadingIndentSpaces(in: line) <= 4,
+           trimmed.range(of: #"^"[^"]+"\s*:\s*(\{|\[)"#, options: .regularExpression) != nil {
+            return makeTOCItem(id: "json-\(index)", title: trimmed, line: index + 1, language: language)
+        }
+        if language == "csv", index == 0 {
+            return makeTOCItem(id: "csv-header", title: "Header row", line: 1, language: language)
+        }
+        return nil
+    }
+
+    static func tocItemsForTesting(content: String, language: String) -> [(line: Int?, title: String)] {
+        generateTableOfContents(content: content, language: language).map { ($0.line, $0.title) }
+    }
+
+    private static func leadingIndentSpaces(in line: String) -> Int {
+        line.prefix { $0 == " " || $0 == "\t" }.reduce(0) { total, character in
+            total + (character == "\t" ? 4 : 1)
+        }
+    }
+
+    private static func swiftLineLooksLikeProperty(_ trimmed: String) -> Bool {
+        trimmed.hasPrefix("var ") || trimmed.hasPrefix("let ")
+    }
+
+    private static func placeholderTOCItem(id: String, title: String) -> TOCItem {
+        TOCItem(id: id, title: title, line: nil, level: 1, kind: .placeholder)
+    }
+
+    private static let tocLargeContentUTF16Threshold = 400_000
+    private static let tocLargeLineCountThreshold = 10_000
+
+    private static func makeTOCItem(id: String, title: String, line: Int, language: String) -> TOCItem {
+        let metadata = tocMetadata(for: title, language: language)
+        return TOCItem(
+            id: id,
+            title: metadata.title,
+            line: line,
+            level: metadata.level,
+            kind: metadata.kind
+        )
+    }
+
+    private static func tocMetadata(for rawTitle: String, language: String) -> (title: String, level: Int, kind: TOCItemKind) {
+        let title = rawTitle.trimmingCharacters(in: .whitespaces)
+        if language == "markdown", title.hasPrefix("#") {
+            let level = min(max(title.prefix { $0 == "#" }.count, 1), 6)
+            let displayTitle = title.dropFirst(level).trimmingCharacters(in: .whitespaces)
+            return (displayTitle.isEmpty ? title : displayTitle, level, .heading)
+        }
+        if title.hasPrefix("<h"),
+           let levelCharacter = title.dropFirst(2).first,
+           let level = Int(String(levelCharacter)) {
+            return (title, min(max(level, 1), 6), .heading)
+        }
+        if title.hasPrefix("// MARK:") || title.hasPrefix("//MARK:") || title.hasPrefix("# MARK:") {
+            let displayTitle = title.replacingOccurrences(of: "// MARK:", with: "")
+                .replacingOccurrences(of: "//MARK:", with: "")
+                .replacingOccurrences(of: "# MARK:", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return (displayTitle.isEmpty ? title : displayTitle, 1, .comment)
+        }
+        if title.hasPrefix("class ") || title.hasPrefix("struct ") || title.hasPrefix("enum ") ||
+           title.hasPrefix("actor ") || title.hasPrefix("protocol ") || title.hasPrefix("extension ") ||
+           title.hasPrefix("interface ") || title.hasPrefix("trait ") || title.hasPrefix("@interface") ||
+           title.hasPrefix("@implementation") || title.hasPrefix("object ") || title.hasPrefix("type ") ||
+           title.hasPrefix("impl ") || title.hasPrefix("module ") || title.contains(" class ") ||
+           title.contains(" struct ") || title.contains(" enum ") || title.contains(" actor ") ||
+           title.contains(" protocol ") || title.contains(" extension ") {
+            return (title, 1, .type)
+        }
+        if title.hasPrefix("let ") || title.hasPrefix("var ") || title.hasPrefix("param(") ||
+           title.contains(" let ") || title.contains(" var ") {
+            return (title, 2, .property)
+        }
+        if title.contains("(") || title.hasPrefix("func ") || title.hasPrefix("def ") ||
+           title.hasPrefix("fn ") || title.hasPrefix("fun ") || title.hasPrefix("function ") ||
+           title.contains(" func ") {
+            return (title, 2, .function)
+        }
+        return (title, 1, .content)
+    }
+}
+struct ProjectStructureSidebarView: View {
+    private enum SidebarDensity: String, CaseIterable, Identifiable {
+        case compact
+        case comfortable
+
+        var id: String { rawValue }
+    }
+
+    private enum SidebarFileFilter: String, CaseIterable, Identifiable {
+        case all
+        case modified
+        case images
+        case png
+        case pdf
+        case markdown
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all: return NSLocalizedString("All Files", comment: "Sidebar file filter")
+            case .modified: return NSLocalizedString("Modified", comment: "Sidebar file filter")
+            case .images: return NSLocalizedString("Images", comment: "Sidebar file filter")
+            case .png: return "PNG"
+            case .pdf: return "PDF"
+            case .markdown: return NSLocalizedString("Markdown", comment: "Sidebar file filter")
+            }
+        }
+    }
+
+    private enum SidebarSortOrder: String, CaseIterable, Identifiable {
+        case name
+        case type
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .name: return NSLocalizedString("Name", comment: "Sidebar sort order")
+            case .type: return NSLocalizedString("File Type", comment: "Sidebar sort order")
+            }
+        }
+    }
+
+    private enum SidebarGrouping: String, CaseIterable, Identifiable {
+        case none
+        case type
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .none: return NSLocalizedString("No Grouping", comment: "Sidebar grouping")
+            case .type: return NSLocalizedString("Group by Type", comment: "Sidebar grouping")
+            }
+        }
+    }
+
+    private enum SidebarDisclosureSymbolStyle: String, CaseIterable, Identifiable {
+        case chevron
+        case triangle
+        case caret
+        case plusMinus
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .chevron: return NSLocalizedString("Chevron", comment: "Sidebar disclosure symbol")
+            case .triangle: return NSLocalizedString("Triangle", comment: "Sidebar disclosure symbol")
+            case .caret: return NSLocalizedString("Caret", comment: "Sidebar disclosure symbol")
+            case .plusMinus: return NSLocalizedString("Plus/Minus", comment: "Sidebar disclosure symbol")
+            }
+        }
+
+        func symbolName(isExpanded: Bool) -> String {
+            switch self {
+            case .chevron:
+                return isExpanded ? "chevron.down" : "chevron.forward"
+            case .triangle:
+                return isExpanded ? "arrowtriangle.down.fill" : "arrowtriangle.right.fill"
+            case .caret:
+                return isExpanded ? "chevron.compact.down" : "chevron.compact.right"
+            case .plusMinus:
+                return isExpanded ? "minus.square" : "plus.square"
+            }
+        }
+    }
+
+    private struct FileIconStyle {
+        let symbol: String
+        let color: Color
+    }
+
+    let rootFolderURL: URL?
+    let nodes: [ProjectTreeNode]
+    let selectedFileURL: URL?
+    let showSupportedFilesOnly: Bool
+    let showHiddenFiles: Bool
+    let ignoredFolderNamesRaw: Binding<String>
+    let translucentBackgroundEnabled: Bool
+    let boundaryEdge: HorizontalEdge?
+    let onOpenFile: () -> Void
+    let onOpenFolder: () -> Void
+    let onCloseProjectFolder: () -> Void
+    let onCloseProjectFolderAndTabs: () -> Void
+    let onOpenProjectFolder: (URL) -> Void
+    let onToggleSupportedFilesOnly: (Bool) -> Void
+    let onToggleHiddenFiles: (Bool) -> Void
+    let onOpenProjectFile: (URL) -> Void
+    let onRefreshTree: () -> Void
+    let onRevealInFinder: (URL) -> Void
+    let onCopyPath: (URL) -> Void
+    let onCreateProjectFile: (URL?) -> Void
+    let onCreateProjectFolder: (URL?) -> Void
+    let onCreatePythonProject: () -> Void
+    let onRenameProjectItem: (URL) -> Void
+    let onDuplicateProjectItem: (URL) -> Void
+    let onDeleteProjectItem: (URL) -> Void
+    let findInFilesQuery: Binding<String>
+    let findInFilesCaseSensitive: Binding<Bool>
+    let findInFilesReplaceQuery: Binding<String>
+    let findInFilesSelectedMatchIDs: Binding<Set<String>>
+    let findInFilesResults: [FindInFilesMatch]
+    let findInFilesStatusMessage: String
+    let findInFilesSourceMessage: String
+    let isApplyingFindInFilesReplace: Bool
+    let onFindInFilesSearch: () -> Void
+    let onFindInFilesClear: () -> Void
+    let onToggleFindInFilesSelection: (String) -> Void
+    let onSelectAllFindInFilesMatches: () -> Void
+    let onSelectNoFindInFilesMatches: () -> Void
+    let onApplyFindInFilesReplace: () -> Void
+    let onCancelFindInFilesReplace: () -> Void
+    let onSelectFindInFilesMatch: (FindInFilesMatch) -> Void
+    var keepsFindInFilesOpenOnSelect: Bool = true
+    let activateFindInFilesToken: Int
+    let activateTerminalToken: Int
+    let compareDiffPresentation: DocumentDiffPresentation?
+    let onCloseCompareDiff: () -> Void
+    let revealURL: URL?
+    let gitFileStatusMap: [String: GitFileStatus]
+    let embeddedHeader: AnyView?
+    var onLoadDirectory: ((URL, @escaping @MainActor @Sendable () -> Void) -> Void)? = nil
+    var onExpandAllDirectories: ((@escaping @MainActor @Sendable () -> Void) -> Void)? = nil
+    /// Sync-to-current-file. If the active file is already inside the project
+    /// root, the parent reveals it. If not, the parent opens the file's
+    /// containing folder as the project root and reveals the file.
+    var onSyncToCurrentFile: (() -> Void)? = nil
+    @State private var expandedDirectories: Set<String> = []
+    @EditorWindowStorage("ProjectSidebarExpandedDirectories.v1") private var persistedExpansionState: String = ""
+    @State private var persistedExpansionByRoot: [String: [String]] = [:]
+    @State private var expansionPersistenceTask: Task<Void, Never>?
+    @State private var loadingDirectoryIDs: Set<String> = []
+    @State private var isExpandingAllDirectories = false
+    @State private var expandAllContinuationTask: Task<Void, Never>?
+    @State private var hoveredNodeID: String? = nil
+    @State private var fileIconStyleCache: [String: FileIconStyle] = [:]
+    @State private var recentProjectFolders: [RecentProjectFoldersStore.Item] = []
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @AppStorage("SettingsProjectSidebarDensity") private var sidebarDensityRaw: String = SidebarDensity.compact.rawValue
+    @AppStorage("SettingsProjectSidebarFontSize") private var sidebarFontSize: Double = 13
+    @AppStorage("SettingsProjectSidebarAutoCollapseDeep") private var autoCollapseDeepFolders: Bool = true
+    @AppStorage("SettingsProjectSidebarDisclosureSymbolStyle") private var disclosureSymbolStyleRaw: String = SidebarDisclosureSymbolStyle.chevron.rawValue
+    @AppStorage("SettingsProjectSidebarSortOrder") private var sidebarSortOrderRaw: String = SidebarSortOrder.name.rawValue
+    @AppStorage("SettingsProjectSidebarGrouping") private var sidebarGroupingRaw: String = SidebarGrouping.none.rawValue
+
+    @State private var activeTab: ProjectSidebarTab = .files
+    @State private var fileFilter: SidebarFileFilter = .all
+    @State private var pinchStartSidebarFontSize: Double?
+#if os(macOS) && !APP_STORE_BUILD
+    @StateObject private var terminalSession = IntegratedTerminalSession()
+#endif
+
+    enum ProjectSidebarTab: String {
+        case files
+        case search
+        case git
+        case diff
+#if os(macOS) && !APP_STORE_BUILD
+        case terminal
+#endif
+    }
+
+    /// Previously-active tab for the two-tone pill treatment (upstream parity):
+    /// current tab filled accent, previous tab muted accent, others plain.
+    @State private var previousTab: ProjectSidebarTab? = nil
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let embeddedHeader {
+                embeddedHeader
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                tabBar
+                selectedTabContent
+            }
+            .padding(sidebarOuterPadding)
+        }
+        .background(sidebarContainerShape.fill(sidebarSurfaceFill))
+        .overlay(sidebarContainerBorderOverlay)
+        .clipShape(sidebarContainerShape)
+        .padding(sidebarCardOuterPadding)
+        .onAppear {
+            refreshFileIconStyleCache()
+            recentProjectFolders = RecentProjectFoldersStore.items(limit: 5)
+            restorePersistedExpansionState()
+            revealTargetIfNeeded()
+            loadExpandedUnloadedDirectories()
+#if os(macOS) && !APP_STORE_BUILD
+            if activateTerminalToken != 0 {
+                activeTab = .terminal
+            } else if activateFindInFilesToken != 0 {
+                activeTab = .search
+            } else if compareDiffPresentation != nil {
+                activeTab = .diff
+            }
+#else
+            if activateFindInFilesToken != 0 {
+                activeTab = .search
+            } else if compareDiffPresentation != nil {
+                activeTab = .diff
+            }
+#endif
+        }
+        .onChange(of: revealPath) { _, _ in revealTargetIfNeeded() }
+        .onChange(of: rootFolderURL?.standardizedFileURL.path) { _, _ in
+            restorePersistedExpansionState()
+            loadExpandedUnloadedDirectories()
+        }
+        .onChange(of: nodes.count) { _, _ in
+            refreshFileIconStyleCache()
+            revealTargetIfNeeded()
+            loadExpandedUnloadedDirectories()
+        }
+        .onChange(of: activateFindInFilesToken) { _, _ in
+            activeTab = .search
+        }
+#if os(macOS) && !APP_STORE_BUILD
+        .onChange(of: activateTerminalToken) { _, _ in
+            activeTab = .terminal
+        }
+#endif
+        .onChange(of: compareDiffPresentation?.id) { _, newValue in
+            if newValue != nil {
+                activeTab = .diff
+            } else if activeTab == .diff {
+                activeTab = .files
+            }
+        }
+        .onDisappear {
+            expansionPersistenceTask?.cancel()
+            persistExpansionStateNow()
+        }
+#if os(macOS)
+        .overlay(alignment: boundaryEdge == .leading ? .leading : .trailing) {
+            EmptyView()
+        }
+#endif
+    }
+
+    @ViewBuilder
+    private var selectedTabContent: some View {
+        switch activeTab {
+        case .files:
+            filesContent
+        case .search:
+            findInFilesContent
+        case .git:
+            gitContent
+        case .diff:
+            compareDiffContent
+#if os(macOS) && !APP_STORE_BUILD
+        case .terminal:
+            IntegratedTerminalContent(
+                rootFolderURL: rootFolderURL,
+                session: terminalSession,
+                translucentBackgroundEnabled: translucentBackgroundEnabled,
+                selectedFileURL: selectedFileURL
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+#endif
+        }
+    }
+
+    /// Compact Git-changes list: pulls directly from the status map the parent
+    /// already supplies; clicking opens the file in the editor.
+    private var gitContent: some View {
+        let entries = gitFileStatusMap
+            .sorted { lhs, rhs in lhs.key.localizedCaseInsensitiveCompare(rhs.key) == .orderedAscending }
+        return Group {
+            if entries.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 28, weight: .light))
+                        .foregroundStyle(.secondary)
+                    Text("No local changes")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(entries, id: \.key) { path, status in
+                            gitChangeRow(path: path, status: status)
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private func gitChangeRow(path: String, status: GitFileStatus) -> some View {
+        let url = URL(fileURLWithPath: path)
+        let display = url.lastPathComponent
+        let folder = (url.deletingLastPathComponent().path as NSString).abbreviatingWithTildeInPath
+        Button {
+            onOpenProjectFile(url)
+        } label: {
+            HStack(spacing: 6) {
+                Text(gitStatusMarker(status))
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(gitStatusTint(status))
+                    .frame(width: 14, alignment: .leading)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(display)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                    Text(folder)
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(path)
+    }
+
+    private func gitStatusMarker(_ status: GitFileStatus) -> String {
+        switch status {
+        case .added: return "A"
+        case .modified: return "M"
+        case .deleted: return "D"
+        case .renamed: return "R"
+        case .copied: return "C"
+        case .untracked: return "U"
+        case .conflicted: return "!"
+        case .clean: return " "
+        }
+    }
+
+    private func gitStatusTint(_ status: GitFileStatus) -> Color {
+        switch status {
+        case .added, .untracked: return .green
+        case .modified: return .orange
+        case .deleted: return .red
+        case .renamed, .copied: return .blue
+        case .conflicted: return .pink
+        case .clean: return .secondary
+        }
+    }
+
+    private var tabBar: some View {
+        HStack(spacing: 0) {
+            tabButton(title: "Files", icon: "folder", tab: .files)
+            tabButton(title: "Search", icon: "text.magnifyingglass", tab: .search)
+            tabButton(title: "Git", icon: "arrow.triangle.branch", tab: .git)
+            if compareDiffPresentation != nil {
+                tabButton(title: "Diff", icon: "rectangle.split.2x1", tab: .diff)
+            }
+#if os(macOS) && !APP_STORE_BUILD
+            tabButton(title: "Terminal", icon: "terminal", tab: .terminal)
+#endif
+        }
+        .padding(3)
+        .background(sidebarTabRailFill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(sidebarSurfaceStroke.opacity(0.72), lineWidth: 0.75)
+        )
+        .padding(.horizontal, headerHorizontalPadding)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private func tabButton(title: String, icon: String, tab: ProjectSidebarTab) -> some View {
+        let isSelected = activeTab == tab
+        let isPrevious = !isSelected && previousTab == tab
+        return Button {
+            if activeTab != tab {
+                previousTab = activeTab
+                activeTab = tab
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .medium))
+                if !isCompactWidth || isSelected {
+                    Text(title)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.78)
+                }
+            }
+            .font((isCompactWidth ? Font.caption : Font.subheadline).weight(isSelected ? .semibold : .regular))
+            .foregroundStyle(isSelected ? Color.accentColor
+                             : isPrevious ? Color.accentColor.opacity(0.75)
+                             : Color.secondary)
+            .frame(maxWidth: .infinity, minHeight: 36)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .fill(isSelected ? Color.accentColor.opacity(translucentBackgroundEnabled ? 0.16 : 0.11)
+                      : isPrevious ? Color.accentColor.opacity(0.055)
+                      : Color.clear)
+        )
+        .help(NSLocalizedString(title, comment: "Project sidebar tab help"))
+        .accessibilityLabel(NSLocalizedString(title, comment: "Project sidebar tab accessibility label"))
+        .accessibilityAddTraits(isSelected ? [.isSelected] : [])
+    }
+
+    private var sidebarTabRailFill: AnyShapeStyle {
+        if translucentBackgroundEnabled {
+#if os(macOS)
+            return AnyShapeStyle(Color.clear)
+#else
+            return AnyShapeStyle(.thinMaterial)
+#endif
+        }
+        return AnyShapeStyle(colorScheme == .dark ? Color.white.opacity(0.06) : Color.black.opacity(0.045))
+    }
+
+    private var filesContent: some View {
+        let visibleNodes = filteredNodes
+        return VStack(alignment: .leading, spacing: 0) {
+            if showsSidebarActionsRow {
+                VStack(alignment: .leading, spacing: isCompactDensity ? 6 : 8) {
+                    HStack(spacing: isCompactDensity ? 8 : 10) {
+                        HStack(spacing: 2) {
+                        Button(action: onOpenFolder) {
+                            sidebarActionIcon("folder")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(NSLocalizedString("Open Folder…", comment: "Project sidebar open folder action"))
+                        .accessibilityLabel(NSLocalizedString("Open folder", comment: "Project sidebar open folder accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Select a project folder to show in the sidebar", comment: "Project sidebar open folder accessibility hint"))
+
+                        if !recentProjectFolders.isEmpty {
+                            Menu {
+                                ForEach(recentProjectFolders) { item in
+                                    Button {
+                                        onOpenProjectFolder(item.url)
+                                    } label: {
+                                        Label(item.title, systemImage: "folder")
+                                    }
+                                    .help(item.subtitle)
+                                }
+                            } label: {
+                                sidebarActionIcon("clock.arrow.circlepath")
+                            }
+                            .buttonStyle(.borderless)
+                            .help(NSLocalizedString("Recent Project Folders", comment: "Project sidebar recent folders help"))
+                            .accessibilityLabel(NSLocalizedString("Recent project folders", comment: "Project sidebar recent folders accessibility label"))
+                        }
+
+                        Button(action: onOpenFile) {
+                            sidebarActionIcon("doc")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(NSLocalizedString("Open File…", comment: "Project sidebar open file action"))
+                        .accessibilityLabel(NSLocalizedString("Open file", comment: "Project sidebar open file accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Opens a file from disk", comment: "Project sidebar open file accessibility hint"))
+
+                        // Sync-to-current-file: if the file is inside the project
+                        // root, reveal it; otherwise the parent opens the file's
+                        // containing folder as the new root, then reveals the file.
+                        if onSyncToCurrentFile != nil {
+                            Button(action: { onSyncToCurrentFile?() }) {
+                                sidebarActionIcon("arrow.left.arrow.right")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(selectedFileURL == nil)
+                            .opacity(selectedFileURL == nil ? 0.35 : 1)
+                            .help(NSLocalizedString("Sync with Current File", comment: "Project sidebar sync to current file"))
+                            .accessibilityLabel(NSLocalizedString("Sync with current file", comment: "Project sidebar sync accessibility label"))
+                        }
+
+                        Menu {
+                            Button {
+                                onCreateProjectFile(nil)
+                            } label: {
+                                Label(NSLocalizedString("New File", comment: "Project sidebar create file action"), systemImage: "doc.badge.plus")
+                            }
+
+                            Button {
+                                onCreateProjectFolder(nil)
+                            } label: {
+                                Label(NSLocalizedString("New Folder", comment: "Project sidebar create folder action"), systemImage: "folder.badge.plus")
+                            }
+#if os(macOS) && !APP_STORE_BUILD
+                            Button {
+                                onCreatePythonProject()
+                            } label: {
+                                Label("New Python Project…", systemImage: "terminal")
+                            }
+#endif
+                        } label: {
+                            sidebarActionIcon("plus", isPrimary: true)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(NSLocalizedString("Create in Project Root", comment: "Project sidebar create action"))
+                        .accessibilityLabel(NSLocalizedString("Create project item", comment: "Project sidebar create accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Creates a new file or folder in the project root", comment: "Project sidebar create accessibility hint"))
+                        }
+                        .padding(2)
+                        .background(Color.secondary.opacity(0.07), in: Capsule(style: .continuous))
+
+                        Spacer(minLength: 0)
+
+                        HStack(spacing: 2) {
+                        Button(action: onRefreshTree) {
+                            sidebarActionIcon("arrow.clockwise")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(NSLocalizedString("Refresh Folder Tree", comment: "Project sidebar refresh tree action"))
+                        .accessibilityLabel(NSLocalizedString("Refresh project tree", comment: "Project sidebar refresh accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Reloads files and folders from disk", comment: "Project sidebar refresh accessibility hint"))
+
+                        Menu {
+                            Button {
+                                onToggleSupportedFilesOnly(!showSupportedFilesOnly)
+                            } label: {
+                                Label(
+                                    NSLocalizedString("Show Supported Files Only", comment: "Project sidebar supported files filter label"),
+                                    systemImage: showSupportedFilesOnly ? "checkmark.circle.fill" : "circle"
+                                )
+                            }
+                            Button {
+                                onToggleHiddenFiles(!showHiddenFiles)
+                            } label: {
+                                Label(
+                                    NSLocalizedString("Show Hidden Files", comment: "Project sidebar hidden files filter label"),
+                                    systemImage: showHiddenFiles ? "checkmark.circle.fill" : "circle"
+                                )
+                            }
+                            Picker(NSLocalizedString("Filter", comment: "Project sidebar file filter label"), selection: $fileFilter) {
+                                ForEach(SidebarFileFilter.allCases) { filter in
+                                    Text(filter.title).tag(filter)
+                                }
+                            }
+                            Picker(NSLocalizedString("Sort By", comment: "Project sidebar sort label"), selection: $sidebarSortOrderRaw) {
+                                ForEach(SidebarSortOrder.allCases) { order in
+                                    Text(order.title).tag(order.rawValue)
+                                }
+                            }
+                            Picker(NSLocalizedString("Group", comment: "Project sidebar grouping label"), selection: $sidebarGroupingRaw) {
+                                ForEach(SidebarGrouping.allCases) { grouping in
+                                    Text(grouping.title).tag(grouping.rawValue)
+                                }
+                            }
+                            Divider()
+                            Picker(NSLocalizedString("Density", comment: "Project sidebar density picker label"), selection: $sidebarDensityRaw) {
+                                Text(NSLocalizedString("Compact", comment: "Project sidebar compact density")).tag(SidebarDensity.compact.rawValue)
+                                Text(NSLocalizedString("Comfortable", comment: "Project sidebar comfortable density")).tag(SidebarDensity.comfortable.rawValue)
+                            }
+                            Picker(NSLocalizedString("Disclosure Icon", comment: "Project sidebar disclosure icon style picker label"), selection: $disclosureSymbolStyleRaw) {
+                                ForEach(SidebarDisclosureSymbolStyle.allCases) { style in
+                                    Text(style.title).tag(style.rawValue)
+                                }
+                            }
+                            Toggle(NSLocalizedString("Auto-collapse Deep Folders", comment: "Project sidebar auto-collapse deep folders toggle"), isOn: $autoCollapseDeepFolders)
+                            Menu(NSLocalizedString("Ignored Folders", comment: "Project sidebar ignored folders menu")) {
+                                ForEach(ProjectIgnoredFolders.knownNames, id: \.self) { name in
+                                    Button {
+                                        toggleIgnoredFolderName(name)
+                                    } label: {
+                                        Label(name, systemImage: ignoredFolderNames.contains(name) ? "checkmark.circle.fill" : "circle")
+                                    }
+                                }
+                            }
+                            Divider()
+                            Button(NSLocalizedString("Expand All", comment: "Project sidebar expand all action")) {
+                                expandAllDirectories()
+                            }
+                            Button(NSLocalizedString("Collapse All", comment: "Project sidebar collapse all action")) {
+                                collapseAllDirectories()
+                            }
+                            Button(NSLocalizedString("Reset View Options", comment: "Project sidebar reset filters action")) {
+                                resetViewOptions()
+                            }
+                        } label: {
+                            sidebarActionIcon("arrow.up.arrow.down.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(NSLocalizedString("Expand or Collapse All", comment: "Project sidebar expand/collapse help"))
+                        .accessibilityLabel(NSLocalizedString("Expand or collapse all folders", comment: "Project sidebar expand/collapse accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Expands or collapses all folders in the project tree", comment: "Project sidebar expand/collapse accessibility hint"))
+                        }
+                        .padding(2)
+                        .background(Color.secondary.opacity(0.07), in: Capsule(style: .continuous))
+
+                        HStack(spacing: 2) {
+                            Button {
+                                adjustSidebarFontSize(by: -1)
+                            } label: {
+                                sidebarActionIcon("textformat.size.smaller")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(sidebarFontSize <= minimumSidebarFontSize)
+                            .help("Decrease Project Sidebar Font Size")
+                            .accessibilityLabel("Decrease Project Sidebar Font Size")
+
+                            Text("\(Int(sidebarFontSize.rounded()))")
+                                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                .foregroundStyle(.secondary)
+                                .frame(minWidth: 22)
+                                .accessibilityLabel("Project Sidebar Font Size")
+                                .accessibilityValue("\(Int(sidebarFontSize.rounded())) points")
+
+                            Button {
+                                adjustSidebarFontSize(by: 1)
+                            } label: {
+                                sidebarActionIcon("textformat.size.larger")
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(sidebarFontSize >= maximumSidebarFontSize)
+                            .help("Increase Project Sidebar Font Size")
+                            .accessibilityLabel("Increase Project Sidebar Font Size")
+                        }
+                        .padding(2)
+                        .background(Color.secondary.opacity(0.07), in: Capsule(style: .continuous))
+                    }
+                    .font(.system(size: isCompactDensity ? 13 : 14, weight: .medium))
+
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(sidebarSeparatorColor.opacity(0.55))
+                        .frame(height: 1)
+                        .padding(.horizontal, 2)
+                }
+                .padding(.horizontal, headerHorizontalPadding)
+                .padding(.top, isCompactDensity ? 4 : 6)
+                .padding(.bottom, headerBottomPadding)
+#if os(macOS)
+                .background(sidebarHeaderFill)
+#endif
+            }
+
+            if let rootFolderURL {
+                projectPathCard(rootFolderURL)
+                    .padding(.horizontal, headerHorizontalPadding)
+                    .padding(.top, showsSidebarActionsRow ? 0 : headerTopPadding)
+                    .padding(.bottom, headerPathBottomPadding)
+            }
+
+            List {
+                if rootFolderURL == nil {
+                    Text(NSLocalizedString("No folder selected", comment: "Project sidebar empty state without root folder"))
+                        .foregroundColor(.secondary)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } else if visibleNodes.isEmpty {
+                    Text(NSLocalizedString("Folder is empty", comment: "Project sidebar empty state for selected folder"))
+                        .foregroundColor(.secondary)
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                } else {
+                    ForEach(visibleNodes) { node in
+                        projectNodeView(node, level: 0)
+                    }
+                }
+            }
+            .transaction { transaction in
+                transaction.animation = nil
+            }
+            .listStyle(platformListStyle)
+#if os(iOS)
+            .environment(\.defaultMinListRowHeight, isCompactProjectLayout ? 24 : 44)
+#endif
+            // SwiftUI may repaint an automatic List scroller after the shared
+            // AppKit configurator applies the idle-hidden state. Keep the
+            // baseline hidden and let MacOverlayScrollerPolicy reveal it only
+            // for a live scroll.
+            .scrollIndicators(.never)
+            .scrollContentBackground(.hidden)
+            .background(Color.clear)
+            .macOverlayScrollerStyle(transparentBackground: true)
+#if os(iOS) || os(macOS)
+            .simultaneousGesture(
+                MagnifyGesture()
+                    .onChanged { value in
+                        if pinchStartSidebarFontSize == nil {
+                            pinchStartSidebarFontSize = sidebarFontSize
+                        }
+                        guard let pinchStartSidebarFontSize else { return }
+                        setSidebarFontSize(pinchStartSidebarFontSize + (value.magnification - 1) * 10)
+                    }
+                    .onEnded { _ in
+                        pinchStartSidebarFontSize = nil
+                    }
+            )
+#endif
+            .contextMenu {
+                if let rootFolderURL {
+                    Button {
+                        onCreateProjectFile(rootFolderURL)
+                    } label: {
+                        Label(NSLocalizedString("New File", comment: "Project sidebar create file action"), systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        onCreateProjectFolder(rootFolderURL)
+                    } label: {
+                        Label(NSLocalizedString("New Folder", comment: "Project sidebar create folder action"), systemImage: "folder.badge.plus")
+                    }
+                }
+            }
+        }
+    }
+
+    private func sidebarActionIcon(_ systemName: String, isPrimary: Bool = false) -> some View {
+        Image(systemName: systemName)
+            .font(.system(size: isCompactDensity ? 13 : 14, weight: .medium))
+            .foregroundStyle(isPrimary ? Color.accentColor : Color.secondary)
+            .frame(width: sidebarActionControlSize, height: sidebarActionControlSize)
+            .contentShape(Rectangle())
+    }
+
+    private func projectPathCard(_ rootFolderURL: URL) -> some View {
+        HStack(spacing: 9) {
+            Image(systemName: "folder.fill")
+                .font(.system(size: isCompactDensity ? 13 : 14, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 18)
+
+            if showsProjectParentPath {
+                VStack(alignment: .leading, spacing: 2) {
+                    projectFolderName(rootFolderURL)
+                    projectFolderParentPath(rootFolderURL)
+                }
+            } else {
+                projectFolderName(rootFolderURL)
+            }
+
+            Menu {
+                Button {
+                    onRefreshTree()
+                } label: {
+                    Label("Refresh Folder", systemImage: "arrow.clockwise")
+                }
+#if os(macOS)
+                Button {
+                    onRevealInFinder(rootFolderURL)
+                } label: {
+                    Label("Reveal in Finder", systemImage: "arrow.up.right.square")
+                }
+#endif
+                Button {
+                    onCopyPath(rootFolderURL)
+                } label: {
+                    Label("Copy Path", systemImage: "doc.on.doc")
+                }
+                Divider()
+                Button {
+                    onCloseProjectFolder()
+                } label: {
+                    Label("Close Folder", systemImage: "folder.badge.minus")
+                }
+
+                Button {
+                    onCloseProjectFolderAndTabs()
+                } label: {
+                    Label("Close Folder and Project Tabs…", systemImage: "xmark.circle")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: isCompactDensity ? 13 : 14, weight: .medium))
+                    .foregroundStyle(Color.secondary)
+                    .frame(width: 28, height: 28)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .help("Project folder actions")
+            .accessibilityLabel("Project folder actions")
+            .accessibilityHint("Choose whether to close only the folder or also its open project files")
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, projectPathVerticalPadding)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(sidebarSeparatorColor.opacity(isCompactProjectLayout ? 0.38 : 0.55))
+                .frame(height: 1)
+        }
+        .contextMenu {
+            Button {
+                onCreateProjectFile(rootFolderURL)
+            } label: {
+                Label(NSLocalizedString("New File", comment: "Project sidebar create file action"), systemImage: "doc.badge.plus")
+            }
+            Button {
+                onCreateProjectFolder(rootFolderURL)
+            } label: {
+                Label(NSLocalizedString("New Folder", comment: "Project sidebar create folder action"), systemImage: "folder.badge.plus")
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Project folder \(rootFolderURL.lastPathComponent)")
+        .accessibilityValue(Text(rootFolderURL.path))
+        .accessibilityHint(
+            Text("The parent path is available from folder actions.")
+        )
+    }
+
+    private func projectFolderName(_ rootFolderURL: URL) -> some View {
+        Text(rootFolderURL.lastPathComponent)
+            .font(.system(size: isCompactDensity ? 12 : 13, weight: .semibold))
+            .foregroundStyle(.primary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+    }
+
+    private func projectFolderParentPath(_ rootFolderURL: URL) -> some View {
+        Text(rootFolderURL.deletingLastPathComponent().path)
+            .font(.system(size: isCompactDensity ? 10 : 11))
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+    }
+
+    private var sidebarSurfaceFill: AnyShapeStyle {
+        if translucentBackgroundEnabled {
+#if os(macOS)
+            return AnyShapeStyle(Color.clear)
+            #else
+            return AnyShapeStyle(.ultraThinMaterial)
+            #endif
+        }
+#if os(macOS)
+        // One elevation step off the editor surface (see panelCardFill).
+        return AnyShapeStyle(ForkSurfaceStyle.panelCardFill(
+            themeBackground: currentEditorTheme(colorScheme: colorScheme).background,
+            isDark: colorScheme == .dark))
+#else
+        return AnyShapeStyle(currentEditorTheme(colorScheme: colorScheme).background)
+#endif
+    }
+
+    private var sidebarSurfaceStroke: Color {
+        colorScheme == .dark
+            ? Color.white.opacity(0.12)
+            : Color.black.opacity(0.08)
+    }
+
+    private var findInFilesContent: some View {
+        FindInFilesPanel(
+            query: findInFilesQuery,
+            caseSensitive: findInFilesCaseSensitive,
+            replaceQuery: findInFilesReplaceQuery,
+            selectedMatchIDs: findInFilesSelectedMatchIDs,
+            results: findInFilesResults,
+            statusMessage: findInFilesStatusMessage,
+            sourceMessage: findInFilesSourceMessage,
+            isApplyingReplace: isApplyingFindInFilesReplace,
+            onSearch: onFindInFilesSearch,
+            onClear: onFindInFilesClear,
+            onToggleSelection: onToggleFindInFilesSelection,
+            onSelectAll: onSelectAllFindInFilesMatches,
+            onSelectNone: onSelectNoFindInFilesMatches,
+            onApplyReplace: onApplyFindInFilesReplace,
+            onCancelReplace: onCancelFindInFilesReplace,
+            onSelect: onSelectFindInFilesMatch,
+            onClose: { activeTab = .files },
+            closesOnSelect: !keepsFindInFilesOpenOnSelect
+        )
+        .environment(\.searchPanelTranslucencyOverride, translucentBackgroundEnabled)
+        .environment(\.searchPanelEmbeddedInSidebar, true)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    @ViewBuilder
+    private var compareDiffContent: some View {
+        if let presentation = compareDiffPresentation {
+            SidebarCompareDiffView(
+                presentation: presentation,
+                onClose: onCloseCompareDiff
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+            ContentUnavailableView("No Diff", systemImage: "rectangle.split.2x1")
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
+
+    private var sidebarHeaderFill: AnyShapeStyle {
+        translucentBackgroundEnabled ? sidebarSurfaceFill : AnyShapeStyle(Color.clear)
+    }
+
+    private var sidebarSeparatorColor: Color {
+#if os(macOS)
+        colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.10)
+#else
+        Color.black.opacity(0.1)
+#endif
+    }
+
+    private var sidebarCornerRadius: CGFloat {
+#if os(macOS)
+        12
+#else
+        20
+#endif
+    }
+
+    private var isCompactWidth: Bool {
+#if os(iOS)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private var isPhoneLayout: Bool {
+#if os(iOS)
+        isCompactWidth
+#else
+        false
+#endif
+    }
+
+    private var isCompactProjectLayout: Bool {
+#if os(iOS)
+        isPhoneLayout || isCompactWidth
+#else
+        false
+#endif
+    }
+
+    private var isRegularPadLayout: Bool {
+#if os(iOS)
+        !isCompactWidth
+#else
+        false
+#endif
+    }
+
+    private var showsProjectParentPath: Bool {
+        !isCompactProjectLayout
+    }
+
+    private var sidebarActionControlSize: CGFloat {
+        if isCompactProjectLayout { return 26 }
+        if isRegularPadLayout { return 28 }
+        return isCompactDensity ? 28 : 30
+    }
+
+    private var projectPathVerticalPadding: CGFloat {
+        if isCompactProjectLayout { return 3 }
+        if isRegularPadLayout { return isCompactDensity ? 4 : 5 }
+        return isCompactDensity ? 5 : 6
+    }
+
+    private var sidebarContainerShape: AnyShape {
+#if os(macOS)
+        AnyShape(RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous))
+#elseif os(iOS)
+        AnyShape(RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous))
+#else
+        AnyShape(RoundedRectangle(cornerRadius: sidebarCornerRadius, style: .continuous))
+#endif
+    }
+
+    @ViewBuilder
+    private var sidebarContainerBorderOverlay: some View {
+#if os(macOS)
+        if translucentBackgroundEnabled {
+            // Keep the window material transparent while retaining a subtle
+            // edge so the sidebar remains legible against the desktop.
+            sidebarContainerShape.stroke(sidebarSurfaceStroke, lineWidth: 1.2)
+        } else {
+            sidebarContainerShape.stroke(sidebarSurfaceStroke, lineWidth: 1.2)
+        }
+#elseif os(iOS)
+        sidebarContainerShape.stroke(sidebarSurfaceStroke, lineWidth: 1.2)
+#else
+        sidebarContainerShape.stroke(sidebarSurfaceStroke, lineWidth: 1.2)
+#endif
+    }
+
+    private var sidebarOuterPadding: CGFloat {
+#if os(iOS)
+        if isCompactProjectLayout { return 4 }
+        return isRegularPadLayout ? 6 : 8
+#else
+        6
+#endif
+    }
+
+    private var sidebarCardOuterPadding: EdgeInsets {
+        // Shell redesign: the window shell provides the backdrop gutters.
+        EdgeInsets()
+    }
+
+    private var platformListStyle: some ListStyle {
+#if os(iOS)
+        PlainListStyle()
+#else
+        PlainListStyle()
+#endif
+    }
+
+    private func expandAllDirectories() {
+        isExpandingAllDirectories = true
+        if let onExpandAllDirectories {
+            onExpandAllDirectories {
+                Task { @MainActor in
+                    await Task.yield()
+                    guard isExpandingAllDirectories else { return }
+                    expandedDirectories = allDirectoryNodeIDs(in: nodes)
+                    persistExpansionState()
+                    isExpandingAllDirectories = false
+                }
+            }
+        } else {
+            expandedDirectories = allDirectoryNodeIDs(in: nodes)
+            persistExpansionState()
+            loadExpandedUnloadedDirectories()
+        }
+    }
+
+    private func collapseAllDirectories() {
+        isExpandingAllDirectories = false
+        expandAllContinuationTask?.cancel()
+        expandAllContinuationTask = nil
+        expandedDirectories.removeAll()
+        persistExpansionState()
+    }
+
+    private func restorePersistedExpansionState() {
+        guard let rootPath = rootFolderURL?.standardizedFileURL.path else {
+            expandedDirectories.removeAll()
+            return
+        }
+        guard let data = persistedExpansionState.data(using: .utf8),
+              let stored = try? JSONDecoder().decode([String: [String]].self, from: data) else {
+            persistedExpansionByRoot = [:]
+            expandedDirectories.removeAll()
+            return
+        }
+        persistedExpansionByRoot = stored
+        expandedDirectories = Set(stored[rootPath] ?? [])
+    }
+
+    private func persistExpansionState() {
+        guard let rootPath = rootFolderURL?.standardizedFileURL.path else { return }
+        var stored = persistedExpansionByRoot
+        stored[rootPath] = expandedDirectories.sorted()
+        persistedExpansionByRoot = stored
+        expansionPersistenceTask?.cancel()
+        expansionPersistenceTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard !Task.isCancelled else { return }
+            persistExpansionStateNow()
+        }
+    }
+
+    private func persistExpansionStateNow() {
+        guard !persistedExpansionByRoot.isEmpty,
+              let data = try? JSONEncoder().encode(persistedExpansionByRoot),
+              let value = String(data: data, encoding: .utf8) else { return }
+        persistedExpansionState = value
+        expansionPersistenceTask = nil
+    }
+
+    private var filteredNodes: [ProjectTreeNode] {
+        // The filesystem loader already returns children in directory-first,
+        // case-insensitive name order. Reusing that tree is critical during
+        // disclosure navigation: rebuilding every loaded descendant on each
+        // SwiftUI body pass makes a folder tap proportional to the whole tree.
+        if fileFilter == .all, sidebarSortOrder == .name, sidebarGrouping == .none {
+            return nodes
+        }
+        let filtered = fileFilter == .all ? nodes : nodes.compactMap(filteredNode(_:))
+        return sortedNodes(filtered)
+    }
+
+
+    private var sidebarSortOrder: SidebarSortOrder {
+        SidebarSortOrder(rawValue: sidebarSortOrderRaw) ?? .name
+    }
+
+    private var sidebarGrouping: SidebarGrouping {
+        SidebarGrouping(rawValue: sidebarGroupingRaw) ?? .none
+    }
+
+    private func sortedNodes(_ input: [ProjectTreeNode]) -> [ProjectTreeNode] {
+        input.map { node in
+            ProjectTreeNode(
+                url: node.url,
+                isDirectory: node.isDirectory,
+                children: sortedNodes(node.children),
+                childrenLoaded: node.childrenLoaded
+            )
+        }.sorted { lhs, rhs in
+            if lhs.isDirectory != rhs.isDirectory { return lhs.isDirectory }
+            if sidebarGrouping == .type && lhs.isDirectory == rhs.isDirectory {
+                let leftType = lhs.isDirectory ? "" : lhs.url.pathExtension.lowercased()
+                let rightType = rhs.isDirectory ? "" : rhs.url.pathExtension.lowercased()
+                if leftType != rightType { return leftType < rightType }
+            }
+            switch sidebarSortOrder {
+            case .name:
+                return lhs.url.lastPathComponent.localizedCaseInsensitiveCompare(rhs.url.lastPathComponent) == .orderedAscending
+            case .type:
+                let leftType = lhs.isDirectory ? "" : lhs.url.pathExtension.lowercased()
+                let rightType = rhs.isDirectory ? "" : rhs.url.pathExtension.lowercased()
+                if leftType != rightType { return leftType < rightType }
+                return lhs.url.lastPathComponent.localizedCaseInsensitiveCompare(rhs.url.lastPathComponent) == .orderedAscending
+            }
+        }
+    }
+
+    private func resetViewOptions() {
+        fileFilter = .all
+        sidebarSortOrderRaw = SidebarSortOrder.name.rawValue
+        sidebarGroupingRaw = SidebarGrouping.none.rawValue
+        sidebarDensityRaw = SidebarDensity.compact.rawValue
+        sidebarFontSize = 13
+    }
+
+    private func filteredNode(_ node: ProjectTreeNode) -> ProjectTreeNode? {
+        if node.isDirectory {
+            let children = node.children.compactMap(filteredNode(_:))
+            guard fileFilter == .all || !children.isEmpty else { return nil }
+            return ProjectTreeNode(
+                url: node.url,
+                isDirectory: true,
+                children: children,
+                childrenLoaded: node.childrenLoaded
+            )
+        }
+        return matchesFileFilter(node) ? node : nil
+    }
+
+    private func matchesFileFilter(_ node: ProjectTreeNode) -> Bool {
+        let extensionName = node.url.pathExtension.lowercased()
+        switch fileFilter {
+        case .all:
+            return true
+        case .modified:
+            guard let rootPath = rootFolderURL?.standardizedFileURL.path else { return false }
+            let filePath = node.url.standardizedFileURL.path
+            guard filePath.hasPrefix(rootPath) else { return false }
+            let relativePath = String(filePath.dropFirst(rootPath.count + 1))
+            return gitFileStatusMap[relativePath] != nil
+        case .images:
+            return ["avif", "gif", "heic", "jpeg", "jpg", "png", "svg", "webp"].contains(extensionName)
+        case .png:
+            return extensionName == "png"
+        case .pdf:
+            return extensionName == "pdf"
+        case .markdown:
+            return ["md", "markdown", "mdown", "mkdn", "mdx"].contains(extensionName)
+        }
+    }
+
+    private func allDirectoryNodeIDs(in treeNodes: [ProjectTreeNode]) -> Set<String> {
+        var result: Set<String> = []
+        for node in treeNodes where node.isDirectory {
+            result.insert(node.id)
+            result.formUnion(allDirectoryNodeIDs(in: node.children))
+        }
+        return result
+    }
+
+    private func projectNodeView(_ node: ProjectTreeNode, level: Int) -> AnyView {
+        if node.isDirectory {
+            let isHovered = hoveredNodeID == node.id
+            return AnyView(
+                DisclosureGroup(isExpanded: Binding(
+                    get: { expandedDirectories.contains(node.id) },
+                    set: { isExpanded in
+                        if isExpanded {
+                            expandedDirectories.insert(node.id)
+                            persistExpansionState()
+                            loadDirectoryIfNeeded(node)
+                        } else {
+                            expandedDirectories.remove(node.id)
+                            persistExpansionState()
+                        }
+                    }
+                )) {
+                    ForEach(node.children) { child in
+                        projectNodeView(child, level: level + 1)
+                    }
+                } label: {
+                    HStack(spacing: directoryRowContentSpacing) {
+                        Image(systemName: "folder")
+                            .foregroundStyle(folderIconColor(isHovered: isHovered))
+                            .symbolRenderingMode(.hierarchical)
+                        Text(node.url.lastPathComponent)
+                            .lineLimit(1)
+                    }
+                    .font(rowFont)
+                    .padding(.vertical, directoryRowVerticalPadding)
+                    .padding(.trailing, rowHorizontalPadding)
+                    .padding(.leading, directoryRowContentLeadingPadding)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(rowChrome(isSelected: false, isHovered: isHovered))
+                    .contentShape(Rectangle())
+                    .opacity(directoryRowVisualOpacity(nodeID: node.id, isHovered: isHovered))
+                    .animation(.easeOut(duration: 0.14), value: isHovered)
+                    .animation(.easeOut(duration: 0.14), value: expandedDirectories.contains(node.id))
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel(
+                        Text(
+                            String(
+                                format: NSLocalizedString("Folder %@", comment: "Project sidebar folder accessibility label"),
+                                node.url.lastPathComponent
+                            )
+                        )
+                    )
+                    .accessibilityHint(
+                        Text(
+                            NSLocalizedString(
+                                "Expands or collapses this folder without changing the selected file.",
+                                comment: "Project sidebar folder disclosure accessibility hint"
+                            )
+                        )
+                    )
+                }
+                .padding(.leading, directoryRowLeadingInset(for: level))
+                .padding(.vertical, rowOuterSpacing(for: level, isDirectory: true))
+                .listRowInsets(directoryRowInsets)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .disclosureGroupStyle(projectDisclosureStyle)
+                .contextMenu {
+                    Button {
+                        onCreateProjectFile(node.url)
+                    } label: {
+                        Label(NSLocalizedString("New File", comment: "Project sidebar create file action"), systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        onCreateProjectFolder(node.url)
+                    } label: {
+                        Label(NSLocalizedString("New Folder", comment: "Project sidebar create folder action"), systemImage: "folder.badge.plus")
+                    }
+                    Divider()
+                    Button {
+                        onRenameProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Rename", comment: "Project sidebar rename action"), systemImage: "pencil")
+                    }
+                    Button {
+                        onDuplicateProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Duplicate", comment: "Project sidebar duplicate action"), systemImage: "plus.square.on.square")
+                    }
+#if os(macOS)
+                    Button {
+                        onRevealInFinder(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Reveal in Finder", comment: "Project sidebar reveal action"), systemImage: "arrow.up.right.square")
+                    }
+#endif
+                    Button {
+                        onCopyPath(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Copy Path", comment: "Project sidebar copy path action"), systemImage: "doc.on.doc")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        onDeleteProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Delete", comment: "Project sidebar delete action"), systemImage: "trash")
+                    }
+                }
+#if os(macOS)
+                .onHover { hovering in
+                    if hovering {
+                        hoveredNodeID = node.id
+                    } else if hoveredNodeID == node.id {
+                        hoveredNodeID = nil
+                    }
+                }
+#endif
+            )
+        } else {
+            let style = cachedFileIconStyle(for: node.url)
+            let isSelected = selectedFileURL?.standardizedFileURL == node.url.standardizedFileURL
+            let isHovered = hoveredNodeID == node.id
+            let gitRelPath: String = {
+                guard let root = rootFolderURL?.standardizedFileURL.path else { return "" }
+                let filePath = node.url.standardizedFileURL.path
+                guard filePath.hasPrefix(root) else { return "" }
+                return String(filePath.dropFirst(root.count + 1))
+            }()
+            let gitStatus = gitFileStatusMap[gitRelPath]
+            return AnyView(
+                Button {
+                    onOpenProjectFile(node.url)
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: style.symbol)
+                            .foregroundStyle(fileIconColor(style: style, isSelected: isSelected, isHovered: isHovered))
+                            .symbolRenderingMode(.hierarchical)
+                        Text(node.url.lastPathComponent)
+                            .lineLimit(1)
+                            .font(.system(size: CGFloat(sidebarFontSize), weight: isSelected ? .semibold : .regular))
+                        Spacer()
+                    }
+                    .font(rowFont)
+                    .foregroundStyle(isSelected ? rowSelectedForegroundColor : Color.primary)
+                    .padding(.vertical, rowVerticalPadding)
+                    .padding(.horizontal, rowHorizontalPadding)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(rowChrome(isSelected: isSelected, isHovered: isHovered))
+                    .overlay(alignment: .leading) {
+                        if isSelected {
+                            Capsule(style: .continuous)
+                                .fill(Color.accentColor)
+                                .frame(width: 4)
+                                .padding(.vertical, 5)
+                        } else if let gitStatus {
+                            Capsule(style: .continuous)
+                                .fill(gitStatusColor(gitStatus))
+                                .frame(width: 2)
+                                .padding(.vertical, 6)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                    .animation(.easeOut(duration: 0.14), value: isHovered)
+                    .animation(.easeOut(duration: 0.14), value: isSelected)
+                }
+                .buttonStyle(.plain)
+                .padding(.leading, fileRowLeadingInset(for: level))
+                .padding(.vertical, rowOuterSpacing(for: level, isDirectory: false))
+                .listRowInsets(rowInsets)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .contextMenu {
+                    Button {
+                        onCreateProjectFile(node.url.deletingLastPathComponent())
+                    } label: {
+                        Label(NSLocalizedString("New File Here", comment: "Project sidebar create file in same directory action"), systemImage: "doc.badge.plus")
+                    }
+                    Button {
+                        onCreateProjectFolder(node.url.deletingLastPathComponent())
+                    } label: {
+                        Label(NSLocalizedString("New Folder Here", comment: "Project sidebar create folder in same directory action"), systemImage: "folder.badge.plus")
+                    }
+                    Divider()
+                    Button {
+                        onRenameProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Rename", comment: "Project sidebar rename action"), systemImage: "pencil")
+                    }
+                    Button {
+                        onDuplicateProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Duplicate", comment: "Project sidebar duplicate action"), systemImage: "plus.square.on.square")
+                    }
+#if os(macOS)
+                    Button {
+                        onRevealInFinder(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Reveal in Finder", comment: "Project sidebar reveal action"), systemImage: "arrow.up.right.square")
+                    }
+#endif
+                    Button {
+                        onCopyPath(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Copy Path", comment: "Project sidebar copy path action"), systemImage: "doc.on.doc")
+                    }
+                    Divider()
+                    Button(role: .destructive) {
+                        onDeleteProjectItem(node.url)
+                    } label: {
+                        Label(NSLocalizedString("Delete", comment: "Project sidebar delete action"), systemImage: "trash")
+                    }
+                }
+                .accessibilityLabel(
+                    Text(
+                        String(
+                            format: NSLocalizedString("File %@", comment: "Project sidebar file accessibility label"),
+                            node.url.lastPathComponent
+                        )
+                    )
+                )
+#if os(macOS)
+                .onHover { hovering in
+                    if hovering {
+                        hoveredNodeID = node.id
+                    } else if hoveredNodeID == node.id {
+                        hoveredNodeID = nil
+                    }
+                }
+#endif
+            )
+        }
+    }
+
+    private var sidebarDensity: SidebarDensity {
+        SidebarDensity(rawValue: sidebarDensityRaw) ?? .compact
+    }
+
+    private var disclosureSymbolStyle: SidebarDisclosureSymbolStyle {
+        SidebarDisclosureSymbolStyle(rawValue: disclosureSymbolStyleRaw) ?? .chevron
+    }
+
+    private var isCompactDensity: Bool { sidebarDensity == .compact }
+
+    private var levelIndent: CGFloat {
+        if isCompactProjectLayout { return isCompactDensity ? 7 : 9 }
+        if isRegularPadLayout { return isCompactDensity ? 8 : 11 }
+        return isCompactDensity ? 9 : 13
+    }
+
+    private var rowVerticalPadding: CGFloat {
+        if isCompactProjectLayout { return isCompactDensity ? 3 : 5 }
+        if isRegularPadLayout { return isCompactDensity ? 5 : 8 }
+        return isCompactDensity ? 6 : 10
+    }
+
+    private var directoryRowVerticalPadding: CGFloat {
+        rowVerticalPadding + (isCompactProjectLayout ? 0.5 : (isCompactDensity ? 1 : 2))
+    }
+
+    private var rowHorizontalPadding: CGFloat {
+        if isCompactProjectLayout { return isCompactDensity ? 7 : 10 }
+        if isRegularPadLayout { return isCompactDensity ? 9 : 12 }
+        return isCompactDensity ? 10 : 14
+    }
+
+    private var directoryRowContentSpacing: CGFloat {
+        if isCompactProjectLayout { return 2 }
+        if isRegularPadLayout { return 3 }
+        return isCompactDensity ? 3 : 4
+    }
+
+    private var directoryRowContentLeadingPadding: CGFloat {
+        0
+    }
+
+    private var headerHorizontalPadding: CGFloat {
+        if isCompactProjectLayout { return 10 }
+        if isRegularPadLayout { return 14 }
+        return isCompactDensity ? 16 : 18
+    }
+
+    private var headerTopPadding: CGFloat {
+        if isCompactProjectLayout { return 8 }
+        if isRegularPadLayout { return 12 }
+        return isCompactDensity ? 16 : 18
+    }
+
+    private var headerBottomPadding: CGFloat {
+        if isCompactProjectLayout { return 6 }
+        if isRegularPadLayout { return 8 }
+        return isCompactDensity ? 10 : 12
+    }
+
+    private var headerPathBottomPadding: CGFloat {
+        if isCompactProjectLayout { return 5 }
+        if isRegularPadLayout { return 8 }
+        return isCompactDensity ? 10 : 12
+    }
+
+    private var rowInsets: EdgeInsets {
+        directoryRowInsets
+    }
+
+    private var directoryRowInsets: EdgeInsets {
+        let macLeadingInset: CGFloat = {
+#if os(macOS)
+            let base: CGFloat = isCompactDensity ? 0 : 4
+            return translucentBackgroundEnabled ? base + 2 : base
+#else
+            return isCompactDensity ? 0 : 4
+#endif
+        }()
+        return EdgeInsets(
+            top: isCompactProjectLayout ? 0 : projectListRowInsetVertical,
+            leading: macLeadingInset,
+            bottom: isCompactProjectLayout ? 0 : projectListRowInsetVertical,
+            trailing: isCompactProjectLayout ? 6 : (isRegularPadLayout ? 8 : (isCompactDensity ? 10 : 12))
+        )
+    }
+
+    private var showsInlineSidebarTitle: Bool {
+#if os(iOS)
+        isRegularPadLayout
+#else
+        true
+#endif
+    }
+
+    private var showsSidebarActionsRow: Bool {
+        true
+    }
+
+    private func directoryRowLeadingInset(for level: Int) -> CGFloat {
+        let baseInset: CGFloat
+#if os(macOS)
+        baseInset = level == 0 ? 0 : 5
+#else
+        baseInset = level == 0 ? 0 : 5
+#endif
+        return baseInset + CGFloat(level) * levelIndent
+    }
+
+    private func fileRowLeadingInset(for level: Int) -> CGFloat {
+        directoryRowLeadingInset(for: level)
+            + disclosureIconColumnWidth
+            + disclosureIconToLabelSpacing
+            - rowHorizontalPadding
+    }
+
+    private var rowFont: Font {
+        .system(size: CGFloat(sidebarFontSize), weight: .medium)
+    }
+
+    private let minimumSidebarFontSize: Double = 10
+    private let maximumSidebarFontSize: Double = 28
+
+    private func adjustSidebarFontSize(by delta: Double) {
+        setSidebarFontSize(sidebarFontSize + delta)
+    }
+
+    private func setSidebarFontSize(_ requestedSize: Double) {
+        sidebarFontSize = min(
+            maximumSidebarFontSize,
+            max(minimumSidebarFontSize, requestedSize.rounded())
+        )
+    }
+
+    private var rowSelectedForegroundColor: Color {
+        colorScheme == .dark ? .white : .primary
+    }
+
+    private var projectListRowInsetVertical: CGFloat {
+        2
+    }
+
+    private func rowChrome(isSelected: Bool, isHovered: Bool) -> some View {
+        RoundedRectangle(cornerRadius: projectRowCornerRadius, style: .continuous)
+            .fill(rowFill(isSelected: isSelected, isHovered: isHovered))
+    }
+
+    private var projectRowCornerRadius: CGFloat {
+#if os(macOS)
+        isCompactDensity ? 5 : 6
+#else
+        isCompactDensity ? 10 : 12
+#endif
+    }
+
+    private func rowFill(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected { return selectedRowFill }
+        if isHovered { return hoveredRowFill }
+        return unselectedRowFill
+    }
+
+    private var selectedRowFill: Color {
+        if translucentBackgroundEnabled {
+            return Color.accentColor.opacity(colorScheme == .dark ? 0.34 : 0.20)
+        }
+        if colorScheme == .dark { return Color.accentColor.opacity(0.42) }
+        return Color.accentColor.opacity(0.20)
+    }
+
+    private var hoveredRowFill: Color {
+        if translucentBackgroundEnabled {
+            return colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.06)
+        }
+        if colorScheme == .dark { return Color.white.opacity(0.07) }
+        return Color.black.opacity(0.055)
+    }
+
+    private var unselectedRowFill: Color {
+        .clear
+    }
+
+    private func rowOuterSpacing(for level: Int, isDirectory: Bool) -> CGFloat {
+#if os(iOS)
+        if isDirectory, level == 0 {
+            return isCompactProjectLayout ? 0 : (isCompactDensity ? 0.25 : 0.5)
+        }
+#else
+        _ = level
+        _ = isDirectory
+#endif
+        return isCompactDensity ? 0 : 0.5
+    }
+
+    private func folderIconColor(isHovered: Bool) -> Color {
+        if isHovered {
+            return Color.accentColor
+        }
+#if os(macOS)
+        return Color.secondary
+#else
+        return translucentBackgroundEnabled ? Color.accentColor.opacity(0.92) : Color.accentColor.opacity(0.96)
+#endif
+    }
+
+    private func gitStatusColor(_ status: GitFileStatus) -> Color {
+        switch status {
+        case .added, .copied: return .green
+        case .modified: return .purple
+        case .deleted: return .red
+        case .renamed: return .cyan
+        case .conflicted, .untracked: return .orange
+        case .clean: return .secondary
+        }
+    }
+
+    private func fileIconColor(style: FileIconStyle, isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected || isHovered {
+            return style.color
+        }
+        return style.color.opacity(translucentBackgroundEnabled ? 0.68 : 0.74)
+    }
+
+    private func directoryRowVisualOpacity(nodeID: String, isHovered: Bool) -> Double {
+        if isHovered || expandedDirectories.contains(nodeID) { return 1.0 }
+        return translucentBackgroundEnabled ? 0.96 : 0.94
+    }
+
+    private var projectDisclosureStyle: SidebarDisclosureStyle {
+        SidebarDisclosureStyle(
+            symbolName: { isExpanded in disclosureSymbolStyle.symbolName(isExpanded: isExpanded) },
+            iconColor: disclosureIconColor,
+            iconSize: disclosureIconSize,
+            iconToLabelSpacing: disclosureIconToLabelSpacing,
+            iconColumnWidth: disclosureIconColumnWidth
+        )
+    }
+
+    private var disclosureIconColor: Color {
+        colorScheme == .dark ? Color.white.opacity(0.82) : Color.black.opacity(0.74)
+    }
+
+    private var disclosureIconSize: CGFloat {
+        isCompactDensity ? 11 : 12
+    }
+
+    private var disclosureIconToLabelSpacing: CGFloat {
+        isCompactDensity ? 2 : 3
+    }
+
+    private var disclosureIconColumnWidth: CGFloat {
+        isCompactDensity ? 20 : 22
+    }
+
+    private var ignoredFolderNames: Set<String> {
+        ProjectIgnoredFolders.names(from: ignoredFolderNamesRaw.wrappedValue)
+    }
+
+    private func toggleIgnoredFolderName(_ name: String) {
+        var names = ignoredFolderNames
+        if names.contains(name) {
+            names.remove(name)
+        } else {
+            names.insert(name)
+        }
+        ignoredFolderNamesRaw.wrappedValue = ProjectIgnoredFolders.rawValue(from: names)
+    }
+
+    private var revealPath: String? {
+        revealURL?.standardizedFileURL.path
+    }
+
+    private func revealTargetIfNeeded() {
+        guard let revealPath else { return }
+        guard let pathIDs = directoryPathIDs(for: revealPath, in: nodes) else { return }
+        expandedDirectories.formUnion(pathIDs)
+        loadExpandedUnloadedDirectories()
+    }
+
+    private func loadExpandedUnloadedDirectories() {
+        for node in directoryNodes(in: nodes)
+        where expandedDirectories.contains(node.id) && !node.childrenLoaded {
+            loadDirectoryIfNeeded(node)
+        }
+    }
+
+    private func loadDirectoryIfNeeded(_ node: ProjectTreeNode) {
+        guard node.isDirectory,
+              !node.childrenLoaded,
+              loadingDirectoryIDs.insert(node.id).inserted else { return }
+        onLoadDirectory?(node.url) {
+            loadingDirectoryIDs.remove(node.id)
+            guard isExpandingAllDirectories else { return }
+            // The parent updates its tree state immediately before invoking
+            // this completion. Yield once so this child observes the new
+            // subtree, then continue the explicit Expand All session without
+            // adding a global tree observer to every SwiftUI body update.
+            scheduleExpandAllContinuation()
+        }
+    }
+
+    private func scheduleExpandAllContinuation() {
+        expandAllContinuationTask?.cancel()
+        expandAllContinuationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            guard !Task.isCancelled, isExpandingAllDirectories else { return }
+            expandedDirectories.formUnion(allDirectoryNodeIDs(in: nodes))
+            persistExpansionState()
+            loadExpandedUnloadedDirectories()
+            expandAllContinuationTask = nil
+        }
+    }
+
+    private func directoryNodes(in treeNodes: [ProjectTreeNode]) -> [ProjectTreeNode] {
+        treeNodes.flatMap { node in
+            node.isDirectory ? [node] + directoryNodes(in: node.children) : []
+        }
+    }
+
+    private func directoryPathIDs(for targetPath: String, in treeNodes: [ProjectTreeNode]) -> [String]? {
+        for node in treeNodes {
+            if let path = directoryPathIDs(for: targetPath, node: node) {
+                return path
+            }
+        }
+        return nil
+    }
+
+    private func directoryPathIDs(for targetPath: String, node: ProjectTreeNode) -> [String]? {
+        let nodePath = node.url.standardizedFileURL.path
+        if nodePath == targetPath {
+            return node.isDirectory ? [node.id] : []
+        }
+        guard node.isDirectory else { return nil }
+        for child in node.children {
+            if let childPath = directoryPathIDs(for: targetPath, node: child) {
+                return [node.id] + childPath
+            }
+        }
+        return nil
+    }
+
+    private func refreshFileIconStyleCache() {
+        var cache: [String: FileIconStyle] = [:]
+        collectFileIconStyles(from: nodes, into: &cache)
+        fileIconStyleCache = cache
+    }
+
+    private func collectFileIconStyles(from nodes: [ProjectTreeNode], into cache: inout [String: FileIconStyle]) {
+        for node in nodes {
+            if node.isDirectory {
+                collectFileIconStyles(from: node.children, into: &cache)
+            } else {
+                cache[node.url.standardizedFileURL.path] = fileIconStyle(for: node.url)
+            }
+        }
+    }
+
+    private func cachedFileIconStyle(for url: URL) -> FileIconStyle {
+        fileIconStyleCache[url.standardizedFileURL.path] ?? fileIconStyle(for: url)
+    }
+
+    private func fileIconStyle(for url: URL) -> FileIconStyle {
+        let ext = url.pathExtension.lowercased()
+        let name = url.lastPathComponent.lowercased()
+
+        switch ext {
+        case "swift":
+            return .init(symbol: "swift", color: .orange)
+        case "js", "mjs", "cjs":
+            return .init(symbol: "curlybraces.square", color: .yellow)
+        case "ts", "tsx":
+            return .init(symbol: "chevron.left.forwardslash.chevron.right", color: .blue)
+        case "json", "jsonc", "json5":
+            return .init(symbol: "curlybraces", color: .green)
+        case "md", "markdown":
+            return .init(symbol: "text.alignleft", color: .teal)
+        case "tex", "latex", "bib", "sty", "cls":
+            return .init(symbol: "text.book.closed", color: .indigo)
+        case "yml", "yaml", "toml", "ini", "env":
+            return .init(symbol: "slider.horizontal.3", color: .mint)
+        case "nix":
+            return .init(symbol: "snowflake", color: .blue)
+        case "eml":
+            return .init(symbol: "envelope", color: .indigo)
+        case "html", "htm", "xhtml":
+            return .init(symbol: "chevron.left.slash.chevron.right", color: .orange)
+        case "css":
+            return .init(symbol: "paintbrush.pointed", color: .cyan)
+        case "xml", "svg":
+            return .init(symbol: "diamond", color: .pink)
+        case "sh", "bash", "zsh", "ps1":
+            return .init(symbol: "terminal", color: .indigo)
+        case "py":
+            return .init(symbol: "chevron.left.forwardslash.chevron.right", color: .yellow)
+        case "rb":
+            return .init(symbol: "diamond.fill", color: .red)
+        case "go":
+            return .init(symbol: "g.circle", color: .cyan)
+        case "rs":
+            return .init(symbol: "gearshape.2", color: .orange)
+        case "sql":
+            return .init(symbol: "cylinder", color: .purple)
+        case "csv", "tsv":
+            return .init(symbol: "tablecells", color: .green)
+        case "cif", "mcif":
+            return .init(symbol: "atom", color: .blue)
+        case "txt", "log":
+            return .init(symbol: "doc.plaintext", color: .secondary)
+        case "png", "jpg", "jpeg", "gif", "webp", "heic":
+            return .init(symbol: "photo", color: .purple)
+        case "pdf":
+            return .init(symbol: "doc.richtext", color: .red)
+        default:
+            if name.hasPrefix(".git") {
+                return .init(symbol: "arrow.triangle.branch", color: .orange)
+            }
+            if name.hasPrefix(".env") {
+                return .init(symbol: "lock.doc", color: .mint)
+            }
+            return .init(symbol: "doc.text", color: .secondary)
+        }
+    }
+}
+
+private struct SidebarCompareDiffView: View {
+    let presentation: DocumentDiffPresentation
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 6) {
+                    ForEach(presentation.changedRows) { row in
+                        diffRow(row)
+                    }
+                    if presentation.changedRows.isEmpty {
+                        ContentUnavailableView("No Changes", systemImage: "checkmark.circle")
+                            .frame(maxWidth: .infinity, minHeight: 180)
+                    }
+                }
+                .padding(isCompactWidth ? 8 : 12)
+            }
+            .background(Color.clear)
+        }
+        .background(Color.clear)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(presentation.title), comparing \(presentation.leftTitle) with \(presentation.rightTitle)")
+    }
+
+    private var header: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(presentation.title)
+                        .font(isCompactWidth ? .subheadline.weight(.semibold) : .headline)
+                        .lineLimit(isCompactWidth ? 2 : 1)
+                        .truncationMode(.middle)
+                    Text("\(presentation.diff.hunks.count) changes")
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer()
+                Button(action: onClose) {
+                    if isCompactWidth {
+                        Image(systemName: "xmark.circle.fill")
+                    } else {
+                        Text("Close")
+                    }
+                }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel("Close diff")
+            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Text(presentation.leftTitle)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                    Image(systemName: "arrow.left.and.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(presentation.rightTitle)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(isCompactWidth ? 8 : 12)
+    }
+
+    private func diffRow(_ row: DocumentDiff.Row) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if row.kind == .removed || row.kind == .changed {
+                line(prefix: "- \(row.leftLineNumber.map(String.init) ?? "")", text: row.leftText, color: .red)
+            }
+            if row.kind == .inserted || row.kind == .changed {
+                line(prefix: "+ \(row.rightLineNumber.map(String.init) ?? "")", text: row.rightText, color: .green)
+            }
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(rowBackground(for: row), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .accessibilityElement(children: .combine)
+    }
+
+    private func line(prefix: String, text: String, color: Color) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .firstTextBaseline, spacing: isCompactWidth ? 6 : 8) {
+                Text(prefix)
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(color)
+                    .frame(width: isCompactWidth ? 36 : 46, alignment: .leading)
+                Text(text.isEmpty ? " " : text)
+                    .font((isCompactWidth ? Font.caption2 : Font.caption).monospaced())
+                    .lineLimit(1)
+                    .foregroundStyle(.primary)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+        }
+    }
+
+    private var isCompactWidth: Bool {
+#if os(iOS)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private func rowBackground(for row: DocumentDiff.Row) -> Color {
+        switch row.kind {
+        case .removed:
+            return Color.red.opacity(colorScheme == .dark ? 0.18 : 0.10)
+        case .inserted:
+            return Color.green.opacity(colorScheme == .dark ? 0.18 : 0.10)
+        case .changed:
+            return Color.orange.opacity(colorScheme == .dark ? 0.20 : 0.12)
+        case .equal:
+            return Color.clear
+        }
+    }
+}
+
+private struct SidebarDisclosureStyle: DisclosureGroupStyle {
+    let symbolName: (Bool) -> String
+    let iconColor: Color
+    let iconSize: CGFloat
+    let iconToLabelSpacing: CGFloat
+    let iconColumnWidth: CGFloat
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeOut(duration: 0.14)) {
+                    configuration.isExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: iconToLabelSpacing) {
+                    Image(systemName: symbolName(configuration.isExpanded))
+                        .font(.system(size: iconSize, weight: .semibold))
+                        .foregroundStyle(iconColor)
+                        .frame(width: iconColumnWidth, alignment: .center)
+                        .accessibilityHidden(true)
+                    configuration.label
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if configuration.isExpanded {
+                configuration.content
+            }
+        }
+    }
+}
+
+struct ProjectTreeNode: Identifiable {
+    let url: URL
+    let isDirectory: Bool
+    var children: [ProjectTreeNode]
+    /// A lazy directory begins unloaded even though its child array is empty.
+    /// This distinguishes it from an expanded directory that was read and is empty.
+    var childrenLoaded: Bool = false
+    var id: String { url.path }
+}

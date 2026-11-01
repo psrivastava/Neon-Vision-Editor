@@ -4,6 +4,1850 @@ All notable changes to **Neon Vision Editor** are documented in this file.
 
 The format follows *Keep a Changelog*. Versions use semantic versioning with prerelease tags.
 
+## [Unreleased]
+
+## [v2.1.3] - 2026-10-25
+
+### Why Upgrade
+
+- Select long, unwrapped lines on the Mac by dragging: the editor now scrolls sideways to follow the selection.
+- The Mac Markdown formatting bar is back in the editor's top-right corner with all its buttons.
+- Scroll the editor from the Mac minimap with the mouse wheel or trackpad.
+
+### Highlights
+
+- Scrolling with the mouse wheel or trackpad while the pointer is over the Mac minimap scrolls the editor.
+
+### Fixes
+
+- Dragging a selection past the left or right edge of a long unwrapped line on the Mac scrolls the editor sideways, so the text being selected stays visible (#854).
+- The Mac Markdown formatting bar sits in the editor's top-right corner again, shows all its buttons when there is room, and no longer covers the first lines of text.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Existing documents, sessions, and preferences are preserved.
+
+### Maintenance
+
+- Development version 2.1.3 (build 1129).
+
+## [v2.1.2] - 2026-10-24
+
+### Why Upgrade
+
+- Edit two open Mac documents side by side again, now that every document opens in its own native tab.
+- Compare any two open Mac tabs in the diff view again.
+- Move a native Mac tab into its own window from the Window menu.
+
+### Highlights
+
+- Side by Side is back on the Mac: choose Toggle Side by Side Editor (⌥⌘\) in the View menu or the Side by Side toolbar button, then pick which open tab to show next to the current one. Both panes are editable, and the Side by Side button is now part of the standard toolbar.
+- Adds Move Tab to New Window to the Window menu.
+
+### Fixes
+
+- Side by Side and Compare Open Tabs find the other documents open in the same Mac window's tabs instead of reporting that no other tab is open.
+- Save and Save As apply to the Side by Side pane you are editing, and a file conflict or save error on that document brings its tab forward so you can resolve it.
+- The second Side by Side pane shows its own minimap, line navigation and cursor position.
+- Undo keeps your own edits after saving a new document, and starts fresh when the document changes elsewhere.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Existing documents, sessions, and preferences are preserved.
+
+### Maintenance
+
+- Development version 2.1.2 (build 1126).
+
+## [v2.1.1] - 2026-10-23
+
+### Why Upgrade
+
+- Type or paste into a new Mac tab right away, without clicking into the editor first.
+- Mac tabs you return to always show their content, even after the window's first tab was closed.
+- Closed Mac tabs stop their background work and no longer reopen on the next launch.
+
+### Highlights
+
+- New native Mac tabs and newly opened documents put the cursor in the editor immediately.
+
+### Fixes
+
+- New native Mac tabs accept typing and paste immediately, without clicking into the editor first.
+- Returning to a native Mac tab always shows its content, including after the first tab of a window has been closed.
+- Closing a native Mac tab stops its background work and shared-import watcher, and a closed tab no longer reopens after its window's first tab was closed.
+- "Open files on current desktop" finds a file that is already open in a background tab instead of opening it twice.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Existing documents, sessions, and preferences are preserved.
+
+### Maintenance
+
+- Avoids rewriting unchanged toolbar labels on every document update.
+- Tab switching no longer rescans every window once per tab.
+- Development version 2.1.1 (build 1123).
+
+## [v2.1.0] - 2026-10-23
+
+### Why Upgrade
+
+- Use native Mac document tabs with filenames, active-tab highlighting, and double-click closing.
+- Keep the iPhone Duo editor toolbar clear of your document when the phone is closed, open, or partially folded.
+- Preserve unsaved edits during external-file refreshes and exact JSON values when formatting.
+
+### Highlights
+
+- Double-click a native Mac document tab to close it, with the existing unsaved-change confirmation.
+- Makes native document tabs standard for macOS, replacing the previous in-editor tab strip. Native tabs show filenames, highlight the active document, and share the project sidebar without sharing document contents or preview state.
+- On iPhone Duo, moves the editor toolbar into a vertical column on the right edge, below the status bar, when the phone is closed, open, or partially folded, so it no longer covers the bottom of your document (#498).
+
+### Fixes
+
+- Rechecks document revisions before applying external file refreshes, so edits made while a refresh is pending are not replaced by stale content.
+- Preserves JSON object member order, repeated keys, exact number tokens, and escaped strings when formatting or combining lines (#802).
+
+### Breaking changes
+
+- The previous Mac in-editor tab strip is replaced by native document tabs. iPhone, iPad, and visionOS retain their existing platform-specific tab experiences.
+
+### Migration
+
+- No document conversion is required. Existing saved sessions use the native document-tab layout on macOS.
+
+### Maintenance
+
+- Hides the content of unselected native Mac tabs so their rendering surfaces can be released; in the paired benchmark this kept retained memory close to 2.0.0 while tab switching stayed faster than 2.0.0.
+- Removes the retired in-window Mac tab code paths and the unused "Open in Tabs" setting.
+- Builds native Mac toolbars once per document, starts file loading before window setup, and defers inline Markdown preview and the language menu until needed.
+- Adds a disposable native-tab benchmark harness with display-state logging, titlebar parity, pane-height, and Markdown rendering checks.
+
+## [v2.0.0] - 2026-10-15
+
+### Why Upgrade
+
+- Switch between open Mac documents with less waiting, including large Markdown and source files.
+- Place the cursor more reliably on iPhone and iPad, and return to saved positions after large documents load.
+- Browse overflowing Mac tabs with visible left and right controls.
+
+### Highlights
+
+- Keeps compatible Markdown previews up to date without reloading unchanged content or losing your scroll position.
+- Stops obsolete folder scans when you cancel project indexing.
+- Adapts the phone toolbar when the available layout changes between compact and regular width.
+
+### Fixes
+
+- Detects external file rewrites even when file size and modification time are unchanged, preventing stale text indexes during background tab activation.
+- Keeps precise iPhone/iPad cursor placement from being overwritten by delayed saved-position updates (#770).
+- Restores saved cursor positions after deferred large-file loading completes, without saving temporary placeholder positions (#770).
+- Preserves manual scrolling through overflowing Mac tabs and adds accessible left/right navigation controls (#766).
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Existing documents, preferences, and optional AI provider settings are preserved.
+
+### Maintenance
+
+- Adds real SwiftUI-to-first-draw tab activation benchmarks and regressions for snapshot ownership, stale results, typing during activation, cancellation, and preview reuse.
+- Loads the macOS editor's initial text window in the background and reuses bounded render caches when returning to unchanged tabs.
+- Verifies the existing CSV/TSV Settings switch through a disposable, externally driven UI acceptance fixture without modifying user preferences or document contents (#738).
+- Completes loading/error translations and overflow-tab control labels across all seven app languages.
+- Full iPhone Duo pose validation remains pending the Xcode/iOS 27.1 toolchain (#498); this release does not claim verified Duo support.
+
+## [v1.9.3] - 2026-10-13
+
+### Why Upgrade
+
+- Choose plain-text editing instead of CSV/TSV tables on macOS.
+- Keep long font names from overlapping controls or widening Settings on Mac, iPhone, and iPad.
+- Find Markdown preview and AI provider options in dedicated macOS Settings sections.
+
+### Highlights
+
+- Adds Settings → Editor → Basics → Show CSV/TSV Table View on macOS. Turn it off to edit CSV/TSV as text and stop automatic table detection in new notes without changing file contents (#738).
+- Moves project Markdown preview options to Settings → Editor → Markdown Preview on macOS.
+- Separates macOS AI settings into provider/model and custom-provider sections, preserving existing credentials and saved values.
+
+### Fixes
+
+- Prevents ordinary multiline notes containing commas from opening as CSV tables (#738).
+- Keeps long selected font names inside their dropdown on macOS, iPhone, and iPad without overlapping nearby controls or widening the page. The complete name remains available in the font menu.
+- Restores the released native macOS Settings sizing and background behavior, keeping controls accessible above the Dock (#714).
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. CSV/TSV table views remain enabled by default; existing font choices and AI provider settings are preserved.
+
+### Maintenance
+
+- Adds regression coverage for bounded dropdown sizing, accessibility-sized text, delimited-text detection, table-view preference changes, and Settings layout.
+
+## [v1.9.2] - 2026-10-06
+
+### Why Upgrade
+
+- Delete the previous word with Option-Delete on macOS, including Unicode text.
+- Keep mobile editor actions and AI settings accessible from the first layout.
+- Optionally rank external AI chat context with explicit TypeSafe consent and conservative fallback.
+
+### Highlights
+
+- Adds configurable Join Lines (Command-J) and Format JSON (Command-Option-J) shortcuts on supported hardware keyboards (#713).
+- Allows custom macOS toolbar actions to be reordered in the chooser, including optional preset and AI-provider controls (#715).
+- Adds experimental, opt-in Jev ranking of optional context for external AI chat, with TypeSafe disclosure, Keychain storage, conservative fallback, and per-request usage information. Apple Intelligence, Agent Mode, selections, and follow-up context remain outside classification.
+
+### Fixes
+
+- Handles macOS Option-Delete through the existing document edit path, recognizes Unicode letters and combining marks, and leaves read-only preview selections unchanged (#696).
+
+- Restore access to AI provider and Jev settings on iPhone and iPad, and improve Jev disclosure text and Done button contrast.
+- Sizes the mobile bottom toolbar from its actual container on first layout, keeping editor actions and Settings visible when the observed editor width has not been populated.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Jev ranking remains disabled unless explicitly enabled and configured.
+
+### Maintenance
+
+- Aligns App Store review audits and privacy/reviewer documentation with optional AI chat and TypeSafe ranking, and corrects the support tip description to consumable.
+
+## [v1.9.1] - 2026-10-01
+
+### Why Upgrade
+
+- Open and save Japanese Shift-JIS files using Apple's native text encodings.
+- Keep the iPad status bar and toolbar separated, with less unused toolbar space.
+- Jump to the beginning or end of long macOS documents with Command-Up/Down.
+
+### Highlights
+
+- Exposes Apple’s available text encodings in the existing encoding picker, including Shift-JIS, with persisted encoding choices and non-lossy saving (#674).
+- Allows the always-available Settings action to be reordered in custom mobile toolbars (#676).
+
+### Fixes
+
+- Reveals the destination of macOS Command-Up/Down document navigation even when it lies outside the loaded editor viewport, including Shift-selection (#660).
+- Loads the destination inside oversized single-line files using a bounded offset-aware window, preserving edit offsets, column reporting and repeated boundary navigation.
+- Arranges the mobile status pill and bottom toolbar in one measured stack instead of independent fixed offsets, avoiding touching bars and double keyboard-accessory spacing (#672, #673).
+- Fits the iPad bottom toolbar to its visible controls while retaining its window-width limit and horizontal scrolling (#675).
+- Detects Shift-JIS KiriKiri text without the CP1251 punctuation corruption, preserving Cyrillic and Western fixtures (#674).
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No migration required. Existing encoding choices remain compatible; ambiguous files can be reopened with an explicit encoding.
+
+## [v1.9.0] - 2026-09-30
+
+### Why Upgrade
+
+- Use the app in seven languages, including Danish, French, Spanish, and Japanese.
+- Close What’s New directly and see the current release highlights.
+- Transfer a text-document copy to a nearby device through an explicit pairing and consent flow.
+
+### Highlights
+
+- Adds Danish, French, Spanish, and Japanese app localization alongside English, German, and Simplified Chinese, including Settings, editor actions, accessibility text, and companion surfaces.
+- Adds opt-in nearby text-document transfer with an ephemeral pairing code, encrypted transport, receiver consent, a 4 MB payload limit, and independently staged received copies.
+
+### Fixes
+
+- Adds a visible Close control to What’s New, preserves Escape dismissal, and refreshes its latest release card during release preparation ([#659](https://github.com/h3pdesign/Neon-Vision-Editor/issues/659)).
+
+- Expands localization coverage for dynamic search, toolbar, Git status, and share-import messages.
+- Processes macOS terminal output as a bounded primary screen, preserving fragmented UTF-8, progress-line rewrites, cursor movement, erase commands, and text styles while publishing coalesced changed-text patches.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No document migration is required. Nearby transfers create independent copies rather than synchronizing documents. Physical-device transfer acceptance remains tracked in #164; terminal, UI-test, and profiling acceptance remains tracked in #318.
+
+### Maintenance
+
+- Keeps the Help-sheet release cards aligned with the changelog during release preparation.
+
+## [v1.8.6] - 2026-09-27
+
+### Why Upgrade
+
+- Edit unusually long generated lines on iPhone and iPad without changing the saved text.
+- Work with Markdown source and rendered preview side by side again.
+- Rearrange macOS document tabs without opening the dragged document first.
+
+### Highlights
+
+- Restores side-by-side Markdown editing and preview as the default; full-window reading remains a Settings option.
+
+### Fixes
+
+- Keeps pathological single-line files editable on iPhone and iPad with display-only segmented wrapping, including when No Wrap is selected. The saved text and copied selections retain their original bytes; ordinary formatted documents retain their chosen layout ([#595](https://github.com/h3pdesign/Neon-Vision-Editor/issues/595)).
+
+- Keeps the Markdown formatting toolbar with the editor instead of overlaying full-window reading.
+
+- Defers macOS document-tab activation until a click completes, allowing a drag to start without switching editors; accepts reorder drops across tab gaps and strip edges ([#632](https://github.com/h3pdesign/Neon-Vision-Editor/issues/632)). Native macOS window tabs remain a separate, future change ([#621](https://github.com/h3pdesign/Neon-Vision-Editor/issues/621)).
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No document migration is required. Full-window Markdown reading remains available in Settings.
+
+### Maintenance
+
+- Advances the development build to 1061; release preparation allocates the final build from the live Xcode Cloud counter.
+
+## [v1.8.5] - 2026-09-26
+
+### Why Upgrade
+
+- Choose whether Markdown opens for editing or full-window reading, and switch modes from the toolbar or keyboard.
+- Arrange preferred iPhone and iPad toolbar actions and use configured app shortcuts while the editor has hardware-keyboard focus.
+- Navigate line and document boundaries with standard Command-arrow keys on macOS.
+
+### Highlights
+
+- Adds a default Markdown opening mode for editing or full-window reading, with toolbar or Command-Shift-P switching ([#617](https://github.com/h3pdesign/Neon-Vision-Editor/issues/617)).
+
+### Fixes
+
+- Makes configured app shortcuts available while the mobile editor has hardware-keyboard focus; restores the documented Save As, Line Wrap, and Language Search keys, reserves editor-owned editing keys, resolves a macOS shortcut collision, and removes duplicate mobile Settings and Help bindings.
+- Fixes the custom iPhone and iPad toolbar icon limit so it matches the selected action count, and lets users reorder their chosen icons ([#615](https://github.com/h3pdesign/Neon-Vision-Editor/issues/615)).
+- Restores the standard macOS Command-arrow and Command-Shift-arrow navigation for line and document boundaries ([#622](https://github.com/h3pdesign/Neon-Vision-Editor/issues/622)).
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No document migration is required. Large single-line Unicode JSON responsiveness on iPhone and iPad remains tracked in #595; native macOS tab behavior remains tracked in #621.
+
+### Maintenance
+
+- Advances the 1.8.5 development build to 1058; release preparation allocates the final build from the live Xcode Cloud counter.
+
+## [v1.8.4] - 2026-09-21
+
+### Why Upgrade
+
+- Browse JSON in a structured preview and read YAML with syntax colors.
+- Choose how macOS opens files across desktops and handles the last tab.
+- Keep space below the cursor when placing it on iPhone and iPad.
+
+### Highlights
+
+- Adds opt-in macOS settings to open files on the current desktop and keep an empty window after closing its last tab.
+- Adds structured JSON previews and syntax-colored YAML previews for large documents.
+
+### Fixes
+
+- Uses the same window routing for new and already-open files across macOS Spaces (#583, #584).
+- Keeps an empty macOS editor available without creating an unwanted untitled tab; Close Window remains available with Command-Shift-W (#586).
+- Reveals space below the cursor after placing it on iPhone and iPad, as well as while typing.
+- Preserves YAML string colors across preview pages and restores keyword formatting in previews.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- No document migration is required. Very large single-line Unicode JSON can still stall mobile editing; this remains tracked in #595.
+
+### Maintenance
+
+- Enables non-contiguous UIKit layout before large-text installation and adds complete-opening responsiveness tests. Physical-device verification for #595 remains outstanding.
+- Advances the development version to 1.8.4; release preparation allocates the build number from the live Xcode Cloud counter.
+
+## [v1.8.3] - 2026-09-19
+
+### Why Upgrade
+
+- Edit complete text documents below 100 MB without entering the excessive-file preview mode.
+- Read long lines on iPhone and iPad without losing text when line wrap is disabled.
+- Apply themes and formatting consistently, with less repeated work when using Settings.
+
+### Highlights
+
+- Refines mobile toolbars with system-adaptive glass, complete action slots, and an optional larger-symbol setting.
+
+### Fixes
+
+- Fixes clipped unwrapped text on iPhone and iPad by keeping the drawing canvas and horizontal scrolling geometry aligned, including cursor reveal, keyboard transitions, and large-document installs.
+- Restores native macOS Settings pane sizing and titlebar material, removes repeated window repositioning, and keeps Settings navigation separate from editor-wide preference refreshes.
+- Makes the custom mobile toolbar action-count setting include persistent controls and keeps Settings and Help available.
+- Coalesces startup session observations and caches ordinary in-memory document text to avoid repeated materialization during view updates.
+
+- Keeps macOS Settings controls responsive by eliminating the duplicate editor recoloring and layout pass that followed every theme, formatting, or palette change.
+
+- Refreshes the visible macOS editor immediately when themes change, preserves the loaded viewport during recoloring, applies bold keywords and Markdown headings plus italic comments and underlined links in the virtual renderer, and restores framework-type and function-call highlighting across supported programming languages without splitting existing comments, strings, attributes, or declarations or expanding work beyond the existing visible range.
+
+- Keeps the iPhone and iPad editor toolbar at the standard compact height, adds optional larger symbols, restores colored preset icons with a distinct All Actions symbol, uses one-line abbreviated captions without sacrificing full accessibility labels, removes empty context-action slots, presents five complete iPhone actions before horizontal scrolling, switches the auto-minimized scrolling toolbar to icons only, and applies the same system-adaptive Liquid Glass setting to the toolbar, status pill, and keyboard bar.
+
+- Keeps syntax highlighting synchronized with the visible viewport while scrolling large programming files on iPhone and iPad, consistently honors the Large File Syntax setting, and applies responsive editor optimizations from existing document metadata without rescanning or copying text. Files below 100 MB remain normal complete editable documents.
+
+- Opens CSV, HTML, JSON, Markdown, source code, and other supported text files below 100 MB as complete editable documents on every platform, while keeping the excessive-file preview boundary at 100 MB.
+- Restores syntax highlighting for large untitled or extensionless documents on iPhone, iPad, and macOS by detecting their language from a bounded content sample.
+- Replaces the hard-coded clear iPhone and iPad bottom toolbar glass that distorted underlying editor text with readable system-adaptive Liquid Glass and adds enabled-by-default button captions with a Settings toggle.
+
+### Breaking changes
+
+- macOS builds now target Apple Silicon only; Intel Macs are no longer supported.
+
+### Migration
+
+- Intel Mac users must remain on an earlier compatible release. No document migration is required.
+
+### Maintenance
+
+- Advances the post-v1.8.2 development version to 1.8.3 (1053).
+
+## [v1.8.2] - 2026-09-18
+
+### Why Upgrade
+
+- View large Markdown documents as rendered Markdown instead of a truncated source preview.
+- Open files from Finder even when no editor window is currently open.
+- Keep long-document scrolling focused on visible editor rows.
+
+### Highlights
+
+- Renders complete Markdown previews for documents up to 8 MB, including file-backed editor documents.
+
+### Fixes
+
+- Opens an editor window when files or project folders are sent from Finder while no editor window is open.
+- Keeps the editor's scroll redraw focused on visible rows and avoids an unnecessary localization override during system-language startup.
+- Removes the 180 KB Markdown preview cutoff that showed a truncated raw-text fallback for ordinary large documents.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+### Maintenance
+
+- Requires hosted release runtime checks and reports unsuccessful post-release documentation merges as failures.
+
+## [v1.8.1] - 2026-09-16
+
+### Why Upgrade
+
+- Gives iPhone and iPad a compact bottom editor toolbar with easier access to tools while keeping more code visible.
+- Makes editor controls, status, and keyboard shortcuts easier to read in light and dark appearances.
+- Brings preview and terminal surfaces into line with the selected editor theme.
+
+### Highlights
+
+- Adds a horizontally scrollable iPhone toolbar and an adaptive-width iPad toolbar; compact controls appear while scrolling.
+- Keeps the mobile editor keyboard toolbar visible by default and adds a setting to control it.
+- Uses system Liquid Glass for supported controls and respects system glass and accessibility appearance settings.
+- Adds Markdown theme selection to the iPad preview menu.
+
+### Fixes
+
+- Keeps the mobile keyboard toolbar clear of the editor and on-screen keyboard, with a frosted surface in light and dark mode.
+- Centers and collapses the mobile editor status above the bottom toolbar, then hides it while scrolling.
+- Aligns preview headers and uses the editor theme for project cards and terminal surfaces.
+- Improves filename readability in iPhone tabs and unifies toolbar icon color.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.8.0] - 2026-09-14
+
+### Why Upgrade
+
+- Opens files from Finder by dropping them anywhere in the macOS workspace, with each file placed in its own editor tab.
+- Keeps large terminal output, Git diffs, project indexing, and long-document tab switching responsive under sustained workloads.
+- Uses Swift 6.4 and OS 27 Foundation improvements while preserving the existing deployment targets.
+- Adapts editor panes, project tools, settings, previews, and native tabs to the space available on compact, regular, split, and foldable iPhone layouts.
+
+### Highlights
+
+- Adds native macOS file drag and drop with modern DropSession handling and a compatible path for older supported macOS releases.
+- Adds a compact five-step macOS window-surface slider that moves from dense native frosted glass to a lighter frosted surface while preserving background blur.
+- Streams terminal output incrementally into a native text view and precomputes stable Git diff rows.
+- Reduces repeated URL normalization during project scans and uses the measured faster byte-iteration path for large files.
+- Uses measured size classes, flexible pane widths, scaled tab typography, and safe-area-aware margins instead of assuming a specific iPhone or iPad shape.
+
+### Fixes
+
+- Keeps a newly selected long document's complete content visible instead of applying a stale scroll position from the previous tab.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+### Maintenance
+
+- Adds incremental Swift Testing interoperability and makes ignored throwing-task diagnostics a platform-matrix failure.
+- Keeps stateful AppKit, WebKit, StoreKit, and PTY XCTest suites serial while independent Swift Testing cases remain parallel-capable.
+
+## [v1.7.6] - 2026-09-12
+
+### Why Upgrade
+
+- Keeps macOS editor text intact while scrolling long or wrapped documents.
+- Restores reliable line rendering when scrolling with the Markdown preview and sidebars open.
+- Preserves the virtual editor's bounded layout and redraw behavior while repairing ordinary scroll updates.
+
+### Highlights
+
+- Repaints only the visible Core Text canvas region during ordinary scrolling, preserving the fast virtualized layout path.
+
+### Fixes
+
+- Prevents stale AppKit backing pixels from covering or clipping editor lines during macOS scrolling.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+### Maintenance
+
+- Removes official Homebrew Cask branch and pull-request generation from release automation. Releases continue updating `h3pdesign/homebrew-tap`, while the official cask relies on Homebrew's upstream livecheck process.
+
+## [v1.7.5] - 2026-09-11
+
+### Why Upgrade
+
+- Restores reliable drag-to-reorder behavior for native macOS document tabs.
+- Makes large-document scrolling smoother by keeping ordinary scroll events on AppKit's composited path.
+- Keeps the editor and minimap synchronized without repeating imperceptible viewport updates.
+
+### Highlights
+
+- Reuses prepared Core Text rows across fine-grained scrolling while retaining an ahead-of-viewport render window.
+
+### Fixes
+
+- Prevents native tab items from being treated as draggable window background instead of receiving their own reorder gesture.
+- Stops ordinary macOS editor scrolling from invalidating the complete canvas and rebuilding visual rows for subpoint movement.
+- Coalesces editor viewport publications and avoids duplicate SwiftUI minimap state updates.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.7.4] - 2026-09-11
+
+### Why Upgrade
+
+- Keeps Markdown and PDF project browsing responsive while large preview collections are prepared.
+- Reduces avoidable SwiftUI panel invalidations as indexed project files finish loading.
+- Preserves progressive preview feedback while publishing UI changes in bounded batches.
+
+### Highlights
+
+- Updates project-preview cards and progress in bounded batches instead of invalidating the complete panel for every indexed file.
+
+### Fixes
+
+- Prevents per-file loading-status publications from triggering redundant SwiftUI project-preview refreshes.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.7.3] - 2026-09-11
+
+### Why Upgrade
+
+- Completes macOS 27 release readiness while keeping existing deployment targets and runtime availability checks for older systems.
+- Makes macOS theme changes, settings updates, and document-tab activation more responsive by avoiding redundant preference and window-composition work.
+- Restores a coherent system-glass appearance across visionOS themes and reading surfaces.
+
+### Highlights
+
+- Enables the macOS 27 Agent Mode sources in Xcode 27 App Store and notarized builds while preserving runtime availability checks and older-OS compatibility.
+- Validates the application with the macOS, iOS/iPadOS, and visionOS 27 SDKs accepted by App Store Connect.
+
+### Fixes
+
+- Prevents a theme selection from publishing ten process-wide preference changes and removes unrelated full-window composition work from theme updates.
+- Avoids unnecessary editor highlighting and window-chrome refreshes during macOS settings changes and tab activation.
+- Keeps visionOS System Glass light in light mode and prevents mixed light and dark surfaces in Paper and other appearance themes.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+### Maintenance
+
+- Moves hosted platform, release-validation, and notarized-release jobs to GitHub's `xcode-27` runner and verifies the macOS, iOS/iPadOS, and visionOS 27 SDK paths before compiling them in CI; production archives continue to reject beta Xcode builds.
+- Centralizes Xcode and SDK validation across CI and release workflows and correctly rejects both `Xcode-beta.app` and underscored beta installation names from production archives.
+
+## [v1.7.2] - 2026-09-09
+
+### Why Upgrade
+
+- Keeps editor chrome responsive and visually consistent across macOS, iOS, and iPadOS.
+- Reduces the visible delay before syntax highlighting appears when switching documents.
+- Keeps the AI assistant, Markdown controls, and Find & Replace surfaces readable in opaque and translucent themes.
+
+### Highlights
+
+- Refines mobile tab transitions, tab spacing, toolbar placement, and theme-aware translucent surfaces.
+- Aligns the AI assistant panel, Markdown controls, and Find & Replace surfaces with the active sidebar and editor themes.
+
+### Fixes
+
+- Prevents mobile tabs and toolbar controls from clipping at the edges during selection and scrolling.
+- Prevents interrupted macOS window drags from extending editor text selection.
+- Starts macOS syntax highlighting as soon as the selected tab viewport is available.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.7.1] - 2026-09-09
+
+### Why Upgrade
+
+- Keeps native document tabs, sidebars, editor surfaces, and Settings visually consistent across macOS, iOS, and iPadOS window modes.
+- Applies appearance and layout changes immediately when switching Light, Dark, or System mode.
+- Makes tab switching and Settings navigation feel immediate while preserving the native platform controls.
+
+### Highlights
+
+- Replaces the remaining legacy tab-bar paths with native platform tab implementations.
+- Preserves complete tab borders, spacing, and translucent surfaces across hover, selection, and appearance changes.
+
+### Fixes
+
+- Aligns tab, TOC sidebar, project sidebar, line-number, and editor backgrounds in opaque and translucent modes.
+- Prevents tab borders from clipping, flashing, or disappearing during hover and theme transitions.
+- Keeps Settings content sized to the selected tab and opens the Settings window in a stable editor-relative position.
+- Restores drag-to-move behavior across the macOS top bar without applying window-drag handling to the editor surface.
+- Keeps cursor-based text selection available on iPhone, iPad, and visionOS.
+- Makes the Welcome Tour follow the configured Light, Dark, or System appearance and carries the major release highlights forward.
+- Prevents iOS App Store packaging from failing when the export environment rejects Xcode's symbol-copy flag.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.6.4] - 2026-09-08
+
+### Why Upgrade
+
+- Keeps macOS typing visually stable while preserving the native editor viewport.
+- Makes empty native titlebar space usable for window movement without sacrificing toolbar actions.
+- Keeps the editor’s native tab and viewport lifecycle intact while these macOS chrome fixes are applied.
+
+### Highlights
+
+- Adds native macOS window dragging from unused titlebar and toolbar space with no visible drag handle.
+
+### Fixes
+
+- Stops per-character document length and dirty-state changes from rebuilding the macOS editor configuration.
+- Preserves toolbar button hit-testing while supporting window dragging in the middle of the native toolbar.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.6.3] - 2026-09-07
+
+### Why Upgrade
+
+- Switch between open documents with less visible delay, including when changing between Markdown and source files.
+- Keep local development builds usable without requiring a Developer ID certificate for Quick Look.
+- Preserve a responsive first frame while deferred rendering catches up in the background.
+
+### Highlights
+
+- The selected editor publishes its first frame before deferred layout and preview work begins.
+
+### Fixes
+
+- Makes macOS tab switching responsive by publishing the selected editor before deferred Core Text layout and Markdown preview work runs.
+- Avoids synchronous large-file inspection and preview parsing while selecting a tab, including when switching between Markdown and source files.
+- Fixes Markdown PDF export clipping, removes interactive code controls from exports, preserves A4 page dimensions, and uses content and code-line boundaries for pagination without blank trailing pages.
+- Find in Files now applies root and nested .gitignore rules and the sidebar's Ignored Folders settings consistently, pruning excluded directories while retaining text files with unknown extensions.
+- Corrects mobile line-number updates while typing and scrolling, and removes the fixed width ceiling that clipped long unwrapped lines.
+- Adds three lines of bottom editing space and keeps context below the active caret on iOS/iPadOS and visionOS.
+- Adds triple-tap logical-line selection and an accessible Select Line action in the mobile editor.
+- Displays Markdown bold and italic source text using font styling while preserving markup, escapes, and code blocks.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.6.2] - 2026-09-05
+
+### Why Upgrade
+
+- Detects external edits on network volumes even when filesystem change notifications are missed.
+- Lets you disable the automatic Welcome Tour and opens Finder documents without interrupting them with a tour.
+- Keeps purchase feedback stable while Settings updates and product information refreshes.
+- Improves external-document save safety and opens text files with unknown extensions or no extension.
+
+### Highlights
+
+- Adds a background metadata polling fallback for open network-volume files, reusing the existing external-change conflict handling.
+- Adds an automatic Welcome Tour preference; Finder file launches suppress the tour, including after app updates.
+- Presents purchase alerts using local SwiftUI presentation state and preserves the latest queued purchase message.
+- Retains a complete local recovery copy of external-document save payloads on iOS/iPadOS and visionOS.
+
+### Fixes
+
+- Avoids duplicate network-file checks and skips tabs that are still loading or already reviewing an external change.
+- Rechecks launch intent before presenting a delayed Welcome Tour.
+- Prevents purchase-alert state publication during SwiftUI view updates and stops successful product metadata refreshes from clearing purchase feedback.
+- Coordinates external file access and saves large-file snapshots in the background without discarding newer edits.
+- Preserves queued encoding changes and refreshes cached metadata after atomic replacement to avoid false save conflicts.
+- Preserves ANSI escape sequences, tabs, and Unicode formatting when loading text instead of treating them as pasted display markers.
+- Keeps failed-open placeholders read-only and retains unsaved buffers when files become unavailable or conflict.
+- Waits for saves before closing tabs or projects; failed or conflicted documents remain open.
+
+### Maintenance
+
+- Isolates release preparation from develop, reuses allocated build numbers, and verifies generated documentation in a disposable dry run.
+- Keeps public download references on the published version until release verification succeeds.
+- Distinguishes proven historical TestFlight distribution-only actions from active Xcode Cloud builds during release-number preflight.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.6.1] - 2026-09-04
+
+### Why Upgrade
+
+- Brings official Emmet 2 abbreviation expansion to markup and stylesheet editing across the native editors.
+- Restores the established macOS editor commands and interactions after the move to bounded virtual rendering.
+- Improves large-document responsiveness while correcting HTML/CSS colors and App Store support-purchase handling.
+
+### Highlights
+
+- Expands complex HTML, JSX, CSS, SCSS, Less, Sass, and related Emmet abbreviations with configured indentation.
+- Restores Tab-to-accept inline completion, Vim navigation, Markdown shortcuts, drag and drop, rich-text paste, code snapshots, and whitespace inspection in the macOS virtual editor.
+- Caches generation-safe bounded viewports and enforces median latency budgets for typing, scrolling, selection, and viewport reloads.
+
+### Fixes
+
+- Colors HTML tags, attributes, strings, embedded CSS properties, and numbers as separate syntax tokens instead of treating complete attribute or style values as one string.
+- Reads offscreen selections and edits through bounded UTF-16 document ranges instead of materializing an entire file-backed document.
+- Preserves tab selection, preview, structured-data, AI completion, toolbar, and persistence behavior when switching to the virtual editor.
+- Uses the correct StoreKit purchase action on visionOS and recovers product loading cleanly during App Review-style sessions.
+- Keeps Emmet and inline-completion work limited to the active viewport so large files do not regress to full-document processing.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.6.0] - 2026-09-03
+
+### Why Upgrade
+
+- Opens and edits large Markdown and source files with less blocking work and bounded viewport rendering.
+- Keeps scrolling, rapid typing, Unicode edits, and saving reliable in large documents.
+- Adds native macOS HEX color previews and a color picker directly in the source editor.
+
+### Highlights
+
+- Prepares large-file indexes in the background and limits rendering to visible rows and bounded document windows.
+- Shows color swatches for supported HEX literals and preserves their format when editing colors.
+- Coalesces recent-file and performance-history persistence so repeated editor actions do not queue obsolete preference writes.
+
+### Fixes
+
+- Prevents blank scrolling after editor-width changes and preserves forward content in bounded viewports.
+- Refreshes edit coordinates before consecutive keystrokes, preserving typed text and accurate caret positions.
+- Keeps independent document views valid until the underlying content changes.
+- Uses exact document positions for navigation across uneven line lengths and offscreen accessibility reporting.
+- Preserves UTF-8 and UTF-16 boundaries, byte-order marks, surrogate pairs, and precise line counts.
+- Saves user-selected files through the system replacement directory while retaining atomic replacement and external-change protection.
+- Avoids full-document work for hidden editor confirmation messages and restores accessibility exposure of the source canvas.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.6] - 2026-08-29
+
+### Why Upgrade
+
+- Makes the iPhone and iPad editor toolbar more compact and language-aware without hiding full menu names or accessibility context.
+- Restores predictable Markdown list continuation and native text-selection commands across mobile and macOS editors.
+- Keeps collapsed and expanded Markdown formatting controls readable without wasting editor space or covering actions.
+
+### Highlights
+
+- Uses icon-only mobile toolbar presets and language-specific symbols or initials for the current document language.
+- Adds a horizontally scrollable mobile Markdown formatting row while keeping the collapsed control in a compact opaque pill over a transparent surrounding area.
+- Treats explicit language choices as tab-level overrides so automatic detection does not immediately replace the user's selection.
+
+### Fixes
+
+- Makes Settings and Help toolbar visibility follow their configured switches in standard, all-actions, and custom presets.
+- Increments ordered Markdown markers such as `1.` to `2.` and `9)` to `10)` when continuing lists, including in the macOS virtual editor.
+- Restores the system edit menu for caret-only interactions so Select and Select All remain available while preserving snapshot actions for selected ranges.
+- Prevents editor characters from bleeding through the collapsed Markdown formatting pill and keeps the expanded action row reachable by horizontal scrolling.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.5] - 2026-08-29
+
+### Why Upgrade
+
+- Prevents AppKit and Core Text drawing from leaking text state between macOS virtual-editor rows and producing mirrored or upside-down glyphs.
+- Makes Apple Pencil a precision iPad editing input with hover caret preview and direct range selection.
+- Keeps Markdown live-preview text at the exact resolved editor font size on every supported platform.
+- Makes the release regression suite more reliable while parallel performance, filesystem, and PTY tests compete for resources.
+
+### Highlights
+
+- Draws every virtual-editor line through an isolated Core Text boundary that derives coordinates from the canvas and restores inherited text state.
+- Uses Pencil-only hover and drag recognizers for caret preview and range selection, with side tap or squeeze undo that respects system shortcut preferences.
+- Strengthens cross-platform preview-size coverage and asynchronous release-test deadlines.
+
+### Fixes
+
+- Stops line-number, wrapped-row, and marked-text drawing from contaminating subsequent Core Text matrix and position state.
+- Removes the stale macOS regression expectation for the retired `0.96` Markdown preview scale.
+- Prevents false external-refresh and terminal-session failures during heavily parallelized test runs.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.4] - 2026-08-27
+
+### Why Upgrade
+
+- Restores access to every wrapped source row in the macOS editor after project-sidebar or preview width changes.
+- Keeps the final document lines reachable at both narrow and wide editor widths.
+- Preserves responsive virtual-editor layout without performing unbounded full-document measurement.
+
+### Highlights
+
+- Measures a bounded, distributed sample of wrapped rows when calculating the virtual canvas scroll extent.
+- Uses exact row accounting for fully loaded documents and immediate expansion when wrapping increases.
+
+### Fixes
+
+- Prevents the macOS editor from stopping before the document's final lines when the project sidebar or preview narrows the source pane.
+- Recalculates cached row geometry after sidebar width transitions without reintroducing unbounded layout work.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.3] - 2026-08-26
+
+### Why Upgrade
+
+- Makes large-file editing and scrolling more responsive across macOS, iOS, and iPadOS.
+- Reduces unnecessary editor, project, preview, and session-state refreshes during routine interaction.
+- Adds a distraction-free focus mode while improving editor selection, project-row clarity, and accessibility context.
+
+### Highlights
+
+- Caches macOS viewport render snapshots and incrementally prepares syntax-highlighted lines outside the draw path.
+- Adds revision-aware iOS line metadata, no-wrap width caching, and bounded formatting for large documents.
+- Adds focused SwiftUI observation snapshots, preview reload measurements, and CI-exported performance results.
+- Adds Focus Mode to hide secondary editor chrome without changing the open document or workspace state.
+
+### Fixes
+
+- Prevents the editor canvas from taking focus merely because it moved into a window.
+- Improves editor accessibility with document, line, column, selection, and read-only context.
+- Splits the root observer composition so supported public Xcode releases can type-check it reliably.
+- Makes release appcast publication track its pull request by number and delays release-branch creation until metadata validation succeeds.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.2] - 2026-08-22
+
+### Why Upgrade
+
+- Keeps Markdown preview body text at the same effective base size as the editor while font zoom changes.
+- Adds measurable large-document performance coverage before further virtual-renderer changes.
+- Improves editor rendering efficiency by caching resolved syntax colors for each configured theme.
+
+### Highlights
+
+- Adds 100,000-line benchmarks for typing, scrolling, selection, and viewport reload latency.
+- Adds Time Profiler and Animation Hitches capture support with readable baseline trace bundles.
+- Adds visual regression coverage for light and dark translucent and opaque editor surfaces.
+
+### Fixes
+
+- Removes the macOS preview's hidden 0.96 font-size reduction so preview text no longer drifts smaller than the editor.
+- Removes an unreachable duplicate Warm Sepia toolbar theme mapping that produced a compiler warning.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.1] - 2026-08-21
+
+### Why Upgrade
+
+- Makes Markdown preview themes more vivid, differentiated, and reliable in both light and dark mode.
+- Improves project-folder opening and stabilizes the Sparkle update dependency.
+- Keeps live preview and exported Markdown styling aligned across supported appearances.
+
+### Highlights
+
+- Adds distinct Plasma and Deep Ocean palettes and strengthens High Contrast, Warm Sepia, Nordic Light, Article, Notebook, Terminal Notes, and Developer Slate.
+- Adds Ember Glow, Forest Canopy, Ultraviolet, Cobalt, and Mint Paper for a broader set of vivid, differentiated preview styles.
+- Adds theme-specific heading accents, semantic color tokens, richer Markdown component styling, and live-preview/export CSS parity.
+- Keeps legacy theme identifiers compatible while preventing visible theme palette collisions.
+
+### Fixes
+
+- Separates Neon Editorial and Nordic Light from default palette fallbacks in the affected appearance modes.
+- Adds regression coverage for theme uniqueness, vivid component styling, image captions, and export parity.
+- Pins Sparkle to a reproducible `2.9.5` package version to avoid missing package-product resolution.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.5.0] - 2026-08-20
+
+### Why Upgrade
+
+- Makes the macOS virtual editor more dependable for selection, keyboard navigation, and tab closing.
+- Restores complete editor theme customization, including canvas, text, cursor, selection, and gutter colors.
+- Adds a polished code-snapshot workflow with more themes and export sizes for sharing source excerpts.
+
+### Highlights
+
+- Adds ten code-snapshot themes, gradient and transparent backgrounds, configurable window details, typography, padding, corners, and responsive export sizes.
+- Adds an opaque editor canvas option for true theme backgrounds while retaining translucent sidebars and window chrome.
+- Keeps the Markdown formatting toolbar available as a compact translucent control directly below the macOS tab bar.
+
+### Fixes
+
+- Aligns line numbers to the first visual row of wrapped content at every supported editor font size and line height.
+- Makes Up and Down arrow navigation move the caret between visual rows, including wrapped text and viewport transitions.
+- Routes Command-W from the editor to the selected tab and preserves the unsaved-changes confirmation instead of closing the window.
+- Applies selected theme colors consistently to editor text, canvas, line numbers, caret, selection, marked text, and input-method text.
+- Restores complete multi-line selection rendering in the virtual editor without sacrificing row virtualization performance.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.4.6] - 2026-08-16
+
+### Why Upgrade
+
+- Gives Finder Quick Look previews meaningful syntax colors across more supported languages and file types.
+- Keeps compact Finder previews focused on content while retaining navigation controls in the full Quick Look window.
+- Makes Markdown preview controls clearer, consistently aligned, and easier to identify.
+
+### Highlights
+
+- Adds dedicated Quick Look highlighting for SQL, TeX, configuration files, strings files, delimited data, logs, notebooks, Dockerfiles, and Makefiles.
+- Adds a post-release documentation workflow that waits for publication to settle, repairs release drift, validates the result, and creates a signed update when needed.
+
+### Fixes
+
+- Prevents supported Quick Look languages from falling back to mostly one-color plain text.
+- Preserves correct token ranges for Unicode text containing embedded CSS or JavaScript.
+- Hides Markdown controls and branding in compact Finder previews without removing them from the expanded Quick Look experience.
+- Replaces loosely aligned icon-only Markdown actions with an aligned Preview, Source, and Contents control group.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.4.5] - 2026-08-16
+
+### Why Upgrade
+
+- Keeps the macOS virtual editor writable across its full width after changing sidebars or Markdown preview.
+- Restores line wrapping immediately when the editor viewport changes.
+- Preserves fast tab switching while correcting viewport reflow.
+
+### Highlights
+
+- Makes the active editor viewport width authoritative for virtual-row layout and fragment caching.
+
+### Fixes
+
+- Prevents virtual rows from being cached using the canvas's previous width during preview and sidebar transitions.
+- Stops overlay scrollbars from reserving an uneditable strip inside the editor viewport.
+- Invalidates cached row fragments when their wrapping width or wrap mode no longer matches the active viewport.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.4.4] - 2026-08-15
+
+### Why Upgrade
+
+- Makes the on-screen keyboard accessory reliable for touch editing on iPhone and iPad.
+- Adds small editor commands that make sharing locations and cleaning lists faster.
+- Preserves line wrapping through preview and sidebar layout transitions.
+
+### Highlights
+
+- Adds configurable Save, Find, Undo, and Redo actions before bracket tokens above the on-screen keyboard.
+- Adds Copy Current Editor Reference and Sort & Deduplicate Lines commands.
+
+### Fixes
+
+- Restores the keyboard accessory when the software keyboard is visible, including Simulator sessions where a keyboard controller is also present.
+- Prevents macOS virtual-editor width measurements from disabling line wrapping after preview or sidebar transitions.
+- Keeps the table-of-contents sidebar layout transition from leaving the editor at a stale width.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.4.3] - 2026-08-15
+
+### Why Upgrade
+
+- Keeps macOS editing stable while changing workspace and Brain Dump layouts.
+- Makes Markdown preview actions easier to reach without crowding the main toolbar.
+- Preserves full-width line wrapping while sidebars and split previews change.
+
+### Highlights
+
+- Moves Markdown preview export and style actions into the split preview header.
+- Adds a dedicated Markdown Cards button to the Standard and Writing toolbar presets.
+
+### Fixes
+
+- Prevents preview-divider resizing from feeding geometry changes back into the editor while dragging.
+- Restores the virtual editor's usable width after sidebar, preview, and workspace changes.
+- Prevents the first editor row from drawing beneath the tab bar.
+- Prevents Brain Dump from collapsing open-document text into one-character columns.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.4.2] - 2026-08-15
+
+### Why Upgrade
+
+- Makes detached Markdown previews easier to read over the desktop while preserving a transparent glass appearance.
+- Keeps macOS editor, sidebar, and preview surfaces visually consistent when translucency is enabled or disabled.
+- Aligns build metadata across every app target for reliable Xcode Cloud archives.
+
+### Highlights
+
+- Adds a light frosted-glass layer to detached Markdown previews and Finder Quick Look Markdown previews.
+- Uses the selected translucent window mode consistently across editor-related macOS surfaces.
+- Uses ultra-thin material for macOS sidebars when window translucency is disabled.
+
+### Fixes
+
+- Prevents the editor canvas from reverting to a white background when translucency is disabled.
+- Prevents vertical seams between editor panes in translucent mode and restores reliable line wrapping after tab or preview changes.
+- Keeps app, extension, widget, App Clip, and Watch targets on one build number.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.4.1] - 2026-08-14
+
+### Why Upgrade
+
+- Makes compact iPhone editor controls and document outlines easier to scan.
+- Improves project navigation, structured-text workflows, and Quick Look reliability.
+- Keeps every named mobile-toolbar action within reach on iPhone and iPad.
+
+### Highlights
+
+- Adds project-sidebar expansion persistence, lazy directory loading, adjustable text size, and improved overlay scrollers.
+- Adds Typst templates and a safe plain-text-to-JSON structuring workflow.
+- Keeps every named iPhone and iPad toolbar-preset action directly reachable in the horizontal toolbar.
+- Adds pinch-to-zoom sizing for project-sidebar file items.
+
+### Fixes
+
+- Shows concise language labels such as `MD`, `JS`, and `TS` in the iPhone toolbar while preserving full picker and VoiceOver names.
+- Adds subtle spacing between compact table-of-contents entries without loosening their indentation or content layout.
+- Preserves document-specific outline navigation and improves Quick Look preview refresh behavior.
+- Prevents WatchConnectivity background callbacks from crossing into main-actor Watch or phone state before an explicit handoff.
+- Prevents iPhone toolbar construction from overflowing the Swift generic-metadata stack on device.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.4.0] - 2026-08-12
+
+### Why Upgrade
+
+- Reworks macOS large-document editing around a file-backed document model and bounded live-editor virtualization.
+- Removes full-document compatibility work from the per-edit path for responsive large-file editing.
+- Restores reliable content installation when opening ordinary files such as the changelog.
+
+### Highlights
+
+- Adds a bounded virtual viewport that keeps the active editing region, scrolling, selection, and caret state responsive for large files.
+- Applies UTF-16 editor mutations directly through the active document viewport instead of copying the whole document for each edit.
+- Preserves encoding, line-ending, external-change, and atomic-save behavior across file-backed edits.
+
+### Fixes
+
+- Fixes ordinary documents opening with an empty macOS editor while the outline still showed their content.
+- Prevents bounded viewport scrolling from double-counting the absolute document position.
+- Preserves selections and caret positions when a live viewport is replaced.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.3.6] - 2026-08-12
+
+### Why Upgrade
+
+- Restores abbreviated toolbar preset labels alongside their symbols on macOS.
+- Gives the macOS Settings header an opaque, readable native appearance.
+- Adds a dedicated Quick Look build scheme and hardens release metadata synchronization.
+
+### Highlights
+
+- Quick Look is now independently buildable and verifiable through the shared Xcode scheme.
+- Release documentation tracks the current five-release timeline across localized Pages content.
+
+### Fixes
+
+- Prevents AppKit from collapsing toolbar preset controls to symbol-only presentation.
+- Prevents Settings-window toolbar icons from blending into the content behind a transparent titlebar.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.3.5] - 2026-08-11
+
+### Why Upgrade
+
+- Refines Quick Look behavior and macOS Settings sizing after the v1.3.4 appearance correction.
+- Keeps release metadata, download documentation, and platform version references synchronized for the next direct-download release.
+- Includes the latest post-release polish without changing the supported workflow or migration path.
+
+### Highlights
+
+- Improves Quick Look and Settings-window sizing behavior on macOS.
+- Refreshes release documentation, download metrics, Sparkle metadata, and App Store version references.
+
+### Fixes
+
+- Reduces layout movement and sizing friction when working with Quick Look previews and macOS Settings.
+- Keeps the release-facing documentation and published-version references aligned with v1.3.5.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.3.4] - 2026-08-11
+
+### Why Upgrade
+
+- Makes Quick Look previews follow the active macOS light or dark appearance.
+- Restores readable syntax contrast instead of pairing light backgrounds with white text or dark backgrounds with dark text.
+- Rebuilds preview text attributes when the system appearance changes while Quick Look is open.
+
+### Highlights
+
+- Adds a balanced light syntax palette alongside the existing dark Neon palette.
+- Keeps line numbers, headers, and source tokens in the same appearance mode as the preview surface.
+
+### Fixes
+
+- Removes the fixed black Quick Look controller background.
+- Stops forcing the dark editor theme for every Quick Look preview.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.3.3] - 2026-08-11
+
+### Why Upgrade
+
+- Restores a readable, centered syntax-language status in the macOS toolbar.
+- Keeps the selected toolbar preset visible as an icon plus a concise state label instead of an icon alone.
+- Uses v1.3.1 as the documented viable fallback for users comparing this correction line with an earlier release.
+
+### Highlights
+
+- Shows concise preset state values such as Std, Write, Dev, Git, Focus, and All directly in the toolbar.
+- Keeps the full preset names and icons in the selection menu while preserving the existing keyboard and accessibility semantics.
+
+### Fixes
+
+- Prevents macOS from collapsing the toolbar preset control to an unlabeled symbol.
+- Centers the full active language name within its sufficiently wide toolbar picker.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.3.2] - 2026-08-11
+
+### Why Upgrade
+
+- Delivers the complete v1.3.1 toolbar and iPad correction set together with the final macOS Settings-window stabilization.
+- Keeps the active syntax language readable as a persistent toolbar status instead of compressing it to an abbreviation.
+- Removes the remaining macOS preference-window chrome movement when switching Settings tabs.
+
+### Highlights
+
+- Carries forward v1.3.1's visible toolbar state controls, direct preview action, and transparent iPad Markdown toolbar.
+- Keeps the macOS Settings window at a fixed width while each tab uses its measured content height.
+
+### Fixes
+
+- Prevents macOS Settings traffic-light controls from being relaid out on every tab update.
+- Centers the full active language name within its sufficiently wide macOS, iPad, and iPhone toolbar pickers.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.3.1] - 2026-08-11
+
+### Why Upgrade
+
+- Corrects the toolbar and settings regressions introduced around the v1.3.0 release.
+- Keeps the active language and preview state visible while separating immediate actions from option menus on macOS.
+- Restores a usable, transparent Markdown formatting toolbar on iPad.
+
+### Highlights
+
+- Organizes macOS toolbar presets into adjacent action and state/menu zones, with a direct preview toggle alongside visible language and preview controls.
+- Aligns the iPad Markdown toolbar with the iPhone interaction and Liquid Glass presentation while keeping it on the trailing editor edge.
+
+### Fixes
+
+- Prevents the iPad Markdown toolbar from disappearing or being placed on the wrong side of the editor.
+- Removes the opaque toolbar background so editor content remains visible beneath its glass surface.
+- Prevents macOS General settings cards from overlapping at narrower window widths.
+- Restores the macOS language picker’s visible active-language label.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.3.0] - 2026-08-11
+
+### Why Upgrade
+
+- Adds a real macOS Quick Look preview for HTML, CSS, Markdown, and source files.
+- Keeps HTML and CSS syntax coloring vibrant, including CSS embedded in HTML style blocks.
+- Makes Quick Look previews wrap to the available screen width and prevents macOS settings columns from overlapping.
+
+### Highlights
+
+- Embeds the macOS Quick Look extension in the direct app while keeping iOS and iPadOS builds platform-safe.
+- Adds HTML/CSS-aware Quick Look highlighting with responsive line wrapping.
+- Hardens release packaging, extension signing, and localized release documentation.
+
+### Improvements
+
+- Narrows Quick Look layout sizing to the available viewport so long lines do not force horizontal scrolling.
+- Constrains macOS settings controls and flexible columns to avoid left/right panel overlap.
+
+### Fixes
+
+- Prevents the TestFlight support purchase action from reporting StoreKit as unavailable while the initial product and payment-capability check is still loading.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [Unreleased]
+
+## [v1.2.6] - 2026-08-09
+
+### Why Upgrade
+
+- Makes everyday editor navigation faster and clearer on iPhone and iPad.
+- Reduces unnecessary work while editing and saving larger documents.
+- Gives assistive technologies clearer state information for toolbar controls.
+
+### Highlights
+
+- Adds configurable timeout controls for custom AI providers.
+- Dismisses the iPhone table of contents after selecting an entry and jumps directly to its line.
+- Adds viewport-scoped syntax highlighting for large programming documents.
+
+### Improvements
+
+- Caches Markdown list detection instead of recompiling its regular expression on every Return key press.
+- Limits glyph-artifact inspection to the edited range during normal text changes.
+- Applies the trailing-whitespace setting during local and remote saves.
+- Exposes on/off state and contextual hints for performance, completion, wrapping, minimap, indentation, and toolbar controls.
+- Refines the Liquid Glass app icon gradient.
+
+### Fixes
+
+- Keeps the iPhone TOC sheet from covering the destination after a heading or symbol is selected.
+- Preserves line-ending normalization and file fingerprints while applying optional whitespace cleanup.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.2.5] - 2026-08-07
+
+### Why Upgrade
+
+- Keeps generated and minified source files responsive by avoiding unnecessary full-document regex highlighting.
+- Preserves fast, viewport-scoped syntax coloring for large JSON, HTML, and CSV documents.
+- Makes large-file behavior easier to control with clear generated-file highlighting options.
+
+### Highlights
+
+- Adds Automatic, Full, and Off generated-file syntax highlighting modes.
+- Detects common generated-source markers and very long minified lines with a bounded prefix scan.
+- Extends the large-file benchmark and performance contract with HTML and minified JavaScript fixtures.
+- Updates the app icon for the iOS, iPadOS, and macOS 27 Liquid Glass appearance, including the revised iOS 26 shared presentation. Thanks to [@LegalizeNukes](https://github.com/LegalizeNukes) for the new icon design.
+
+### Fixes
+
+- Stops stale or expensive syntax passes from being scheduled for likely generated JavaScript and similar source files.
+- Keeps macOS and iOS syntax-highlight caches stable when generated-file highlighting is intentionally suppressed.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.2.4] - 2026-08-06
+
+### Why Upgrade
+- Publishes an immutable v1.2.4 build so Sparkle and Homebrew can verify one stable release asset.
+- Carries the completed macOS, iPhone Simulator, and iPad Simulator Xcode 27 build verification into the release record.
+- Keeps the large-file, Markdown preview, undo, and mobile-toolbar guardrails covered by the release test suite.
+
+### Highlights
+- Adds a release-only stabilization pass with the performance budget contract and cross-platform build matrix recorded as release gates.
+
+### Fixes
+- Corrects the distribution path after the v1.2.3 asset/checksum replacement, using a new immutable release asset for updater and Homebrew validation.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.2.3] - 2026-08-05
+
+### Why Upgrade
+- Restores Markdown document previews for saved files after the preview-navigation hardening.
+- Keeps Replace All reversible without discarding the preceding edit.
+- Keeps HTML editing responsive for documents around 5 MB.
+- Uses the available iPhone and iPad landscape width more effectively and keeps toolbar presets aligned.
+- Adds release performance-budget checks to catch regressions before shipping.
+
+### Highlights
+- Adds repeatable performance-profile capture and baseline validation to release preparation.
+- Adds consequential-change previews for Replace All, AI replacements, project-wide replacements, editor clearing, and Git commits.
+- Keeps the complete mobile toolbar action set reachable through presets and overflow actions.
+
+### Fixes
+- Allows the preview WebView to load its saved-document base directory while keeping navigation restricted to local preview content.
+- Routes macOS Replace All through AppKit's undo-aware text-view replacement path.
+- Raises the responsive HTML syntax-highlighting budget to 8 million UTF-16 code units and avoids repeating fallback updates for large documents.
+- Extends iPhone and iPad landscape toolbar/content layout to the available screen width and preserves the requested iPad toolbar inset.
+- Keeps Replace All and related confirmation dialogs compatible with the public Xcode release compiler.
+
+### Issue status
+- Fixed and closed: consequential-change previews (#185), Replace All undo (#182), and large HTML responsiveness (#188).
+- Addressed but not fully confirmed: italic-comment alternation (#181) remains font- and platform-sensitive and should not be considered conclusively resolved without reporter confirmation.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.2.2] - 2026-08-04
+
+### Why Upgrade
+- Keeps project previews and syntax styling stable while working in the editor.
+- Makes the active toolbar preset easier to identify without adding fragmented controls.
+
+### Highlights
+- Shows the selected toolbar preset with its icon, compact name, and a matching visual tint on macOS and iPadOS.
+- Groups related toolbar actions more consistently and removes redundant automatic-toolbar copies.
+
+### Fixes
+- Stops Markdown project cards from rebuilding when toolbar preset or layout changes reattach the card view.
+- Prevents italic comments from alternating between regular and italic while typing on macOS.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.2.1] - 2026-08-02
+
+### Why Upgrade
+- Adds platform-optimized toolbar presets with compact symbols and consistent controls across macOS, iPadOS, and iOS.
+- Makes toolbar and project workflows easier to configure from settings, including standard, focused, developer, review, and complete presets.
+- Restores the transparent iOS status-bar composition while preserving the existing editor and preview layout.
+
+### Highlights
+- Adds compact preset labels on macOS and iPadOS while keeping iPhone toolbar space icon-first.
+- Adds clearer toolbar customization and project-sidebar actions for everyday editing workflows.
+
+### Fixes
+- Removes the verbose “Toolbar Preset” label from the compact toolbar surface without removing its accessibility label or help text.
+- Repairs the iOS status-bar/navigation-surface regression introduced after v1.1.1.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.2.0] - 2026-07-31
+
+### Hero Screenshot
+- ![v1.2.0 hero screenshot](docs/images/readme-hero-macos-light.png)
+
+### Why Upgrade
+
+- Keeps the editor responsive while projects with large PDF and PNG collections are indexed.
+- Makes PDF project cards appear quickly and loads expensive thumbnails only for visible cards.
+- Reduces unnecessary project-preview and sidebar work when those surfaces are not shown.
+
+### Highlights
+
+- Adds automatic PDF and PNG preview workflows with persistent PDF highlights and attached Markdown notes.
+- Adds Markdown and PDF project card previews with lazy PDF artwork and responsive iPhone/iPad controls.
+- Adds iPhone/iPad double-tap tab closing while preserving unsaved-change confirmation.
+
+### Fixes
+
+- Moves PDF card metadata and artwork work off the main actor with bounded background concurrency.
+- Prevents hidden card previews from rebuilding when the project index changes.
+- Avoids repeated large project-tree and preview-signature allocations during sidebar updates.
+
+### Breaking changes
+
+- None.
+
+### Migration
+
+- None.
+
+## [v1.1.1] - 2026-07-30
+
+### Why Upgrade
+- Keeps the Markdown project card overview stable until a Markdown file is actually saved or changed on disk.
+
+### Fixes
+- Stops unrelated project-folder events from rebuilding every Markdown preview card.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.1.0] - 2026-07-29
+
+### Why Upgrade
+- Makes tab switching and first syntax feedback responsive in large workspaces.
+- Adds a project-wide Markdown overview for finding documents without opening each file.
+- Polishes preview, layout, AI, and cross-platform editor workflows for the 1.1 release.
+
+### Highlights
+- Adds Markdown card grid/stack previews with excerpts, headings, images, file status, sorting, and the active-document indicator.
+- Adds reusable Writing, Code, Markdown, and Review editor presets with preview controls and separate-window support.
+- Adds saved AI chat improvements, structured Markdown responses, and clearer context and activity states.
+
+### Fixes
+- Keeps tab selection persistence lightweight by avoiding security-scoped bookmark generation on the interaction path.
+- Prioritizes visible-range programming-language highlighting while coalescing expensive full-document passes.
+- Invalidates formatting changes synchronously so bold/italic and Markdown heading emphasis remain stable while editing.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.0.2] - 2026-07-28
+
+### Why Upgrade
+- Makes pane resizing easier to discover and control across the editor, previews, table of contents, and project sidebar.
+- Keeps Markdown previews readable as their window width changes, including long lines and code blocks.
+- Delivers a more consistent translucent editing surface across split panes and resize affordances.
+
+### Highlights
+- Adds a consistent 11-point resize hit target with cursor feedback and accessible adjustment actions across macOS panes.
+
+### Fixes
+- Removes persistent resize overlays and divider artifacts after a drag ends, and aligns translucent resize surfaces with the editor background.
+- Prevents Markdown preview content from overflowing its pane by wrapping long lines and fenced code without changing the source document.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.0.1] - 2026-07-27
+
+### Why Upgrade
+- Improves the AI assistant, saved chat workflow, and cross-platform status surfaces for a more dependable 1.0 experience.
+
+### Highlights
+- Adds persistent saved AI chat sessions with restore, delete, and new-chat controls while keeping credentials and editor content private.
+- Adds German and Simplified Chinese localization for the current editor, AI, updater, menu-bar, and Apple Watch surfaces.
+- Adds localized Neon Pulse Watch status and delivery feedback, including retry and inbox states.
+
+### Fixes
+- Prevents stale asynchronous AI and Watch state updates from replacing newer UI state during transitions.
+- Keeps release metadata, localized resources, and the GitHub-hosted distribution path aligned for patch releases.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v1.0] - 2026-07-27
+
+### Why Upgrade
+- Delivers a stable 1.0 editor and preview experience for everyday documents as well as large HTML files, without sacrificing responsive tab, preview, or Markdown workflows.
+
+### Highlights
+- Adds independently resizable macOS Markdown, HTML, and SVG preview panes that open at a useful reading width and retain their chosen size per window.
+- Makes HTML previews adapt legacy fixed-width tables, images, and inline dimensions to the available preview width while preserving the source document.
+- Makes plain-text-to-Markdown conversion report section progress, use a size-aware time allowance, and request bounded Apple Intelligence conversion plans for reliable completion.
+
+### Fixes
+- Removes the persistent dark preview-divider artifact and aligns translucent line-number surfaces with the editor pane.
+- Keeps large HTML documents responsive by avoiding expensive full-document syntax/layout work, current-line overlays, and line-number rendering when Responsive mode is active.
+- Keeps Markdown conversion feedback below the tab bar, with cancellation and clear timeout or incomplete-response errors.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.9] - 2026-07-26
+
+### Why Upgrade
+- Keeps the Neon Pulse watchOS bundle compatible with current Xcode and watchOS simulator validation.
+- Makes the GitHub-hosted macOS archive select the installed Developer ID provisioning profile deterministically.
+- Keeps release metadata and the signed release path aligned for repeatable notarized distribution.
+
+### Highlights
+- Removes an obsolete duplicate watch app icon asset that could be reported as an unassigned child during watchOS builds and device installation.
+
+### Fixes
+- Cleans the watch app asset catalog so the paired iPhone and Apple Watch release products use a valid icon payload.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.8] - 2026-07-25
+
+### Why Upgrade
+- Makes advanced editing workflows dependable again across document sizes: syntax highlighting, previews, the minimap, the table of contents, and project navigation now remain available together without persistent oversized scrollbars.
+- Turns external-change and text-encoding status into actionable controls, with recent sync activity, timestamps, encoding, byte-order-mark, and line-ending choices available directly from the status bar.
+- Replaces placeholder starter snippets with a shared catalog of practical, language-specific templates that can be customized once and used consistently from the editor and Settings.
+
+### Highlights
+- Adds stronger code-editing assistance with completion controls, built-in snippets, automatic bracket, quote, tag, and Markdown-list continuation, expanded theme customization, and clearer keyboard-driven actions.
+- Expands Markdown conversion into a source-preserving review flow for selections or complete documents, including emphasis, links, autolinks, tables, cancellation, malformed-output handling, and multilingual or large input.
+- Makes encoding changes explicit and recoverable with immediate Save Using transcoding, BOM-aware session persistence, and Save, Compare, or Cancel choices when an externally changed document still has local edits.
+- Shows Markdown table-of-contents hierarchy through indentation and typographic weight instead of source-level `#` prefixes.
+
+### Fixes
+- Restores timely HTML syntax highlighting on macOS Sequoia and keeps viewport-based highlighting responsive for large HTML documents.
+- Restores Markdown, HTML, and SVG preview availability together with reliable minimap and table-of-contents updates after document, tab, toolbar, and sidebar transitions.
+- Uses the same thin, automatically fading overlay scrollbars in the editor, previews, table of contents, and project sidebar on macOS.
+- Separates shared-file sync history from Git state and keeps the ten latest external changes available without mislabeling them as repository changes.
+- Hardens release preparation, GitHub-hosted notarization, asset verification, Sparkle publication, and Homebrew handoff against moving `main`, authentication delays, and transient GitHub API failures.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.7] - 2026-07-24
+
+### Why Upgrade
+- Makes macOS document opening, session restoration, preview changes, and external refreshes safer on current macOS releases by avoiding synchronous TextKit and AppKit layout work during a document transition.
+- Preserves the editor context after a document transition—line numbers, minimap, caret position, scroll position, and visible source—without asking AppKit to lay out the editor while it is already tracking a layout pass.
+
+### Highlights
+- Coalesces the final editor refresh into one post-layout operation, keeping document changes responsive while the source pane, preview, sidebar, line numbers, and minimap settle together.
+
+### Fixes
+- Prevents the macOS AppKit layout-observation crash reported during document installation and restoration on macOS 27 beta.
+- Cancels stale display refresh work from an earlier document transition so it cannot update the active editor after a newer document has taken its place.
+- Aligns the macOS Settings content translucency with the editor's chrome-and-pane surface composition, keeping controls readable in every translucency mode.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.6] - 2026-07-23
+
+### Why Upgrade
+- Restores each macOS editor window at its own last-used size and position without briefly showing the smaller fallback window first.
+- Makes the larger first-launch window size a fallback only; once you resize a window, that exact visible frame is retained for the next launch.
+
+### Highlights
+- When several editor windows were open, macOS now restores their individual frames after you choose whether to reopen all windows or only the first.
+
+### Fixes
+- Saves editor-window frames directly from AppKit move and resize notifications instead of relying on a replaceable SwiftUI window delegate.
+- Ignores frames that no longer intersect an attached display, so a disconnected monitor cannot reopen the editor off-screen.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.5] - 2026-07-23
+
+### Why Upgrade
+- Converts plain text to a reviewable, source-preserving Markdown proposal using Apple Intelligence or an explicitly configured AI provider, with cancellation and a 30-second safety limit.
+- Makes text encoding a deliberate document setting: detect, reopen, and save UTF-8/BOM, UTF-16, common Windows, ISO, and Mac encodings without silently changing the file format.
+- Polishes the editor across windows and devices with independent window state, natural-language completion for Markdown and text, and clearer Markdown and snapshot workflows.
+
+### Highlights
+- Adds the focused Welcome Tour and professional What’s New page, including shared-file sync guidance, essential editor setup, and expandable advanced settings.
+- Adds a compact Code Snapshot workspace with adaptive, full-image previews on iPhone and iPad, translucent surfaces, and explicit `.png` export names.
+- Makes Markdown formatting controls stay below document tabs and within the editor pane, while preserving preview and sidebar boundaries.
+
+### Fixes
+- Keeps separate editor windows independent so cursor, selection, tabs, and document state do not follow activity in another window.
+- Completes a window close after choosing Don’t Save, preserves restored macOS window sizes, and keeps text selection usable after switching tabs.
+- Improves HTML highlighting on supported macOS versions and hardens Markdown conversion feedback when Apple Intelligence or a configured provider is unavailable, slow, or returns an invalid response.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
+## [v0.9.4] - 2026-07-22
+
+### Why Upgrade
+- Adds a lightweight shared-file sync experience: when iCloud Drive, a network folder, or another app updates an open file, clean tabs refresh automatically while unsaved edits remain protected by the existing review flow.
+- Keeps tab switching and minimap scrolling responsive, and automatically reveals a newly opened or selected tab when the tab strip is crowded.
+- Separates Sparkle from App Store builds and strengthens the GitHub release path for reliable package resolution and Homebrew Cask delivery.
+
+### Highlights
+- Open documents now use event-driven file presentation with coalesced metadata checks instead of selection-time polling, so changes delivered from another device through iCloud Drive or network storage can appear without reopening the tab.
+- External sync progress, completion, and review-needed states appear in the editor status area for one or multiple tabs; the shared storage remains the transport and Neon Vision Editor supplies open-tab refresh and conflict protection.
+- GitHub-hosted releases can prepare the Homebrew Cask update branch with a GitHub App token and provide a direct pull-request link in the workflow summary.
+
+### Fixes
+- Preserves cursor, selection, source viewport, and minimap state when a clean document refreshes in place, including inactive tabs and Markdown preview sources.
+- Never replaces a dirty buffer after an external change; the existing Keep Local, Reload from Disk, and Compare actions remain authoritative.
+- Removes broad tab-state publication and filesystem checks from ordinary tab selection, and reduces minimap work during editor scrolling.
+- Gives file tabs stable scroll targets so hidden selected tabs are revealed with only the minimum required horizontal movement.
+- Adds visible project-sidebar refresh feedback on macOS, iOS, and iPadOS.
+- Gives the direct and App Store app targets independent build phases so only direct GitHub macOS builds link Sparkle, while App Store Connect builds remain updater-free on macOS, iOS/iPadOS, and visionOS.
+- Commits the shared Swift package resolution required when Xcode Cloud automatic dependency resolution is disabled.
+
+### Breaking changes
+- None.
+
+### Migration
+- None.
+
 ## [v0.9.3] - 2026-07-21
 
 ### Why Upgrade
@@ -1054,7 +2898,7 @@ The format follows *Keep a Changelog*. Versions use semantic versioning with pre
 ## [v0.5.6] - 2026-03-17
 
 ### Hero Screenshot
-- ![v0.5.6 hero screenshot](docs/images/iphone-themes-light.png)
+- ![v0.5.6 hero screenshot](docs/images/iphone-themes-light-frame.png)
 
 ### Why Upgrade
 - Safe Mode now recovers from repeated failed launches without getting stuck on every normal restart.

@@ -5,6 +5,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 
 source scripts/ci/select_xcode17.sh
+require_xcode_major 27
+require_sdk_major 27 macosx iphoneos iphonesimulator xros
 
 PROJECT="${PROJECT:-Neon Vision Editor.xcodeproj}"
 SCHEME="${SCHEME:-Neon Vision Editor}"
@@ -13,6 +15,7 @@ CODE_SIGNING_ALLOWED="${CODE_SIGNING_ALLOWED:-NO}"
 LOCK_DIR="${LOCK_DIR:-/tmp/nve_xcodebuild.lock}"
 DERIVED_DATA_ROOT="${DERIVED_DATA_ROOT:-$ROOT/.DerivedDataMatrix}"
 RETRIES="${RETRIES:-2}"
+SWIFT_DIAGNOSTIC_BUILD_SETTING='OTHER_SWIFT_FLAGS=$(inherited) -Werror NoUseUnstructuredThrowingTask'
 
 usage() {
   cat <<'EOF'
@@ -22,6 +25,7 @@ Runs build verification sequentially for:
   1) macOS
   2) iOS Simulator
   3) iPad Simulator target family
+  4) visionOS
 
 Environment overrides:
   PROJECT, SCHEME, CONFIGURATION, CODE_SIGNING_ALLOWED
@@ -95,13 +99,31 @@ run_build() {
     attempt=$((attempt + 1))
     echo "[$name] Attempt ${attempt}/${RETRIES}"
 
-    if xcodebuild \
-      -project "$PROJECT" \
-      -scheme "$SCHEME" \
-      -configuration "$CONFIGURATION" \
-      -derivedDataPath "$derived_data_path" \
-      CODE_SIGNING_ALLOWED="$CODE_SIGNING_ALLOWED" \
-      "$@" >"$log_file" 2>&1; then
+    build_succeeded=0
+    if [[ "${NVE_BUILD_LOG_TO_STDOUT:-false}" == "true" ]]; then
+      if xcodebuild \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration "$CONFIGURATION" \
+        -derivedDataPath "$derived_data_path" \
+        CODE_SIGNING_ALLOWED="$CODE_SIGNING_ALLOWED" \
+        "$SWIFT_DIAGNOSTIC_BUILD_SETTING" \
+        "$@" 2>&1 | tee "$log_file"; then
+        build_succeeded=1
+      fi
+    else
+      if xcodebuild \
+        -project "$PROJECT" \
+        -scheme "$SCHEME" \
+        -configuration "$CONFIGURATION" \
+        -derivedDataPath "$derived_data_path" \
+        CODE_SIGNING_ALLOWED="$CODE_SIGNING_ALLOWED" \
+        "$SWIFT_DIAGNOSTIC_BUILD_SETTING" \
+        "$@" >"$log_file" 2>&1; then
+        build_succeeded=1
+      fi
+    fi
+    if [[ "$build_succeeded" -eq 1 ]]; then
       echo "[$name] BUILD SUCCEEDED"
       return 0
     fi
@@ -135,6 +157,11 @@ run_build "iPad Simulator" \
   -sdk iphonesimulator \
   -destination "generic/platform=iOS Simulator" \
   TARGETED_DEVICE_FAMILY=2 \
+  build
+
+run_build "visionOS" \
+  -sdk xros \
+  -destination "generic/platform=visionOS" \
   build
 
 echo "Build matrix completed successfully."

@@ -1,0 +1,1154 @@
+import SwiftUI
+import ObjectiveC.runtime
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+#if os(macOS)
+import AppKit
+#endif
+#if os(iOS) || os(visionOS)
+import UIKit
+#endif
+
+#if os(iOS)
+@MainActor
+private final class NeonVisionPhoneAppDelegate: NSObject, UIApplicationDelegate {
+    func application(
+        _ application: UIApplication,
+        didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
+    ) -> Bool {
+        NeonPulsePhoneBridge.shared.activateConnectivity()
+        return true
+    }
+}
+#endif
+
+// MARK: - Runtime Language Override
+
+nonisolated(unsafe) private var runtimeLanguageBundleAssociationKey: UInt8 = 0
+
+private final class RuntimeLanguageBundle: Bundle, @unchecked Sendable {
+    nonisolated override init?(path: String) {
+        super.init(path: path)
+    }
+
+    nonisolated override func localizedString(forKey key: String, value: String?, table tableName: String?) -> String {
+        if let languageBundle = objc_getAssociatedObject(self, &runtimeLanguageBundleAssociationKey) as? Bundle {
+            return languageBundle.localizedString(forKey: key, value: value, table: tableName)
+        }
+        return super.localizedString(forKey: key, value: value, table: tableName)
+    }
+}
+
+private enum RuntimeLanguageOverride {
+    nonisolated private static let didInstallBundleOverride = NVELock(false)
+
+    static func apply(languageCode: String) {
+        if languageCode == "system" {
+            guard didInstallBundleOverride.withLock({ $0 }) else { return }
+            objc_setAssociatedObject(
+                Bundle.main,
+                &runtimeLanguageBundleAssociationKey,
+                nil,
+                .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+            )
+            return
+        }
+        installBundleOverrideIfNeeded()
+        let bundle = languageBundle(for: languageCode)
+        objc_setAssociatedObject(
+            Bundle.main,
+            &runtimeLanguageBundleAssociationKey,
+            bundle,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC
+        )
+    }
+
+    private static func installBundleOverrideIfNeeded() {
+        didInstallBundleOverride.withLock { didInstallBundleOverride in
+            guard !didInstallBundleOverride else { return }
+            object_setClass(Bundle.main, RuntimeLanguageBundle.self)
+            didInstallBundleOverride = true
+        }
+    }
+
+    private static func languageBundle(for languageCode: String) -> Bundle? {
+        guard languageCode != "system" else { return nil }
+        if let exact = Bundle.main.path(forResource: languageCode, ofType: "lproj").flatMap(Bundle.init(path:)) {
+            return exact
+        }
+        let fallbackCode = languageCode.split(separator: "-").first.map(String.init) ?? languageCode
+        return Bundle.main.path(forResource: fallbackCode, ofType: "lproj").flatMap(Bundle.init(path:))
+    }
+}
+
+#if os(macOS)
+// MARK: - macOS App Delegate
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    var editorWindows: () -> [NSWindow] = { NSApp.windows }
+    weak var viewModel: EditorViewModel? {
+        didSet {
+            guard let viewModel else { return }
+            flushPendingURLs(into: viewModel)
+        }
+    }
+    weak var appUpdateManager: AppUpdateManager?
+    private var pendingOpenURLs: [URL] = []
+    private var pendingProjectFolderURLs: [URL] = []
+    var openPrimaryWindow: (() -> Void)? {
+        didSet {
+            if oldValue == nil && needsPrimaryWindow {
+                openPrimaryWindow?()
+            }
+        }
+    }
+    private var needsPrimaryWindow = false
+
+    func application(_ application: NSApplication, open urls: [URL]) {
+        handleExternalOpenURLs(urls)
+    }
+
+    @objc func newWindowForTab(_ sender: Any?) {
+        (WindowViewModelRegistry.shared.activeViewModel() ?? viewModel)?.addNewTab()
+    }
+
+    func handleExternalOpenURLs(_ urls: [URL]) {
+        for url in urls {
+            if ShareImportHandoff.isShareImportURL(url) {
+                NotificationCenter.default.post(name: .sharedImportURLRequested, object: url)
+                continue
+            }
+            let importURLs = ShareImportHandoff.importedFileURLs(from: url)
+            if !importURLs.isEmpty {
+                SharedImportStore.remember(importURLs)
+                guard UserDefaults.standard.object(forKey: "SettingsShareImportsAutoOpen") as? Bool ?? true else {
+                    continue
+                }
+            }
+            let fileURLs = importURLs.isEmpty ? [url] : importURLs
+            var projectFolderURL: URL?
+            for fileURL in fileURLs {
+                if Self.isProjectFolderURL(fileURL) {
+                    // A single launch event may contain a folder and files. The folder is
+                    // the project context, so accepting another one would immediately
+                    // replace it; retain the first one deterministically.
+                    projectFolderURL = projectFolderURL ?? fileURL
+                    continue
+                }
+                let target = existingEditorViewModel(for: fileURL)
+                if let target {
+                    if target.openFileFromExternalRequest(url: fileURL) {
+                        self.bringEditorWindowToFront(for: target)
+                    }
+                } else {
+                    self.pendingOpenURLs.append(fileURL)
+                    requestPrimaryWindowIfNeeded()
+                }
+            }
+            if let projectFolderURL {
+                self.openProjectFolder(url: projectFolderURL)
+            }
+        }
+    }
+
+    func applicationShouldOpenUntitledFile(_ sender: NSApplication) -> Bool {
+        return NSApp.windows.isEmpty && pendingOpenURLs.isEmpty && pendingProjectFolderURLs.isEmpty
+    }
+
+    func applicationShouldRestoreState(_ application: NSApplication) -> Bool {
+        // Secondary editor windows are restored only after the user chooses to restore them.
+        false
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        guard hasVisibleWindows else { return true }
+        if let key = sender.keyWindow {
+            key.makeKeyAndOrderFront(nil)
+        } else if let main = sender.mainWindow {
+            main.makeKeyAndOrderFront(nil)
+        } else if let first = sender.windows.first(where: { $0.isVisible && !$0.isMiniaturized }) {
+            first.makeKeyAndOrderFront(nil)
+        }
+        sender.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        MacDocumentWindowTabs.shared.beginTermination()
+        EditorPreferenceWriter.shared.flushBeforeTermination()
+        appUpdateManager?.applicationWillTerminate()
+        RuntimeReliabilityMonitor.shared.markGracefulTermination()
+    }
+
+    @MainActor
+    private func flushPendingURLs(into viewModel: EditorViewModel) {
+        needsPrimaryWindow = false
+        let urls = pendingOpenURLs
+        pendingOpenURLs.removeAll()
+        let didOpenFile = urls.reduce(false) { didOpen, url in
+            let opened = viewModel.openFileFromExternalRequest(url: url)
+            return didOpen || opened
+        }
+        if didOpenFile {
+            bringEditorWindowToFront(for: viewModel)
+        }
+
+        let folderURLs = pendingProjectFolderURLs
+        pendingProjectFolderURLs.removeAll()
+        for folderURL in folderURLs {
+            postProjectFolderOpen(folderURL, targeting: viewModel)
+        }
+    }
+
+    nonisolated static func isProjectFolderURL(_ url: URL) -> Bool {
+        (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+    }
+
+    private func openProjectFolder(url: URL) {
+        guard let target = existingEditorViewModel() else {
+            pendingProjectFolderURLs.append(url)
+            requestPrimaryWindowIfNeeded()
+            return
+        }
+        postProjectFolderOpen(url, targeting: target)
+    }
+
+    private func postProjectFolderOpen(_ folderURL: URL, targeting viewModel: EditorViewModel) {
+        var userInfo: [AnyHashable: Any] = [:]
+        if let windowNumber = WindowViewModelRegistry.shared.windowNumber(for: viewModel) {
+            userInfo[EditorCommandUserInfo.windowNumber] = windowNumber
+        }
+        NotificationCenter.default.post(
+            name: .openProjectFolderURLRequested,
+            object: folderURL,
+            userInfo: userInfo.isEmpty ? nil : userInfo
+        )
+        bringEditorWindowToFront(for: viewModel)
+    }
+
+    @MainActor
+    private func bringEditorWindowToFront(for viewModel: EditorViewModel) {
+        let registeredWindow = WindowViewModelRegistry.shared.windowNumber(for: viewModel)
+            .flatMap { NSApp.window(withWindowNumber: $0) }
+        // A new scene may report its model before its window is registered.
+        // Never bring an unrelated, off-Space window forward while it is attaching.
+        if UserDefaults.standard.bool(forKey: "SettingsOpenFilesOnCurrentDesktop"), registeredWindow == nil {
+            return
+        }
+        let fallbackWindow = NSApp.keyWindow ?? NSApp.mainWindow ?? NSApp.windows.first { window in
+            window.isVisible && !window.isMiniaturized
+        }
+        if let window = registeredWindow ?? fallbackWindow {
+            if window.isMiniaturized {
+                window.deminiaturize(nil)
+            }
+            window.makeKeyAndOrderFront(nil)
+        }
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func requestPrimaryWindowIfNeeded() {
+        guard !needsPrimaryWindow else { return }
+        needsPrimaryWindow = true
+        openPrimaryWindow?()
+    }
+
+    private func existingEditorViewModel(for url: URL? = nil) -> EditorViewModel? {
+        WindowViewModelRegistry.shared.externalOpenTarget(
+            for: url,
+            currentDesktopOnly: UserDefaults.standard.bool(forKey: "SettingsOpenFilesOnCurrentDesktop"),
+            windows: editorWindows()
+        )
+    }
+}
+
+@MainActor
+final class MacEditorWindowSessionStore {
+    static let shared = MacEditorWindowSessionStore()
+
+    private var pendingEditorLayoutPresets: [UUID: String] = [:]
+
+    private init() {}
+
+    func createWindowID(initialPresetRawValue: String? = nil) -> UUID {
+        let id = UUID()
+        if let initialPresetRawValue {
+            pendingEditorLayoutPresets[id] = initialPresetRawValue
+        }
+        return id
+    }
+
+    func consumeInitialEditorLayoutPreset(for id: UUID) -> String? {
+        pendingEditorLayoutPresets.removeValue(forKey: id)
+    }
+
+    func frameAutosaveName(for id: UUID) -> String {
+        "NeonVisionEditor.EditorWindow.\(id.uuidString)"
+    }
+
+}
+
+private struct PrimaryWindowContentView: View {
+    @State private var viewModel: EditorViewModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    let startupBehavior: ContentView.StartupBehavior
+    let safeModeMessage: String?
+    @ObservedObject var supportPurchaseManager: SupportPurchaseManager
+    @ObservedObject var appUpdateManager: AppUpdateManager
+    @Binding var showGrokError: Bool
+    @Binding var grokErrorMessage: String
+    let onViewModelReady: (EditorViewModel) -> Void
+
+    init(startupBehavior: ContentView.StartupBehavior, safeModeMessage: String?,
+         supportPurchaseManager: SupportPurchaseManager, appUpdateManager: AppUpdateManager,
+         showGrokError: Binding<Bool>, grokErrorMessage: Binding<String>,
+         onViewModelReady: @escaping (EditorViewModel) -> Void) {
+        self.startupBehavior = startupBehavior
+        self.safeModeMessage = safeModeMessage
+        self.supportPurchaseManager = supportPurchaseManager
+        self.appUpdateManager = appUpdateManager
+        self._showGrokError = showGrokError
+        self._grokErrorMessage = grokErrorMessage
+        self.onViewModelReady = onViewModelReady
+        self._viewModel = State(initialValue: MacDocumentTabPolicy.makeWindowModel(isSafeMode: startupBehavior == .safeMode))
+    }
+
+    var body: some View {
+        NativeEditorSurface(configuration: NativeEditorSurfaceConfiguration(
+            model: viewModel, startupBehavior: startupBehavior, safeModeMessage: safeModeMessage,
+            frameAutosaveName: "NeonVisionEditor.PrimaryEditorWindow", initialLayout: nil,
+            support: supportPurchaseManager, updates: appUpdateManager,
+            showGrokError: $showGrokError, grokErrorMessage: $grokErrorMessage,
+            actions: NativeEditorWindowActions(openWindow: openWindow, openSettings: openSettings)))
+        .frame(minWidth: 600, minHeight: 400)
+        .onAppear {
+            onViewModelReady(viewModel)
+        }
+    }
+}
+
+private struct DetachedWindowContentView: View {
+    let windowID: UUID
+    let initialEditorLayoutPresetRawValue: String?
+    @State private var viewModel: EditorViewModel
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
+    @ObservedObject var supportPurchaseManager: SupportPurchaseManager
+    @ObservedObject var appUpdateManager: AppUpdateManager
+    @Binding var showGrokError: Bool
+    @Binding var grokErrorMessage: String
+
+    init(
+        windowID: UUID,
+        isSafeMode: Bool,
+        supportPurchaseManager: SupportPurchaseManager,
+        appUpdateManager: AppUpdateManager,
+        showGrokError: Binding<Bool>,
+        grokErrorMessage: Binding<String>
+    ) {
+        self.windowID = windowID
+        self.initialEditorLayoutPresetRawValue = MacEditorWindowSessionStore.shared.consumeInitialEditorLayoutPreset(for: windowID)
+        self.supportPurchaseManager = supportPurchaseManager
+        self.appUpdateManager = appUpdateManager
+        self._showGrokError = showGrokError
+        self._grokErrorMessage = grokErrorMessage
+        self._viewModel = State(initialValue: MacDocumentWindowTabs.shared.takePendingModel(for: windowID)
+            ?? MacDocumentTabPolicy.makeWindowModel(isSafeMode: isSafeMode))
+    }
+
+    var body: some View {
+        ZStack {
+            NativeDocumentTabAttachment(windowID: windowID)
+                .frame(width: 0, height: 0)
+                .accessibilityHidden(true)
+            NativeEditorSurface(configuration: NativeEditorSurfaceConfiguration(
+                model: viewModel, startupBehavior: .nativeDocument, safeModeMessage: nil,
+                frameAutosaveName: MacEditorWindowSessionStore.shared.frameAutosaveName(for: windowID),
+                initialLayout: initialEditorLayoutPresetRawValue,
+                support: supportPurchaseManager, updates: appUpdateManager,
+                showGrokError: $showGrokError, grokErrorMessage: $grokErrorMessage,
+                actions: NativeEditorWindowActions(openWindow: openWindow, openSettings: openSettings)))
+            .frame(minWidth: 600, minHeight: 400)
+        }
+    }
+}
+
+/// Native AppKit windows retain the same SwiftUI document content, toolbar,
+/// providers and scene actions without opening another SwiftUI WindowGroup.
+@MainActor
+struct NativeDocumentWindowContent: View {
+    let windowID: UUID
+    let supportPurchaseManager: SupportPurchaseManager
+    let appUpdateManager: AppUpdateManager
+    let showGrokError: Binding<Bool>
+    let grokErrorMessage: Binding<String>
+    let openWindow: OpenWindowAction
+    let openSettings: OpenSettingsAction
+    @AppStorage("SettingsAppearance") private var appearance = "system"
+    @AppStorage("SettingsAppLanguageCode") private var languageCode = "system"
+
+    var body: some View {
+        DetachedWindowContentView(windowID: windowID, isSafeMode: false,
+            supportPurchaseManager: supportPurchaseManager, appUpdateManager: appUpdateManager,
+            showGrokError: showGrokError, grokErrorMessage: grokErrorMessage)
+            .environment(\.nativeEditorWindowActions, NativeEditorWindowActions(openWindow: openWindow, openSettings: openSettings))
+            .environment(\.locale, languageCode == "system" ? .autoupdatingCurrent : Locale(identifier: languageCode))
+            .preferredColorScheme(ReleaseRuntimePolicy.preferredColorScheme(for: appearance))
+            .tint(.blue)
+            .onChange(of: languageCode) { _, code in RuntimeLanguageOverride.apply(languageCode: code) }
+    }
+}
+
+struct NativeEditorWindowActions {
+    let openWindow: OpenWindowAction
+    let openSettings: OpenSettingsAction
+}
+
+private struct NativeEditorWindowActionsKey: EnvironmentKey {
+    static let defaultValue: NativeEditorWindowActions? = nil
+}
+
+extension EnvironmentValues {
+    var nativeEditorWindowActions: NativeEditorWindowActions? {
+        get { self[NativeEditorWindowActionsKey.self] }
+        set { self[NativeEditorWindowActionsKey.self] = newValue }
+    }
+}
+
+#endif
+
+// MARK: - App Entry Point
+
+@main
+struct NeonVisionEditorApp: App {
+    @State private var viewModel = EditorViewModel()
+    @StateObject private var supportPurchaseManager = SupportPurchaseManager()
+    @StateObject private var appUpdateManager = AppUpdateManager()
+    @AppStorage("SettingsAppearance") private var appearance: String = "system"
+    @AppStorage("SettingsAppLanguageCode") private var appLanguageCode: String = "system"
+    @Environment(\.scenePhase) private var scenePhase
+    private let mainStartupBehavior: ContentView.StartupBehavior
+    private let startupSafeModeMessage: String?
+    @State private var didMarkLaunchCompleted: Bool = false
+#if os(macOS)
+    @Environment(\.openWindow) private var openWindow
+    @AppStorage("SettingsShowMenuBarIconMac") private var showMenuBarIconMac: Bool = true
+    @State private var useAppleIntelligence: Bool = true
+    @State private var appleAIStatus: String = "Apple Intelligence: Checking…"
+    @State private var appleAIRoundTripMS: Double? = nil
+    @State private var macWindowChromePolicyPending: Bool = false
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+#endif
+#if os(iOS)
+    @UIApplicationDelegateAdaptor(NeonVisionPhoneAppDelegate.self) private var phoneAppDelegate
+#endif
+    @State private var showGrokError: Bool = false
+    @State private var grokErrorMessage: String = ""
+
+    // MARK: - Appearance and Startup Helpers
+
+    private var preferredAppearance: ColorScheme? {
+        ReleaseRuntimePolicy.preferredColorScheme(for: appearance)
+    }
+
+    private var preferredLocale: Locale {
+        appLanguageCode == "system"
+            ? .autoupdatingCurrent
+            : Locale(identifier: appLanguageCode)
+    }
+
+    private func applyRuntimeLanguageOverride() {
+        RuntimeLanguageOverride.apply(languageCode: appLanguageCode)
+    }
+
+    private func completeLaunchReliabilityTrackingIfNeeded() {
+        guard !didMarkLaunchCompleted else { return }
+        didMarkLaunchCompleted = true
+        RuntimeReliabilityMonitor.shared.markLaunchCompleted()
+    }
+
+    private func markLaunchCompletedAfterStableWindowDelay() async {
+        try? await Task.sleep(nanoseconds: 3_000_000_000)
+        guard !Task.isCancelled else { return }
+        completeLaunchReliabilityTrackingIfNeeded()
+    }
+
+#if os(macOS)
+    private func applyGlobalAppearanceOverride() {
+        ReleaseRuntimePolicy.applyMacApplicationAppearance(appearance)
+        for window in NSApp.windows {
+            window.invalidateShadow()
+            window.contentView?.needsDisplay = true
+        }
+    }
+
+    private func scheduleMacWindowChromePolicy() {
+        RuntimeReliabilityMonitor.shared.markLaunchPhase(.windowSceneAppeared)
+        guard !macWindowChromePolicyPending else { return }
+        macWindowChromePolicyPending = true
+        DispatchQueue.main.async {
+            RuntimeReliabilityMonitor.shared.markLaunchPhase(.windowChromeScheduled)
+            applyGlobalAppearanceOverride()
+            applyMacWindowTabbingPolicy()
+            macWindowChromePolicyPending = false
+        }
+    }
+
+    private func runDeferredMacStartupDiagnostics() async {
+        guard mainStartupBehavior != .safeMode else { return }
+        try? await Task.sleep(nanoseconds: 1_500_000_000)
+        guard !Task.isCancelled else { return }
+        RuntimeReliabilityMonitor.shared.markLaunchPhase(.startupDiagnosticsStarted)
+        if ReleaseRuntimePolicy.isUpdaterEnabledForCurrentDistribution {
+            appUpdateManager.startAutomaticChecks()
+        }
+        #if USE_FOUNDATION_MODELS && canImport(FoundationModels)
+        do {
+            let start = Date()
+            _ = try await AppleFM.appleFMHealthCheck()
+            let end = Date()
+            appleAIStatus = "Apple Intelligence: Ready"
+            appleAIRoundTripMS = end.timeIntervalSince(start) * 1000.0
+            AIActivityLog.record(
+                "Startup AI health check succeeded (\(String(format: "%.1f", appleAIRoundTripMS ?? 0)) ms).",
+                source: "Startup"
+            )
+        } catch {
+            appleAIStatus = "Apple Intelligence: Error - \(error.localizedDescription)"
+            appleAIRoundTripMS = nil
+            AIActivityLog.record(
+                "Startup AI health check failed.",
+                level: .error,
+                source: "Startup"
+            )
+        }
+        #else
+        appleAIStatus = "Apple Intelligence: Unavailable (build without USE_FOUNDATION_MODELS)"
+        AIActivityLog.record(
+            "Startup AI health check unavailable (built without USE_FOUNDATION_MODELS).",
+            level: .warning,
+            source: "Startup"
+        )
+        #endif
+    }
+
+    private func applyMacWindowTabbingPolicy() {
+        // Group only explicitly registered document windows. Settings and utility
+        // windows must never join an editor tab group automatically.
+        NSWindow.allowsAutomaticWindowTabbing = false
+        for window in NSApp.windows {
+            let native = WindowViewModelRegistry.shared.viewModel(for: window.windowNumber) != nil
+            window.tabbingMode = native ? .preferred : .disallowed
+        }
+    }
+#endif
+
+#if os(iOS) || os(visionOS)
+    private var userInterfaceStyle: UIUserInterfaceStyle {
+        switch appearance {
+        case "light":
+            return .light
+        case "dark":
+            return .dark
+        default:
+            return .unspecified
+        }
+    }
+
+    private func applyIOSAppearanceOverride() {
+        let style = userInterfaceStyle
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .forEach { scene in
+                scene.windows.forEach { window in
+                    if window.overrideUserInterfaceStyle != style {
+                        window.overrideUserInterfaceStyle = style
+                    }
+                }
+            }
+    }
+#endif
+
+    init() {
+        let defaults = UserDefaults.standard
+        let launchCountKey = "AppLaunchCountV1"
+        defaults.set(defaults.integer(forKey: launchCountKey) + 1, forKey: launchCountKey)
+        let defaultLineWrapEnabled = true
+        // Default editor behavior:
+        // - keep line numbers on
+        // - keep style/space visualization toggles off unless user enables them in Settings
+        defaults.register(defaults: [
+            // FORK: default syntax engine (regex = upstream behavior). Replay: keep this key registered here.
+            "SettingsSyntaxEngine": SettingsSyntaxEngine.regex.rawValue,
+            "SettingsShowLineNumbers": true,
+            "SettingsHighlightCurrentLine": false,
+            "SettingsHighlightMatchingBrackets": false,
+            "SettingsShowScopeGuides": false,
+            "SettingsHighlightScopeBackground": false,
+            "SettingsShowCodeMinimap": false,
+            "SettingsLineWrapEnabled": defaultLineWrapEnabled,
+            "SettingsShowInvisibleCharacters": false,
+            "SettingsUseSystemFont": false,
+            "SettingsIndentStyle": "spaces",
+            "SettingsIndentWidth": 4,
+            "SettingsAutoIndent": true,
+            "SettingsAutoCloseBrackets": false,
+            "SettingsAutocorrectionEnabled": false,
+            "SettingsAutocapitalizationEnabled": false,
+            "SettingsSpellCheckingEnabled": false,
+            "SettingsLetterSpacing": 0.0,
+            "SettingsTrimTrailingWhitespace": false,
+            "SettingsTrimWhitespaceForSyntaxDetection": false,
+            "SettingsCompletionEnabled": false,
+            "SettingsCompletionFromDocument": false,
+            "SettingsCompletionFromSyntax": false,
+            "SettingsReopenLastSession": true,
+            "SettingsOpenWithBlankDocument": false,
+            "SettingsShareImportsAutoOpen": true,
+            "SettingsShowMenuBarIconMac": true,
+            "SettingsAppLanguageCode": "system",
+            "SettingsDefaultNewFileLanguage": "plain",
+            "SettingsConfirmCloseDirtyTab": true,
+            "SettingsConfirmClearEditor": true,
+            "SettingsRemoteSessionsEnabled": false,
+            "SettingsRemoteHost": "",
+            "SettingsRemoteUsername": "",
+            "SettingsRemotePort": 22,
+            "SettingsRemotePreparedTarget": "",
+            "SettingsAutoCheckForUpdates": true,
+            "SettingsUpdateCheckInterval": AppUpdateCheckInterval.daily.rawValue,
+            "SettingsAutoDownloadUpdates": false,
+            AppearanceThemeCloudSync.enabledKey: false
+        ])
+        let vimResetMigrationKey = "SettingsMigrationVimModeResetV1"
+        if !defaults.bool(forKey: vimResetMigrationKey) {
+            // One-time safety reset: avoid stale NORMAL-mode state making editor appear non-editable.
+            defaults.set(false, forKey: "EditorVimModeEnabled")
+            defaults.set(true, forKey: vimResetMigrationKey)
+        }
+        let whitespaceMigrationKey = "SettingsMigrationWhitespaceGlyphResetV1"
+        if !defaults.bool(forKey: whitespaceMigrationKey) {
+            defaults.set(false, forKey: "SettingsShowInvisibleCharacters")
+            defaults.set(false, forKey: "NSShowAllInvisibles")
+            defaults.set(false, forKey: "NSShowControlCharacters")
+            defaults.set(true, forKey: whitespaceMigrationKey)
+        }
+        RuntimeReliabilityMonitor.shared.markLaunch()
+        let safeModeDecision = RuntimeReliabilityMonitor.shared.consumeSafeModeLaunchDecision()
+        self.mainStartupBehavior = safeModeDecision.isEnabled ? .safeMode : .standard
+        self.startupSafeModeMessage = safeModeDecision.message
+        RuntimeReliabilityMonitor.shared.startMainThreadWatchdog()
+        EditorPerformanceMonitor.shared.markLaunchConfigured()
+        RuntimeLanguageOverride.apply(
+            languageCode: defaults.string(forKey: "SettingsAppLanguageCode") ?? "system"
+        )
+    }
+
+#if os(macOS)
+    private var activeWindowNumber: Int? {
+        NSApp.keyWindow?.windowNumber ?? NSApp.mainWindow?.windowNumber
+    }
+
+    private var activeEditorViewModel: EditorViewModel {
+        WindowViewModelRegistry.shared.activeViewModel() ?? appDelegate.viewModel ?? viewModel
+    }
+
+    private var menuBarDocumentStatus: (title: String, symbol: String, color: Color) {
+        guard let tab = activeEditorViewModel.selectedTab else {
+            return ("No Document Open", "doc.text", .secondary)
+        }
+        if activeEditorViewModel.pendingExternalFileConflict?.tabID == tab.id {
+            return ("\(tab.name) · External Conflict", "exclamationmark.triangle.fill", .red)
+        }
+        if tab.isDirty {
+            return ("\(tab.name) · Unsaved Changes", "pencil.circle.fill", .orange)
+        }
+        return ("\(tab.name) · Saved", "checkmark.circle.fill", .green)
+    }
+
+    private var appleAIStatusColor: Color {
+        let status = appleAIStatus.lowercased()
+        if status.contains("error") || status.contains("unavailable") {
+            return .red
+        }
+        if status.contains("ready") {
+            return .green
+        }
+        return .orange
+    }
+
+    private var appleAIStatusSymbol: String {
+        let status = appleAIStatus.lowercased()
+        if status.contains("error") || status.contains("unavailable") {
+            return "xmark.octagon.fill"
+        }
+        if status.contains("ready") {
+            return "checkmark.circle.fill"
+        }
+        return "clock.fill"
+    }
+
+    private func postWindowCommand(_ name: Notification.Name, object: Any? = nil) {
+        var userInfo: [AnyHashable: Any] = [:]
+        if let activeWindowNumber {
+            userInfo[EditorCommandUserInfo.windowNumber] = activeWindowNumber
+        }
+        NotificationCenter.default.post(
+            name: name,
+            object: object,
+            userInfo: userInfo.isEmpty ? nil : userInfo
+        )
+    }
+#endif
+
+    // MARK: - Scene Definition
+
+    var body: some Scene {
+#if os(macOS)
+        let _ = configureExternalOpenWindowAction()
+        WindowGroup(id: "primary-editor") {
+            PrimaryWindowContentView(
+                startupBehavior: mainStartupBehavior,
+                safeModeMessage: startupSafeModeMessage,
+                supportPurchaseManager: supportPurchaseManager,
+                appUpdateManager: appUpdateManager,
+                showGrokError: $showGrokError,
+                grokErrorMessage: $grokErrorMessage,
+                onViewModelReady: { model in
+                    appDelegate.viewModel = model
+                    appDelegate.appUpdateManager = appUpdateManager
+                }
+            )
+                .modifier(EditorSceneStorageModifier())
+                .onAppear { _ = AppearanceThemeCloudSync.syncIfEnabled() }
+                .onAppear { scheduleMacWindowChromePolicy() }
+                .onAppear {
+                    // FORK: install the command-palette observer once (⌘⇧P). macOS-only.
+                    #if os(macOS)
+                    ForkCommandPaletteInstaller.installIfNeeded()
+                    #endif
+                }
+                .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
+                .onAppear { applyRuntimeLanguageOverride() }
+                .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
+                .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
+                    if AppearanceThemeCloudSync.syncIfEnabled()?.didApplyRemoteSettings == true {
+                        applyGlobalAppearanceOverride()
+                    }
+                }
+                .environment(\.showGrokError, $showGrokError)
+                .environment(\.grokErrorMessage, $grokErrorMessage)
+                .environment(\.locale, preferredLocale)
+                .tint(.blue)
+                .preferredColorScheme(preferredAppearance)
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    Task {
+                        await markLaunchCompletedAfterStableWindowDelay()
+                    }
+                    if AppearanceThemeCloudSync.syncIfEnabled()?.didApplyRemoteSettings == true {
+                        applyGlobalAppearanceOverride()
+                    }
+                }
+                .frame(minWidth: 600, minHeight: 400)
+                .task {
+                    async let stableLaunchMarker: Void = markLaunchCompletedAfterStableWindowDelay()
+                    async let diagnostics: Void = runDeferredMacStartupDiagnostics()
+                    _ = await (stableLaunchMarker, diagnostics)
+                }
+        }
+        .defaultSize(width: 1400, height: 900)
+        .handlesExternalEvents(matching: ["*"])
+
+        WindowGroup("New Window", for: UUID.self) { $windowID in
+            if let windowID {
+                DetachedWindowContentView(
+                    windowID: windowID,
+                    isSafeMode: mainStartupBehavior == .safeMode,
+                    supportPurchaseManager: supportPurchaseManager,
+                    appUpdateManager: appUpdateManager,
+                    showGrokError: $showGrokError,
+                    grokErrorMessage: $grokErrorMessage
+                )
+                .modifier(EditorSceneStorageModifier())
+                .onAppear { _ = AppearanceThemeCloudSync.syncIfEnabled() }
+                .onAppear { scheduleMacWindowChromePolicy() }
+                .onAppear {
+                    // FORK: install the command-palette observer once (⌘⇧P). macOS-only.
+                    #if os(macOS)
+                    ForkCommandPaletteInstaller.installIfNeeded()
+                    #endif
+                }
+                .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
+                .onAppear { applyRuntimeLanguageOverride() }
+                .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
+                .environment(\.locale, preferredLocale)
+                .tint(.blue)
+                .preferredColorScheme(preferredAppearance)
+            } else {
+                NativeTabSceneBootstrapper(windowID: $windowID)
+            }
+        }
+        .defaultSize(width: 1400, height: 900)
+        .handlesExternalEvents(matching: [])
+
+        Settings {
+            ConfiguredSettingsView(
+                supportsTranslucency: true,
+                editorViewModel: activeEditorViewModel,
+                supportPurchaseManager: supportPurchaseManager,
+                appUpdateManager: appUpdateManager
+            )
+                .onChange(of: appearance) { _, _ in applyGlobalAppearanceOverride() }
+                .onAppear { applyRuntimeLanguageOverride() }
+                .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
+                .environment(\.locale, preferredLocale)
+                .tint(.blue)
+                .preferredColorScheme(preferredAppearance)
+        }
+
+        Window("AI Activity Log", id: "ai-logs") {
+            AIActivityLogView()
+                .frame(minWidth: 720, minHeight: 420)
+                .onAppear { applyRuntimeLanguageOverride() }
+                .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
+                .environment(\.locale, preferredLocale)
+                .preferredColorScheme(preferredAppearance)
+                .tint(.blue)
+        }
+        .defaultSize(width: 860, height: 520)
+        .handlesExternalEvents(matching: [])
+
+        MenuBarExtra(
+            "Neon Vision Editor",
+            systemImage: menuBarDocumentStatus.symbol,
+            isInserted: $showMenuBarIconMac
+        ) {
+            Label("Neon Vision Editor", systemImage: "doc.text")
+                .font(.headline)
+
+            Label(menuBarDocumentStatus.title, systemImage: menuBarDocumentStatus.symbol)
+                .foregroundStyle(menuBarDocumentStatus.color)
+
+            Label {
+                HStack(spacing: 5) {
+                    Text(appleAIStatus.replacingOccurrences(of: "Apple Intelligence: ", with: ""))
+                    if let appleAIRoundTripMS {
+                        Text("• \(Int(appleAIRoundTripMS.rounded())) ms")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .foregroundStyle(appleAIStatusColor)
+            } icon: {
+                Image(systemName: appleAIStatusSymbol)
+                    .foregroundStyle(appleAIStatusColor)
+            }
+
+            if let tab = activeEditorViewModel.selectedTab {
+                Label {
+                    HStack(spacing: 5) {
+                        Text(tab.name)
+                            .lineLimit(1)
+                        if tab.isDirty {
+                            Text("Unsaved")
+                                .font(.caption2.weight(.semibold))
+                                .foregroundStyle(.orange)
+                        }
+                    }
+                } icon: {
+                    Image(systemName: "doc.text")
+                        .foregroundStyle(.blue)
+                }
+            }
+
+            Divider()
+
+            Button {
+                openWindow(value: MacEditorWindowSessionStore.shared.createWindowID())
+            } label: {
+                Label("New Window", systemImage: "macwindow.badge.plus")
+            }
+
+            Button {
+                postWindowCommand(.showAIChatRequested)
+            } label: {
+                Label("Show AI Assistant", systemImage: "sparkles")
+            }
+
+            Menu("Open Recent", systemImage: "clock.arrow.circlepath") {
+                let recentFiles = RecentFilesStore.items(limit: 10)
+                if recentFiles.isEmpty {
+                    Text("No Recent Files")
+                } else {
+                    ForEach(recentFiles) { item in
+                        Button {
+                            #if os(macOS)
+                            appDelegate.handleExternalOpenURLs([item.url])
+                            #else
+                            postWindowCommand(.openRecentFileRequested, object: item.url)
+                            #endif
+                        } label: {
+                            Label(item.title, systemImage: item.isPinned ? "pin.fill" : "doc")
+                        }
+                    }
+                    Divider()
+                    Button("Clear Unpinned Recent Files") {
+                        RecentFilesStore.clearUnpinned()
+                    }
+                }
+            }
+
+            Divider()
+
+            Button {
+                postWindowCommand(.showWelcomeTourRequested)
+            } label: {
+                Label("Show Welcome Tour", systemImage: "sparkles.rectangle.stack")
+            }
+
+            Button {
+                postWindowCommand(.showEditorHelpRequested)
+            } label: {
+                Label("Toolbar Help…", systemImage: "questionmark.circle")
+            }
+
+            Button {
+                postWindowCommand(.showSupportPromptRequested)
+            } label: {
+                Label("Support Neon Vision Editor…", systemImage: "heart.circle.fill")
+            }
+
+            Divider()
+
+            SettingsLink {
+                Label("Settings…", systemImage: "gearshape")
+            }
+
+            if ReleaseRuntimePolicy.isUpdaterEnabledForCurrentDistribution {
+                Button {
+                    postWindowCommand(.showUpdaterRequested, object: true)
+                } label: {
+                    Label("Check for Updates…", systemImage: "arrow.triangle.2.circlepath.circle")
+                }
+            }
+
+            Divider()
+
+            Button("Quit Neon Vision Editor") {
+                NSApp.terminate(nil)
+            }
+            .keyboardShortcut("q")
+        }
+
+        .commands {
+            // FORK: Transform menu + Command Palette (⌘⇧P). See Fork/MenuCommands.swift.
+            ForkMenuCommands()
+            NeonVisionMacAppCommands(
+                activeEditorViewModel: { activeEditorViewModel },
+                hasActiveEditorWindow: { WindowViewModelRegistry.shared.activeViewModel() != nil },
+                openNewWindow: {
+                    openWindow(value: MacEditorWindowSessionStore.shared.createWindowID())
+                },
+                openAIDiagnosticsWindow: { openWindow(id: "ai-logs") },
+                postWindowCommand: { name, object in
+                    postWindowCommand(name, object: object)
+                },
+                isUpdaterEnabled: ReleaseRuntimePolicy.isUpdaterEnabledForCurrentDistribution,
+                recentFilesProvider: { RecentFilesStore.items(limit: 10) },
+                clearRecentFiles: { RecentFilesStore.clearUnpinned() },
+                useAppleIntelligence: $useAppleIntelligence,
+                appleAIStatus: $appleAIStatus,
+                appleAIRoundTripMS: $appleAIRoundTripMS,
+                showGrokError: $showGrokError,
+                grokErrorMessage: $grokErrorMessage
+            )
+        }
+#else
+        WindowGroup {
+            ContentView(
+                startupBehavior: mainStartupBehavior,
+                safeModeMessage: startupSafeModeMessage
+            )
+                .environment(viewModel)
+                .environmentObject(supportPurchaseManager)
+                .environmentObject(appUpdateManager)
+                .environment(\.showGrokError, $showGrokError)
+                .environment(\.grokErrorMessage, $grokErrorMessage)
+                .environment(\.locale, preferredLocale)
+                .onAppear { applyRuntimeLanguageOverride() }
+                .onChange(of: appLanguageCode) { _, _ in applyRuntimeLanguageOverride() }
+                .tint(.blue)
+                .onAppear { applyIOSAppearanceOverride() }
+#if os(iOS)
+                .onAppear { NeonPulsePhoneBridge.shared.start(viewModel: viewModel) }
+                .onChange(of: viewModel.tabPersistenceObservationToken) { _, _ in
+                    NeonPulsePhoneBridge.shared.publishStatus()
+                }
+#endif
+                .onAppear { _ = AppearanceThemeCloudSync.syncIfEnabled() }
+                .onReceive(NotificationCenter.default.publisher(for: NSUbiquitousKeyValueStore.didChangeExternallyNotification)) { _ in
+                    if AppearanceThemeCloudSync.syncIfEnabled()?.didApplyRemoteSettings == true {
+                        applyIOSAppearanceOverride()
+                    }
+                }
+                .onChange(of: scenePhase) { _, newPhase in
+                    guard newPhase == .active else { return }
+                    Task {
+                        await markLaunchCompletedAfterStableWindowDelay()
+                    }
+                    if AppearanceThemeCloudSync.syncIfEnabled()?.didApplyRemoteSettings == true {
+                        applyIOSAppearanceOverride()
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: UIApplication.willTerminateNotification)) { _ in
+                    EditorPreferenceWriter.shared.flushBeforeTermination()
+                    RuntimeReliabilityMonitor.shared.markGracefulTermination()
+                }
+                .onChange(of: appearance) { _, _ in applyIOSAppearanceOverride() }
+                .preferredColorScheme(preferredAppearance)
+                .task {
+                    await markLaunchCompletedAfterStableWindowDelay()
+                }
+        }
+        .commands {
+            CommandGroup(replacing: .undoRedo) {
+                Button("Undo") {
+                    UIApplication.shared.sendAction(Selector(("undo:")), to: nil, from: nil, for: nil)
+                }
+                .keyboardShortcut("z", modifiers: .command)
+
+                Button("Redo") {
+                    UIApplication.shared.sendAction(Selector(("redo:")), to: nil, from: nil, for: nil)
+                }
+                .keyboardShortcut("z", modifiers: [.command, .shift])
+            }
+
+            CommandMenu("File") {
+                Button("Open File…") {
+                    viewModel.openFile()
+                }
+
+                Button("Open Folder…") {
+                    NotificationCenter.default.post(name: .openProjectFolderRequested, object: nil)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .shift])
+
+                Button("New Tab") {
+                    viewModel.addNewTab()
+                }
+            }
+
+            CommandMenu("Find") {
+                Button("Find…") {
+                    NotificationCenter.default.post(name: .showFindReplaceRequested, object: nil)
+                }
+
+                Button("Find Next") {
+                    NotificationCenter.default.post(name: .findNextRequested, object: nil)
+                }
+                .keyboardShortcut("g", modifiers: .command)
+
+                Button("Find in Files…") {
+                    NotificationCenter.default.post(name: .showFindInFilesRequested, object: nil)
+                }
+            }
+
+            CommandMenu("Tools") {
+                Button("Join Lines") {
+                    NotificationCenter.default.post(name: .joinLinesRequested, object: nil)
+                }
+                .editorShortcut(.joinLines)
+                Button("Format JSON") {
+                    NotificationCenter.default.post(name: .formatJSONDocumentRequested, object: nil)
+                }
+                .editorShortcut(.formatJSON)
+
+                Button("Combine JSON Lines") {
+                    NotificationCenter.default.post(name: .combineJSONLinesRequested, object: nil)
+                }
+
+                Button("Compare with Disk") {
+                    NotificationCenter.default.post(name: .compareCurrentTabAgainstDiskRequested, object: nil)
+                }
+
+                Button("Compare Open Tabs…") {
+                    NotificationCenter.default.post(name: .compareOpenTabsRequested, object: nil)
+                }
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("Toolbar Help…") {
+                    NotificationCenter.default.post(name: .showEditorHelpRequested, object: nil)
+                }
+                .keyboardShortcut("?", modifiers: .command)
+
+                Button("Show Welcome Tour") {
+                    NotificationCenter.default.post(name: .showWelcomeTourRequested, object: nil)
+                }
+            }
+
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    NotificationCenter.default.post(name: .showSettingsRequested, object: nil)
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
+        }
+#endif
+    }
+
+#if os(macOS)
+    private struct NativeTabSceneBootstrapper: NSViewRepresentable {
+        @Binding var windowID: UUID?
+
+        func makeNSView(context: Context) -> NativeDocumentTabAttachment.AttachmentView {
+            let view = NativeDocumentTabAttachment.AttachmentView(frame: .zero)
+            let store = MacDocumentWindowTabs.shared
+            guard let id = store.prepareNativeTabScene() else { return view }
+            // AppKit's plus button creates a nil-value scene. Group that scene
+            // before presentation, not after a task replaces it with its editor.
+            view.attach = { window in store.attachPendingWindow(window, for: id) }
+            let binding = $windowID
+            RunLoop.main.perform(inModes: [.default]) {
+                MainActor.assumeIsolated {
+                    if binding.wrappedValue == nil { binding.wrappedValue = id }
+                }
+            }
+            return view
+        }
+
+        func updateNSView(_ view: NativeDocumentTabAttachment.AttachmentView, context: Context) {}
+    }
+
+    private func configureExternalOpenWindowAction() {
+        let action = openWindow
+        appDelegate.openPrimaryWindow = { action(id: "primary-editor") }
+    }
+#endif
+}
+
+// MARK: - Environment Keys
+
+struct ShowGrokErrorKey: EnvironmentKey {
+    static let defaultValue: Binding<Bool> = .constant(false)
+}
+
+struct GrokErrorMessageKey: EnvironmentKey {
+    static let defaultValue: Binding<String> = .constant("")
+}
+
+extension EnvironmentValues {
+    var showGrokError: Binding<Bool> {
+        get { self[ShowGrokErrorKey.self] }
+        set { self[ShowGrokErrorKey.self] = newValue }
+    }
+
+    var grokErrorMessage: Binding<String> {
+        get { self[GrokErrorMessageKey.self] }
+        set { self[GrokErrorMessageKey.self] = newValue }
+    }
+}

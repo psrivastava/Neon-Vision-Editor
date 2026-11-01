@@ -1,0 +1,817 @@
+#if os(macOS)
+import SwiftUI
+import Foundation
+#if canImport(FoundationModels)
+import FoundationModels
+#endif
+
+
+
+// MARK: - macOS App Commands
+
+struct NeonVisionMacAppCommands: Commands {
+    let activeEditorViewModel: () -> EditorViewModel
+    let hasActiveEditorWindow: () -> Bool
+    let openNewWindow: () -> Void
+    let openAIDiagnosticsWindow: () -> Void
+    let postWindowCommand: (_ name: Notification.Name, _ object: Any?) -> Void
+    let isUpdaterEnabled: Bool
+    let recentFilesProvider: () -> [RecentFilesStore.Item]
+    let clearRecentFiles: () -> Void
+
+    @Binding var useAppleIntelligence: Bool
+    @Binding var appleAIStatus: String
+    @Binding var appleAIRoundTripMS: Double?
+    @Binding var showGrokError: Bool
+    @Binding var grokErrorMessage: String
+    @AppStorage("SelectedAIModel") private var selectedAIModelRaw: String = AIModel.appleIntelligence.rawValue
+
+    private static let languageOptions = [
+        "swift", "python", "javascript", "typescript", "php", "java", "kotlin", "go", "ruby",
+        "rust", "cobol", "dotenv", "proto", "graphql", "rst", "nginx", "sql", "html", "typst",
+        "expressionengine", "css", "c", "cpp", "csharp", "objective-c", "json", "xml", "yaml",
+        "toml", "nix", "eml", "csv", "ini", "vim", "log", "ipynb", "markdown", "tex", "bash", "zsh", "powershell",
+        "standard", "plain"
+    ]
+
+    private var appleAIStatusMenuLabel: String {
+        if appleAIStatus.contains("Ready") { return "AI: Ready" }
+        if appleAIStatus.contains("Checking") { return "AI: Checking" }
+        if appleAIStatus.contains("Unavailable") { return "AI: Unavailable" }
+        if appleAIStatus.contains("Error") { return "AI: Error" }
+        return "AI: Status"
+    }
+
+    private var selectedAIModel: AIModel {
+        AIModel(rawValue: selectedAIModelRaw) ?? .appleIntelligence
+    }
+
+    private var aiCheckButtonTitle: String {
+        selectedAIModel == .customProvider ? "Check Custom Provider" : "Check Apple Intelligence"
+    }
+
+    @CommandsBuilder
+    var body: some Commands {
+        appSettingsCommands
+        fileCommands
+        languageCommands
+        aiCommands
+        viewCommands
+        findCommands
+        editorCommands
+        toolsCommands
+        diagnosticsCommands
+        helpCommands
+    }
+
+    private var hasSelectedTab: Bool {
+        activeEditorViewModel().selectedTab != nil
+    }
+
+    private var hasSavableSelectedTab: Bool {
+        guard let selectedTab = activeEditorViewModel().selectedTab else { return false }
+        return !selectedTab.isReadOnlyPreview && !selectedTab.isLoadingContent
+    }
+
+    private var hasSelectedTabWithSaveAsSupport: Bool {
+        guard let selectedTab = activeEditorViewModel().selectedTab else { return false }
+        return !selectedTab.isReadOnlyPreview && selectedTab.remotePreviewPath == nil
+    }
+
+    private var hasSelectedTabWithFileURL: Bool {
+        activeEditorViewModel().selectedTab?.fileURL != nil
+    }
+
+    private var selectedTabIsJSON: Bool {
+        guard let language = activeEditorViewModel().selectedTab?.language.lowercased() else { return false }
+        return language == "json" || language == "jsonc" || language == "json5"
+    }
+
+    private func post(_ name: Notification.Name, object: Any? = nil) {
+        postWindowCommand(name, object)
+    }
+
+    private var recentFiles: [RecentFilesStore.Item] {
+        recentFilesProvider()
+    }
+
+    private func dynamicShortcut(_ action: EditorShortcutAction) -> some ViewModifier {
+        let descriptor = ShortcutPreferences.shortcut(for: action)
+        return _DynamicShortcutModifier(
+            key: descriptor.keyEquivalent,
+            modifiers: descriptor.eventModifiers
+        )
+    }
+
+    @CommandsBuilder
+    private var appSettingsCommands: some Commands {
+        CommandGroup(before: .appSettings) {
+            if isUpdaterEnabled {
+                Button("Check for Updates…") {
+                    post(.showUpdaterRequested, object: true)
+                }
+                Divider()
+            }
+        }
+    }
+
+    @CommandsBuilder
+    private var fileCommands: some Commands {
+        CommandGroup(replacing: .newItem) {
+            Button("New Window") {
+                openNewWindow()
+            }
+            .keyboardShortcut("n", modifiers: .command)
+
+            Button("Focus Mode") {
+                post(.toggleFocusModeRequested)
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
+
+            Button("New Tab") {
+                activeEditorViewModel().addNewTab()
+            }
+            .modifier(dynamicShortcut(.newTab))
+        }
+
+        CommandGroup(after: .newItem) {
+            Button("Send to Nearby Device…") {
+                NotificationCenter.default.post(name: .nearbyDocumentTransferRequested,
+                    object: activeEditorViewModel(), userInfo: ["mode": "send"])
+            }
+            .disabled(!hasSelectedTab)
+            Button("Receive Document…") {
+                NotificationCenter.default.post(name: .nearbyDocumentTransferRequested,
+                    object: activeEditorViewModel(), userInfo: ["mode": "receive"])
+            }
+            Button("Open File…") {
+                activeEditorViewModel().openFile()
+            }
+            .modifier(dynamicShortcut(.openFile))
+
+            Button("Open Folder…") {
+                post(.openProjectFolderRequested)
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
+        }
+
+        CommandMenu("Open Recent") {
+            if recentFiles.isEmpty {
+                Button("No Recent Files") {}
+                    .disabled(true)
+            } else {
+                ForEach(Array(recentFiles.prefix(10))) { item in
+                    Button {
+                        post(.openRecentFileRequested, object: item.url)
+                    } label: {
+                        if item.isPinned {
+                            Label(item.title, systemImage: "star.fill")
+                        } else {
+                            Text(item.title)
+                        }
+                    }
+                }
+
+                Divider()
+
+                Button("Clear Unpinned Recents") {
+                    clearRecentFiles()
+                }
+            }
+        }
+
+        CommandGroup(replacing: .saveItem) {
+            Button("Save") {
+                let current = activeEditorViewModel()
+                if MacDocumentWindowTabs.shared.saveFocusedSideBySideDocument(
+                    for: current, focusedDocumentID: MacDocumentWindowTabs.focusedEditorDocumentID(in: NSApp.keyWindow)) {
+                    return
+                }
+                if let tab = current.selectedTab {
+                    current.saveFile(tabID: tab.id)
+                }
+            }
+            .modifier(dynamicShortcut(.save))
+            .disabled(!hasSavableSelectedTab)
+
+            Button("Save As…") {
+                let current = activeEditorViewModel()
+                if MacDocumentWindowTabs.shared.saveFocusedSideBySideDocument(
+                    for: current, focusedDocumentID: MacDocumentWindowTabs.focusedEditorDocumentID(in: NSApp.keyWindow),
+                    saveAs: true) {
+                    return
+                }
+                if let tab = current.selectedTab {
+                    current.saveFileAs(tabID: tab.id)
+                }
+            }
+            .modifier(dynamicShortcut(.saveAs))
+            .disabled(!hasSelectedTabWithSaveAsSupport)
+
+            Button("Rename") {
+                let current = activeEditorViewModel()
+                current.showingRename = true
+                current.renameText = current.selectedTab?.name ?? "Untitled"
+            }
+            .disabled(!hasSelectedTab)
+
+            Divider()
+
+            Menu("Text Encoding") {
+                let current = activeEditorViewModel()
+                let selectedEncoding = current.selectedTab?.fileEncoding
+                ForEach(TextEncodingDescriptor.all) { encoding in
+                    Button {
+                        guard let tabID = current.selectedTab?.id else { return }
+                        current.saveFile(tabID: tabID, using: encoding)
+                    } label: {
+                        HStack {
+                            Text(encoding.displayName)
+                            if selectedEncoding == encoding {
+                                Image(systemName: "checkmark")
+                            }
+                        }
+                    }
+                    .disabled(!hasSavableSelectedTab)
+                }
+
+                Divider()
+
+                Button("Detect Encoding Automatically") {
+                    guard let tabID = current.selectedTab?.id else { return }
+                    current.reopenFileWithAutomaticEncoding(tabID: tabID)
+                }
+                .disabled(current.selectedTab?.fileURL == nil || !hasSavableSelectedTab)
+
+                Button("Reopen with Selected Encoding") {
+                    guard let tabID = current.selectedTab?.id else { return }
+                    current.reopenFileWithSelectedEncoding(tabID: tabID)
+                }
+                .disabled(current.selectedTab?.fileURL == nil || !hasSavableSelectedTab)
+            }
+
+            Divider()
+
+            Button("Close Tab") {
+                post(.closeSelectedTabRequested)
+            }
+            .modifier(dynamicShortcut(.closeTab))
+            .disabled(!hasActiveEditorWindow() || !hasSelectedTab)
+            #if os(macOS)
+            Button("Close Window") {
+                NSApp.keyWindow?.performClose(nil)
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .disabled(!hasActiveEditorWindow())
+            #endif
+        }
+    }
+
+    @CommandsBuilder
+    private var languageCommands: some Commands {
+        CommandMenu("Language") {
+            Button("Search Languages…") {
+                post(.showLanguageSearchRequested)
+            }
+            .modifier(dynamicShortcut(.languageSearch))
+            .disabled(!hasSelectedTab)
+
+            Divider()
+
+            ForEach(Self.languageOptions, id: \.self) { language in
+                Button(languageLabel(for: language)) {
+                    let current = activeEditorViewModel()
+                    if let tab = current.selectedTab {
+                        current.updateTabLanguage(tabID: tab.id, language: language)
+                    }
+                }
+                .disabled(!hasSelectedTab)
+            }
+        }
+    }
+
+    @CommandsBuilder
+    private var aiCommands: some Commands {
+        CommandMenu("AI") {
+            Button("Open AI Chat") {
+                post(.showAIChatRequested)
+            }
+            .keyboardShortcut("a", modifiers: [.command, .option])
+
+            Divider()
+
+            Button("API Settings…") {
+                post(.showAPISettingsRequested)
+            }
+        }
+    }
+
+    @CommandsBuilder
+    private var viewCommands: some Commands {
+        CommandGroup(after: .windowArrangement) {
+            // AppKit omits its own item because automatic window tabbing is
+            // off for non-document windows.
+            Button("Move Tab to New Window") {
+                NSApp.keyWindow?.moveTabToNewWindow(nil)
+            }
+        }
+        CommandGroup(after: .toolbar) {
+            Button("Toggle Sidebar") {
+                post(.toggleSidebarRequested)
+            }
+            .modifier(dynamicShortcut(.toggleSidebar))
+
+            Button("Toggle Project Structure Sidebar") {
+                post(.toggleProjectStructureSidebarRequested)
+            }
+            .modifier(dynamicShortcut(.toggleProjectSidebar))
+
+            Button("Toggle Line Wrap") {
+                post(.toggleLineWrapRequested)
+            }
+            .modifier(dynamicShortcut(.toggleLineWrap))
+            .disabled(!hasSelectedTab)
+
+            Button("Toggle Document Preview") {
+                post(.togglePreviewRequested)
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+            .disabled(!hasSelectedTab)
+
+            Button("Toggle Side by Side Editor") {
+                post(.toggleSplitEditorRequested)
+            }
+            .keyboardShortcut("\\", modifiers: [.command, .option])
+            .disabled(!hasSelectedTab)
+
+            Button("Toggle Code Minimap") {
+                post(.toggleCodeMinimapRequested)
+            }
+            .keyboardShortcut("m", modifiers: [.command, .option])
+
+            Button("Brain Dump Mode") {
+                post(.toggleBrainDumpModeRequested)
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+
+            Button("Toggle Translucent Window Background") {
+                let next = !UserDefaults.standard.bool(forKey: "EnableTranslucentWindow")
+                UserDefaults.standard.set(next, forKey: "EnableTranslucentWindow")
+                post(.toggleTranslucencyRequested, object: next)
+            }
+
+            Divider()
+
+            Button {
+                post(.showWelcomeTourRequested)
+            } label: {
+                Label("Show Welcome Tour", systemImage: "sparkles.rectangle.stack")
+            }
+        }
+    }
+
+    @CommandsBuilder
+    private var findCommands: some Commands {
+        CommandMenu("Find") {
+            Button("Find…") {
+                post(.showFindReplaceRequested)
+            }
+            .modifier(dynamicShortcut(.find))
+
+            Button("Find Next") {
+                post(.findNextRequested)
+            }
+            .keyboardShortcut("g", modifiers: .command)
+
+            Button("Find in Files…") {
+                post(.showFindInFilesRequested)
+            }
+            .modifier(dynamicShortcut(.findInFiles))
+
+            Button("Go to Line…") {
+                post(.showGoToLineRequested)
+            }
+            .modifier(dynamicShortcut(.goToLine))
+
+            Button("Go to Symbol…") {
+                post(.showGoToSymbolRequested)
+            }
+            .modifier(dynamicShortcut(.goToSymbol))
+        }
+    }
+
+    @CommandsBuilder
+    private var editorCommands: some Commands {
+        CommandMenu("Editor") {
+            Button("Join Lines") {
+                post(.joinLinesRequested)
+            }
+            .modifier(dynamicShortcut(.joinLines))
+            .disabled(!hasSavableSelectedTab)
+
+            Button("Quick Open…") {
+                post(.showQuickSwitcherRequested)
+            }
+            .modifier(dynamicShortcut(.quickOpen))
+
+            Menu("Editor Layout") {
+                ForEach(ContentView.EditorLayoutPreset.allCases) { preset in
+                    Button {
+                        post(.applyEditorLayoutPresetRequested, object: preset.rawValue)
+                    } label: {
+                        Label(preset.title, systemImage: preset.symbol)
+                    }
+                }
+            }
+
+            Button("Open Preview in Separate Window") {
+                post(.openPreviewInSeparateWindowRequested)
+            }
+            .disabled(!hasSelectedTab)
+
+            Button("Clear Editor") {
+                post(.clearEditorRequested)
+            }
+
+            Button("Copy Current Editor Reference") {
+                post(.copyEditorReferenceRequested)
+            }
+            .disabled(!hasSelectedTab)
+
+            Button("Add Next Match") {
+                post(.addNextMatchRequested)
+            }
+            .keyboardShortcut("d", modifiers: .command)
+            .disabled(!hasSelectedTab)
+
+            Divider()
+
+            Button("Move Line Up") {
+                post(.moveSelectedLinesRequested, object: EditorLineMoveDirection.up.rawValue)
+            }
+            .keyboardShortcut(.upArrow, modifiers: [.option])
+            .disabled(!hasSavableSelectedTab)
+
+            Button("Move Line Down") {
+                post(.moveSelectedLinesRequested, object: EditorLineMoveDirection.down.rawValue)
+            }
+            .keyboardShortcut(.downArrow, modifiers: [.option])
+            .disabled(!hasSavableSelectedTab)
+
+            Divider()
+
+            Button("Toggle Vim Mode") {
+                post(.toggleVimModeRequested)
+            }
+            .keyboardShortcut("v", modifiers: [.command, .shift])
+        }
+    }
+
+    @CommandsBuilder
+    private var toolsCommands: some Commands {
+        CommandMenu("Tools") {
+            Button("Suggest Code") {
+                suggestCode()
+            }
+            .keyboardShortcut("g", modifiers: [.command, .shift])
+            .disabled(!hasSelectedTab)
+
+            Divider()
+
+            Button("Compare with Disk") {
+                post(.compareCurrentTabAgainstDiskRequested)
+            }
+            .disabled(!hasSelectedTabWithFileURL)
+
+            // Tab group membership is window state these commands do not
+            // observe; the picker explains when no other tab is open.
+            Button("Compare Open Tabs…") {
+                post(.compareOpenTabsRequested)
+            }
+            .disabled(!hasSelectedTab)
+
+            Divider()
+
+            Button("Format JSON") {
+                post(.formatJSONDocumentRequested)
+            }
+            .modifier(dynamicShortcut(.formatJSON))
+            .disabled(!selectedTabIsJSON)
+
+            Button("Combine JSON Lines") {
+                post(.combineJSONLinesRequested)
+            }
+            .disabled(!selectedTabIsJSON)
+
+            Divider()
+
+            Button("Convert Text to Markdown…") {
+                post(.convertTextToMarkdownRequested)
+            }
+            .disabled(!hasSelectedTab)
+
+            Button("Structure Text as JSON…") {
+                post(.structureTextAsJSONRequested)
+            }
+            .disabled(!hasSelectedTab)
+
+#if !APP_STORE_BUILD
+            Divider()
+
+            Button("Sidebar Terminal") {
+                post(.showIntegratedTerminalRequested)
+            }
+#endif
+
+            Divider()
+
+            Toggle("Use Apple Intelligence", isOn: $useAppleIntelligence)
+        }
+    }
+
+    @CommandsBuilder
+    private var diagnosticsCommands: some Commands {
+        CommandMenu("Diag") {
+            Text(appleAIStatusMenuLabel)
+            Divider()
+
+            Button("Open AI Activity Log") {
+                openAIDiagnosticsWindow()
+            }
+            .keyboardShortcut("l", modifiers: [.command, .option, .shift])
+
+            Button("Inspect Whitespace Scalars at Caret") {
+                post(.inspectWhitespaceScalarsRequested)
+            }
+            .keyboardShortcut("u", modifiers: [.command, .shift])
+
+            Divider()
+
+            Button(aiCheckButtonTitle) {
+                runAICheck()
+            }
+
+            if let roundTripMS = appleAIRoundTripMS {
+                Text(String(format: "RTT: %.1f ms", roundTripMS))
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @CommandsBuilder
+    private var helpCommands: some Commands {
+        CommandGroup(replacing: .help) {
+            Button("What's New…") {
+                post(.showInAppChangelogRequested)
+            }
+
+            Divider()
+
+            Button("Toolbar Help…") {
+                post(.showEditorHelpRequested)
+            }
+            .keyboardShortcut("?", modifiers: .command)
+
+            Button("Show Welcome Tour") {
+                post(.showWelcomeTourRequested)
+            }
+
+            Divider()
+
+            Button("Support Neon Vision Editor…") {
+                post(.showSupportPromptRequested)
+            }
+            .keyboardShortcut("h", modifiers: [.command, .option, .shift])
+        }
+    }
+
+    private func runAICheck() {
+        Task {
+            if selectedAIModel == .customProvider {
+                await runCustomProviderCheck()
+                return
+            }
+
+            AIActivityLog.record("Apple Intelligence health check started.", source: "Diag")
+            #if USE_FOUNDATION_MODELS && canImport(FoundationModels)
+            do {
+                let start = Date()
+                _ = try await AppleFM.appleFMHealthCheck()
+                let end = Date()
+                appleAIStatus = "Apple Intelligence: Ready"
+                appleAIRoundTripMS = end.timeIntervalSince(start) * 1000.0
+                AIActivityLog.record(
+                    "AI health check succeeded (\(String(format: "%.1f", appleAIRoundTripMS ?? 0)) ms).",
+                    source: "Diag"
+                )
+            } catch {
+                appleAIStatus = "Apple Intelligence: Error — \(error.localizedDescription)"
+                appleAIRoundTripMS = nil
+                AIActivityLog.record(
+                    "AI health check failed: \(error.localizedDescription)",
+                    level: .error,
+                    source: "Diag"
+                )
+            }
+            #else
+            appleAIStatus = "Apple Intelligence: Unavailable (build without USE_FOUNDATION_MODELS)"
+            appleAIRoundTripMS = nil
+            AIActivityLog.record(
+                "AI health check unavailable (built without USE_FOUNDATION_MODELS).",
+                level: .warning,
+                source: "Diag"
+            )
+            #endif
+        }
+    }
+
+    private func runCustomProviderCheck() async {
+        let baseURL = UserDefaults.standard.string(forKey: CustomProviderConfig.baseURLDefaultsKey) ?? ""
+        let model = UserDefaults.standard.string(forKey: CustomProviderConfig.modelDefaultsKey) ?? ""
+        let apiKey = SecureTokenStore.token(for: .customProvider)
+
+        guard isSecureOpenAICompatibleBaseURL(baseURL), !model.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            appleAIStatus = "Custom Provider: Configuration incomplete"
+            appleAIRoundTripMS = nil
+            AIActivityLog.record(
+                "Custom provider health check skipped: enter a valid HTTPS or local loopback HTTP base URL and model.",
+                level: .error,
+                source: "Diag"
+            )
+            return
+        }
+
+        AIActivityLog.record("Custom provider health check started.", source: "Diag")
+        do {
+            let roundTripMS = try await OpenAICompatibleAIClient.healthCheck(
+                baseURL: baseURL,
+                apiKey: apiKey,
+                timeoutInterval: CustomProviderConfig.requestTimeout
+            )
+            appleAIStatus = "Custom Provider: Ready"
+            appleAIRoundTripMS = roundTripMS
+            AIActivityLog.record(
+                "Custom provider health check succeeded (\(String(format: "%.1f", roundTripMS)) ms).",
+                source: "Diag"
+            )
+        } catch {
+            appleAIStatus = "Custom Provider: Error - \(error.localizedDescription)"
+            appleAIRoundTripMS = nil
+            AIActivityLog.record(
+                "Custom provider health check failed: \(error.localizedDescription)",
+                level: .error,
+                source: "Diag"
+            )
+        }
+    }
+
+    private func suggestCode() {
+        Task {
+            let current = activeEditorViewModel()
+            guard let tab = current.selectedTab else { return }
+            guard !tab.usesFileBackedStorage else {
+                current.fileEncodingErrorMessage = "AI suggestions are unavailable for large file-backed documents. Use a bounded selection or open a smaller copy."
+                return
+            }
+
+            let prefixLength = min(1_000, tab.document.utf16Length)
+            let contentPrefix = (try? tab.document.text(
+                inUTF16Range: NSRange(location: 0, length: prefixLength)
+            )) ?? ""
+            let prompt = "Suggest improvements for this \(tab.language) code: \(contentPrefix)"
+
+            AIActivityLog.record("Suggest Code requested for current tab.", source: "Suggest")
+
+            let grokToken = SecureTokenStore.token(for: .grok)
+            let openAIToken = SecureTokenStore.token(for: .openAI)
+            let geminiToken = SecureTokenStore.token(for: .gemini)
+            let anthropicToken = SecureTokenStore.token(for: .anthropic)
+            let openCodeGoToken = SecureTokenStore.token(for: .openCodeGo)
+            let openCodeGoModel = UserDefaults.standard.string(forKey: "OpenCodeGoModelID") ?? OpenCodeGoConfig.defaultModel
+            let customToken = SecureTokenStore.token(for: .customProvider)
+            let customBaseURL = UserDefaults.standard.string(forKey: CustomProviderConfig.baseURLDefaultsKey) ?? ""
+            let customModel = UserDefaults.standard.string(forKey: CustomProviderConfig.modelDefaultsKey) ?? ""
+
+            var providerLabel = "Unknown"
+            let client: AIClient? = {
+                #if USE_FOUNDATION_MODELS && canImport(FoundationModels)
+                if useAppleIntelligence {
+                    providerLabel = "Apple Intelligence"
+                    return AIClientFactory.makeClient(for: .appleIntelligence)
+                }
+                #endif
+                if !grokToken.isEmpty {
+                    providerLabel = "Grok"
+                    return AIClientFactory.makeClient(for: .grok, grokAPITokenProvider: { grokToken })
+                }
+                if !openAIToken.isEmpty {
+                    providerLabel = "OpenAI"
+                    return AIClientFactory.makeClient(for: .openAI, openAIKeyProvider: { openAIToken })
+                }
+                if !geminiToken.isEmpty {
+                    providerLabel = "Gemini"
+                    return AIClientFactory.makeClient(for: .gemini, geminiKeyProvider: { geminiToken })
+                }
+                if !anthropicToken.isEmpty {
+                    providerLabel = "Anthropic"
+                    return AIClientFactory.makeClient(for: .anthropic, anthropicKeyProvider: { anthropicToken })
+                }
+                if !openCodeGoToken.isEmpty {
+                    providerLabel = "OpenCode Go"
+                    return AIClientFactory.makeClient(for: .openCodeGo,
+                                                      openCodeGoKeyProvider: { openCodeGoToken },
+                                                      openCodeGoModelProvider: { openCodeGoModel })
+                }
+                if !customBaseURL.isEmpty && !customModel.isEmpty {
+                    providerLabel = "Custom Provider"
+                    return AIClientFactory.makeClient(for: .customProvider,
+                                                      customKeyProvider: { customToken },
+                                                      customBaseURLProvider: { customBaseURL },
+                                                      customModelProvider: { customModel })
+                }
+                #if USE_FOUNDATION_MODELS && canImport(FoundationModels)
+                providerLabel = "Apple Intelligence (fallback)"
+                return AIClientFactory.makeClient(for: .appleIntelligence)
+                #else
+                return nil
+                #endif
+            }()
+
+            guard let client else {
+                let message = "No AI provider configured."
+                grokErrorMessage = message
+                showGrokError = true
+                AIActivityLog.record(message, level: .error, source: "Suggest")
+                return
+            }
+
+            AIActivityLog.record("Suggest Code using \(providerLabel).", source: "Suggest")
+            var aggregated = ""
+            for await chunk in client.streamSuggestions(prompt: prompt) {
+                aggregated += chunk
+            }
+            let trimmed = aggregated.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                AIActivityLog.record(
+                    "Suggest Code returned an empty response from \(providerLabel).",
+                    level: .warning,
+                    source: "Suggest"
+                )
+                return
+            }
+
+            current.updateTabContent(
+                tabID: tab.id,
+                content: tab.document.string() + "\n\n// AI Suggestion:\n" + aggregated
+            )
+            AIActivityLog.record("Suggest Code completed (\(aggregated.count) chars).", source: "Suggest")
+        }
+    }
+
+    private func languageLabel(for language: String) -> String {
+        switch language {
+        case "php": return "PHP"
+        case "cobol": return "COBOL"
+        case "dotenv": return "Dotenv"
+        case "proto": return "Proto"
+        case "graphql": return "GraphQL"
+        case "rst": return "reStructuredText"
+        case "nginx": return "Nginx"
+        case "objective-c": return "Objective-C"
+        case "csharp": return "C#"
+        case "c": return "C"
+        case "cpp": return "C++"
+        case "json": return "JSON"
+        case "xml": return "XML"
+        case "yaml": return "YAML"
+        case "toml": return "TOML"
+        case "nix": return "Nix"
+        case "eml": return "Email Message"
+        case "csv": return "CSV"
+        case "ini": return "INI"
+        case "sql": return "SQL"
+        case "vim": return "Vim"
+        case "log": return "Log"
+        case "ipynb": return "Jupyter Notebook"
+        case "tex": return "TeX"
+        case "typst": return "Typst"
+        case "html": return "HTML"
+        case "expressionengine": return "ExpressionEngine"
+        case "css": return "CSS"
+        case "standard": return "Standard"
+        default: return language.capitalized
+        }
+    }
+}
+
+// MARK: - Dynamic Shortcut Modifier
+
+private struct _DynamicShortcutModifier: ViewModifier {
+    let key: KeyEquivalent
+    let modifiers: EventModifiers
+
+    func body(content: Content) -> some View {
+        content.keyboardShortcut(key, modifiers: modifiers)
+    }
+}
+#endif

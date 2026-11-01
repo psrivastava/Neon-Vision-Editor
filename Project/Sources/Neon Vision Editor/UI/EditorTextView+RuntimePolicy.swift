@@ -1,0 +1,381 @@
+import SwiftUI
+import Foundation
+import OSLog
+
+nonisolated let syntaxHighlightSignposter = OSSignposter(subsystem: "h3p.Neon-Vision-Editor", category: "SyntaxHighlight")
+
+enum EditorRuntimeLimits {
+    nonisolated static let maximumSyntaxPassUTF16Length = 16_384
+    // Above this, keep editing responsive by skipping regex-heavy syntax passes.
+    static let syntaxMinimalUTF16Length = 1_200_000
+    // Single-line generated text can block TextKit installation well before
+    // syntax highlighting reaches its own minimal-mode cutoff.
+    nonisolated static let generatedChunkInstallUTF16Length = 400_000
+    nonisolated static let mobileSafetyWrapLineUTF16Length = 65_536
+    // HTML uses a bounded visible-range scanner, so it can keep structural
+    // highlighting responsive well beyond the generic minimal-syntax cutoff.
+    static let htmlResponsiveSyntaxUTF16Length = 8_000_000
+    static let structuredResponsiveSyntaxUTF16Length = 4_000_000
+    static let htmlFastProfileUTF16Length = 250_000
+    static let csvFastProfileUTF16Length = 120_000
+    static let jsonFastProfileUTF16Length = 120_000
+    static let largeFileJSONVisiblePaddingUTF16 = 2_400
+    static let largeFileJSONIncrementalPaddingUTF16 = 800
+    nonisolated static let largeFileJSONTokenBudgetSeconds = 0.0035
+    nonisolated static let largeFileCSVTokenBudgetSeconds = 0.0035
+    static let csvFastProfileLongLineUTF16 = 4_000
+    static let csvFastProfileScanLimitUTF16 = 120_000
+    nonisolated static let generatedFileAutoDetectionUTF16Threshold = 100_000
+    nonisolated static let generatedFileAutoDetectionScanUTF16 = 64_000
+    nonisolated static let generatedFileMinifiedLineUTF16 = 1_200
+    static let scopeComputationMaxUTF16Length = 300_000
+    static let cursorRehighlightMaxUTF16Length = 220_000
+    static let nonImmediateHighlightMaxUTF16Length = 220_000
+    // Large programming files get a quick visible-range pass before the complete
+    // document pass so the first screen is useful without sacrificing accuracy.
+    static let initialProgrammingHighlightThresholdUTF16 = 120_000
+    static let initialProgrammingHighlightPaddingUTF16 = 2_400
+    // Keep ordinary programming documents responsive before they reach the
+    // large-file policy. Only the visible region is recolored above this size.
+    static let programmingViewportSyntaxUTF16Length = 400_000
+    static let bindingDebounceUTF16Length = 250_000
+    static let bindingDebounceDelay: TimeInterval = 0.18
+    // Markdown syntax is stateful (fences, links, and headings can affect later
+    // lines). Coalesce keystrokes before starting its full-document pass.
+    static let markdownHighlightDebounce: TimeInterval = 0.28
+    static let bracketScopeNearestFallbackWindowUTF16 = 8_000
+}
+
+/// Line alignment must never turn a viewport into an entire minified document.
+/// Search only within the work budget, preserving UTF-16 scalar boundaries.
+nonisolated func boundedSyntaxHighlightRange(
+    around range: NSRange,
+    in text: NSString,
+    padding: Int = 2_400
+) -> NSRange {
+    let limit = EditorRuntimeLimits.maximumSyntaxPassUTF16Length
+    let location = min(max(0, range.location), text.length)
+    let padding = min(max(0, padding), limit / 4)
+    let lowerBound = max(0, location - padding)
+    let upperBound = lowerBound + min(limit, text.length - lowerBound)
+    var start = location
+    while start > lowerBound {
+        let previous = text.character(at: start - 1)
+        if previous == 10 || previous == 13 { break }
+        start -= 1
+    }
+    var end = location + min(max(0, range.length), upperBound - location)
+    let scanEnd = min(upperBound, end + padding)
+    while end < scanEnd {
+        let character = text.character(at: end)
+        end += 1
+        if character == 10 || character == 13 { break }
+    }
+    if start > 0, start < text.length,
+       (0xDC00...0xDFFF).contains(text.character(at: start)) { start += 1 }
+    if end > start, end < text.length,
+       (0xDC00...0xDFFF).contains(text.character(at: end)) { end -= 1 }
+    return NSRange(location: start, length: max(0, end - start))
+}
+
+nonisolated func isMarkdownSyntaxLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "markdown", "md", "mdown", "mkdn", "mdx": return true
+    default: return false
+    }
+}
+
+nonisolated func isProgrammingSyntaxLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "swift", "c", "cpp", "c++", "objective-c", "objective-c++", "objc", "java",
+         "kotlin", "rust", "go", "python", "ruby", "php", "perl", "lua", "r",
+         "javascript", "js", "typescript", "ts", "tsx", "jsx", "shell", "bash",
+         "zsh", "fish", "powershell", "sql":
+        return true
+    default:
+        return false
+    }
+}
+
+/// Syntax modes whose regex patterns can be applied to a bounded line-aligned
+/// viewport for large documents. Markdown remains full-document because its
+/// fences and other constructs carry state across the viewport boundary.
+nonisolated func isViewportSafeSyntaxLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "swift", "ada", "python", "javascript", "js", "typescript", "ts", "tsx", "jsx",
+         "php", "java", "kotlin", "go", "ruby", "rust", "fish", "perl", "lua", "r",
+         "cobol", "dotenv", "proto", "graphql", "rst", "nginx", "sql", "html", "htm",
+         "xhtml", "expressionengine", "css", "c", "cpp", "c++", "dockerfile", "makefile",
+         "hcl", "xcconfig", "strings", "csharp", "objective-c", "objective-c++", "objc",
+         "json", "jsonc", "json5", "xml", "svg", "plist", "yaml", "yml", "toml", "nix",
+         "eml", "csv", "tsv", "ini", "vim", "log", "crashlog", "ipynb", "typst", "tex",
+         "shell", "bash", "zsh", "powershell":
+        return true
+    default:
+        return false
+    }
+}
+
+func shouldUseCSVFastProfile(_ nsText: NSString) -> Bool {
+    if nsText.length >= EditorRuntimeLimits.csvFastProfileUTF16Length {
+        return true
+    }
+    let scanLimit = min(nsText.length, EditorRuntimeLimits.csvFastProfileScanLimitUTF16)
+    guard scanLimit > 0 else { return false }
+    var currentLineLength = 0
+    for idx in 0..<scanLimit {
+        let codeUnit = nsText.character(at: idx)
+        if codeUnit == 10 {
+            currentLineLength = 0
+            continue
+        }
+        currentLineLength += 1
+        if currentLineLength >= EditorRuntimeLimits.csvFastProfileLongLineUTF16 {
+            return true
+        }
+    }
+    return false
+}
+
+nonisolated func isJSONLikeLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "json", "jsonc", "json5", "ipynb":
+        return true
+    default:
+        return false
+    }
+}
+
+/// XML family files are markup, not arbitrary plain text. Their responsive
+/// highlighter can safely operate on a bounded visible range just like HTML.
+nonisolated func isXMLLikeSyntaxLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "xml", "svg", "plist", "html", "htm", "xhtml": return true
+    default: return false
+    }
+}
+
+nonisolated func isCSVLikeSyntaxLanguage(_ language: String) -> Bool {
+    switch language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "csv", "tsv": return true
+    default: return false
+    }
+}
+
+func syntaxProfile(for language: String, text: NSString) -> SyntaxPatternProfile {
+    let lower = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    if isHTMLLikeSyntaxLanguage(lower) && text.length >= EditorRuntimeLimits.htmlFastProfileUTF16Length {
+        return .htmlFast
+    }
+    if lower == "csv" && shouldUseCSVFastProfile(text) {
+        return .csvFast
+    }
+    if isJSONLikeLanguage(lower) && text.length >= EditorRuntimeLimits.jsonFastProfileUTF16Length {
+        return .jsonFast
+    }
+    return .full
+}
+
+enum SyntaxFontEmphasis: Sendable {
+    case keyword
+    case comment
+    case markdownHeading
+}
+
+#if !os(macOS)
+func fontWithSymbolicTrait(_ font: UIFont, trait: UIFontDescriptor.SymbolicTraits) -> UIFont {
+    let emphasisTraits: UIFontDescriptor.SymbolicTraits = [.traitBold, .traitItalic]
+    let traits = font.fontDescriptor.symbolicTraits.subtracting(emphasisTraits).union(trait)
+    guard let descriptor = font.fontDescriptor.withSymbolicTraits(traits) else {
+        return font
+    }
+    return UIFont(descriptor: descriptor, size: font.pointSize)
+}
+#endif
+
+func supportsResponsiveLargeFileHighlight(language: String) -> Bool {
+    (isJSONLikeLanguage(language) || isXMLLikeSyntaxLanguage(language) || isCSVLikeSyntaxLanguage(language)) &&
+        currentLargeFileSyntaxHighlightMode() == .minimal &&
+        currentLargeFileOpenMode() != .plainText
+}
+
+func supportsResponsiveLargeFileHighlight(language: String, textLength: Int) -> Bool {
+    guard supportsResponsiveLargeFileHighlight(language: language) else { return false }
+    if isXMLLikeSyntaxLanguage(language) {
+        return textLength <= EditorRuntimeLimits.htmlResponsiveSyntaxUTF16Length
+    }
+    return textLength <= EditorRuntimeLimits.structuredResponsiveSyntaxUTF16Length
+}
+
+func supportsViewportSyntaxHighlighting(language: String, textLength: Int) -> Bool {
+    guard currentLargeFileSyntaxHighlightMode() != .off,
+          currentLargeFileOpenMode() != .plainText else { return false }
+    if supportsResponsiveLargeFileHighlight(language: language, textLength: textLength) {
+        return true
+    }
+    return textLength >= EditorRuntimeLimits.programmingViewportSyntaxUTF16Length &&
+        isViewportSafeSyntaxLanguage(language)
+}
+
+func shouldRefreshViewportSyntaxOnScroll(language: String, textLength: Int) -> Bool {
+    textLength >= 100_000 && supportsViewportSyntaxHighlighting(
+        language: language,
+        textLength: textLength
+    )
+}
+
+enum LargeFileSyntaxHighlightMode: String {
+    case off
+    case minimal
+}
+
+enum LargeFileOpenMode: String {
+    case standard
+    case deferred
+    case plainText
+}
+
+enum GeneratedFileSyntaxHighlightingMode: String {
+    case automatic
+    case full
+    case off
+}
+
+func currentLargeFileSyntaxHighlightMode() -> LargeFileSyntaxHighlightMode {
+    let raw = UserDefaults.standard.string(forKey: "SettingsLargeFileSyntaxHighlighting") ?? "minimal"
+    return LargeFileSyntaxHighlightMode(rawValue: raw) ?? .minimal
+}
+
+func currentLargeFileOpenMode() -> LargeFileOpenMode {
+    let raw = UserDefaults.standard.string(forKey: "SettingsLargeFileOpenMode") ?? "deferred"
+    return LargeFileOpenMode(rawValue: raw) ?? .deferred
+}
+
+func currentGeneratedFileSyntaxHighlightingMode() -> GeneratedFileSyntaxHighlightingMode {
+    let raw = UserDefaults.standard.string(forKey: "SettingsGeneratedFileSyntaxHighlighting") ?? "automatic"
+    return GeneratedFileSyntaxHighlightingMode(rawValue: raw) ?? .automatic
+}
+
+/// Bounded prefix scan that keeps generated bundles out of expensive regex passes.
+nonisolated func isLikelyGeneratedOrMinifiedSyntaxText(_ text: NSString) -> Bool {
+    guard text.length >= EditorRuntimeLimits.generatedFileAutoDetectionUTF16Threshold else { return false }
+    let scanLength = min(text.length, EditorRuntimeLimits.generatedFileAutoDetectionScanUTF16)
+    let prefix = text.substring(with: NSRange(location: 0, length: scanLength)).lowercased()
+    if prefix.contains("do not edit") || prefix.contains("@generated") || prefix.contains("sourcemappingurl=") {
+        return true
+    }
+
+    var lineLength = 0
+    var longestLine = 0
+    var lineCount = 1
+    for index in 0..<scanLength {
+        if text.character(at: index) == 10 {
+            longestLine = max(longestLine, lineLength)
+            lineLength = 0
+            lineCount += 1
+        } else {
+            lineLength += 1
+        }
+    }
+    longestLine = max(longestLine, lineLength)
+    return longestLine >= EditorRuntimeLimits.generatedFileMinifiedLineUTF16 && lineCount <= 8
+}
+
+func shouldSuppressGeneratedFileSyntaxHighlighting(text: NSString, language: String) -> Bool {
+    guard isProgrammingSyntaxLanguage(language) || isJSONLikeLanguage(language) || isHTMLLikeSyntaxLanguage(language) else {
+        return false
+    }
+    switch currentGeneratedFileSyntaxHighlightingMode() {
+    case .full:
+        return false
+    case .off:
+        return isLikelyGeneratedOrMinifiedSyntaxText(text)
+    case .automatic:
+        guard isLikelyGeneratedOrMinifiedSyntaxText(text) else { return false }
+        return !supportsResponsiveLargeFileHighlight(language: language, textLength: text.length)
+    }
+}
+
+func shouldUseChunkedLargeFileInstall(
+    isLargeFileMode: Bool,
+    textLength: Int,
+    language: String? = nil,
+    text: NSString? = nil
+) -> Bool {
+    // The safety path takes precedence over the user's ordinary open mode:
+    // a synchronous install of this line can block for tens of seconds.
+    if textLength >= EditorRuntimeLimits.generatedChunkInstallUTF16Length,
+       let text,
+       shouldUseMobileSafetyWrap(text: text, requestedWrap: false) {
+        return true
+    }
+    guard currentLargeFileOpenMode() != .standard else { return false }
+    if isLargeFileMode {
+        return textLength >= EditorRuntimeLimits.syntaxMinimalUTF16Length
+    }
+    guard textLength >= EditorRuntimeLimits.generatedChunkInstallUTF16Length else { return false }
+    guard let language, let text else { return false }
+    // Generated/minified documents can be multi-megabyte single-line payloads
+    // without being classified as explicit large-file mode. They still need
+    // bounded installation; otherwise TextKit performs full line-width
+    // measurement synchronously during the first frame.
+    return shouldSuppressGeneratedFileSyntaxHighlighting(text: text, language: language)
+        || isLikelyGeneratedOrMinifiedSyntaxText(text)
+}
+
+/// TextKit 1 lays out an entire unwrapped logical line even with noncontiguous
+/// layout enabled. A pathological line must use viewport-width wrapping on
+/// mobile so opening remains interactive without changing the document text.
+nonisolated func shouldUseMobileSafetyWrap(
+    text: NSString,
+    requestedWrap: Bool
+) -> Bool {
+    guard !requestedWrap,
+          text.length >= EditorRuntimeLimits.generatedChunkInstallUTF16Length else { return false }
+    var lineLength = 0
+    for codeUnit in (text as String).utf16 {
+        switch codeUnit {
+        case 10, 13:
+            lineLength = 0
+        default:
+            lineLength += 1
+            if lineLength >= EditorRuntimeLimits.mobileSafetyWrapLineUTF16Length {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+func editorCaretLineColumn(in text: NSString, location rawLocation: Int) -> (line: Int, column: Int) {
+    let location = min(max(0, rawLocation), text.length)
+    var line = 1
+    var lineStart = 0
+    if location > 0 {
+        for index in 0..<location where text.character(at: index) == 10 {
+            line += 1
+            lineStart = index + 1
+        }
+    }
+    return (line, location - lineStart + 1)
+}
+
+nonisolated func isJSONWhitespace(_ codeUnit: unichar) -> Bool {
+    codeUnit == 32 || codeUnit == 9 || codeUnit == 10 || codeUnit == 13
+}
+
+nonisolated func isJSONDigit(_ codeUnit: unichar) -> Bool {
+    codeUnit >= 48 && codeUnit <= 57
+}
+
+nonisolated func isJSONLetter(_ codeUnit: unichar) -> Bool {
+    (codeUnit >= 65 && codeUnit <= 90) || (codeUnit >= 97 && codeUnit <= 122)
+}
+
+nonisolated func isJSONLiteral(_ text: NSString, range: NSRange, literal: [unichar]) -> Bool {
+    guard range.length == literal.count else { return false }
+    for offset in 0..<literal.count where text.character(at: range.location + offset) != literal[offset] {
+        return false
+    }
+    return true
+}

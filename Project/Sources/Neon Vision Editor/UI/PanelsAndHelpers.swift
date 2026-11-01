@@ -1,0 +1,5038 @@
+import SwiftUI
+import StoreKit
+import Foundation
+import UniformTypeIdentifiers
+#if os(macOS)
+import AppKit
+#endif
+
+struct NeonPulseInboxNotificationModifier: ViewModifier {
+    let viewModel: EditorViewModel
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .neonPulseInboxDidReceive)) { notification in
+            guard let url = notification.object as? URL else { return }
+            DispatchQueue.main.async {
+                _ = viewModel.openFile(url: url)
+            }
+        }
+    }
+}
+
+// MARK: - Search Panel Environment
+
+struct SearchPanelTranslucencyOverrideKey: EnvironmentKey {
+    static let defaultValue: Bool? = nil
+}
+
+struct SearchPanelEmbeddedInSidebarKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+extension EnvironmentValues {
+    var searchPanelTranslucencyOverride: Bool? {
+        get { self[SearchPanelTranslucencyOverrideKey.self] }
+        set { self[SearchPanelTranslucencyOverrideKey.self] = newValue }
+    }
+
+    var searchPanelEmbeddedInSidebar: Bool {
+        get { self[SearchPanelEmbeddedInSidebarKey.self] }
+        set { self[SearchPanelEmbeddedInSidebarKey.self] = newValue }
+    }
+}
+
+// MARK: - Shared Panel Styling
+
+enum NeonUIStyle {
+    static let accentBlue = Color(red: 0.17, green: 0.49, blue: 0.98)
+    static let accentBlueSoft = Color(red: 0.44, green: 0.72, blue: 0.99)
+    static let accentBlueStrong = Color(red: 0.05, green: 0.44, blue: 0.98)
+
+    static func surfaceFill(for scheme: ColorScheme) -> LinearGradient {
+        let top = scheme == .dark
+            ? Color(red: 0.09, green: 0.14, blue: 0.23).opacity(0.82)
+            : Color(red: 0.94, green: 0.97, blue: 1.00).opacity(0.94)
+        let bottom = scheme == .dark
+            ? Color(red: 0.06, green: 0.10, blue: 0.18).opacity(0.88)
+            : Color(red: 0.88, green: 0.94, blue: 1.00).opacity(0.96)
+        return LinearGradient(colors: [top, bottom], startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+
+    static func surfaceStroke(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? accentBlueSoft.opacity(0.34)
+            : accentBlue.opacity(0.22)
+    }
+
+    static func searchMatchFill(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? accentBlueSoft.opacity(0.32)
+            : accentBlue.opacity(0.18)
+    }
+
+    static func selectedRowFill(for scheme: ColorScheme) -> Color {
+        scheme == .dark
+            ? accentBlueSoft.opacity(0.20)
+            : accentBlue.opacity(0.10)
+    }
+}
+
+private struct SearchPanelSurfaceModifier: ViewModifier {
+    @AppStorage("EnableTranslucentWindow") private var enableTranslucentWindow: Bool = false
+    @Environment(\.searchPanelEmbeddedInSidebar) private var embeddedInSidebar
+    @Environment(\.searchPanelTranslucencyOverride) private var translucencyOverride
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(surfaceBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .stroke(surfaceStroke, lineWidth: 0.8)
+            )
+    }
+
+    @ViewBuilder
+    private var surfaceBackground: some View {
+        if embeddedInSidebar {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color.clear)
+        } else {
+            let fallback = colorScheme == .dark ? Color.black.opacity(0.82) : Color.white.opacity(0.94)
+            let usesTranslucency = translucencyOverride ?? enableTranslucentWindow
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(usesTranslucency ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(fallback))
+        }
+    }
+
+    private var surfaceStroke: Color {
+        embeddedInSidebar
+            ? Color.clear
+            : Color.white.opacity(enableTranslucentWindow ? 0.12 : 0.08)
+    }
+}
+
+private extension View {
+    func subtleSearchPanelSurface() -> some View {
+        modifier(SearchPanelSurfaceModifier())
+    }
+
+    func optionalSearchPanelSurface(_ enabled: Bool) -> some View {
+        modifier(OptionalSearchPanelSurfaceModifier(enabled: enabled))
+    }
+}
+
+private struct OptionalSearchPanelSurfaceModifier: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if enabled {
+            content.subtleSearchPanelSurface()
+        } else {
+            content
+        }
+    }
+}
+
+private struct SearchPanelSectionCardModifier: ViewModifier {
+    @AppStorage("EnableTranslucentWindow") private var enableTranslucentWindow: Bool = false
+    @Environment(\.searchPanelEmbeddedInSidebar) private var embeddedInSidebar
+    @Environment(\.searchPanelTranslucencyOverride) private var translucencyOverride
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .background(sectionBackground)
+            .overlay(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .stroke(sectionStroke, lineWidth: 0.8)
+            )
+    }
+
+    @ViewBuilder
+    private var sectionBackground: some View {
+        if embeddedInSidebar {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color.primary.opacity(colorScheme == .dark ? 0.045 : 0.035))
+        } else {
+            let fallback = colorScheme == .dark
+                ? Color.black.opacity(0.11)
+                : Color.white.opacity(0.58)
+            let usesTranslucency = translucencyOverride ?? enableTranslucentWindow
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(usesTranslucency ? AnyShapeStyle(.thinMaterial) : AnyShapeStyle(fallback))
+        }
+    }
+
+    private var sectionStroke: Color {
+        if embeddedInSidebar {
+            return colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
+        }
+        return Color.white.opacity(enableTranslucentWindow ? 0.1 : 0.07)
+    }
+}
+
+private extension View {
+    func subtleSearchSectionCard() -> some View {
+        modifier(SearchPanelSectionCardModifier())
+    }
+}
+
+private struct SearchPanelActionButtonModifier: ViewModifier {
+    let prominent: Bool
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
+
+    func body(content: Content) -> some View {
+        content
+            .lineLimit(1)
+            .minimumScaleFactor(0.78)
+            .allowsTightening(true)
+            .foregroundStyle(foregroundColor)
+            .padding(.horizontal, prominent ? 14 : 12)
+            .padding(.vertical, 8)
+            .background(backgroundShape)
+            .overlay(strokeShape)
+            .clipShape(Capsule())
+            .layoutPriority(1)
+    }
+
+    private var foregroundColor: Color {
+        if prominent {
+            return .white.opacity(isEnabled ? 1 : 0.92)
+        }
+        if isEnabled {
+            return colorScheme == .dark ? .white.opacity(0.96) : .primary
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.56) : Color.primary.opacity(0.45)
+    }
+
+    @ViewBuilder
+    private var backgroundShape: some View {
+        Capsule()
+            .fill(backgroundColor)
+    }
+
+    @ViewBuilder
+    private var strokeShape: some View {
+        Capsule()
+            .stroke(strokeColor, lineWidth: 0.8)
+    }
+
+    private var backgroundColor: Color {
+        if prominent {
+            return isEnabled
+                ? NeonUIStyle.accentBlue
+                : NeonUIStyle.accentBlue.opacity(colorScheme == .dark ? 0.55 : 0.40)
+        }
+        if colorScheme == .dark {
+            return isEnabled
+                ? Color.white.opacity(0.12)
+                : Color.white.opacity(0.08)
+        }
+        return isEnabled
+            ? Color.black.opacity(0.05)
+            : Color.black.opacity(0.03)
+    }
+
+    private var strokeColor: Color {
+        if prominent {
+            return isEnabled ? Color.white.opacity(0.10) : Color.white.opacity(0.08)
+        }
+        return colorScheme == .dark ? Color.white.opacity(0.14) : Color.black.opacity(0.06)
+    }
+}
+
+private extension View {
+    func searchPanelActionButton(prominent: Bool = false) -> some View {
+        modifier(SearchPanelActionButtonModifier(prominent: prominent))
+    }
+}
+
+struct PlainTextDocument: FileDocument {
+    static var readableContentTypes: [UTType] { writableTextContentTypes }
+    static var writableContentTypes: [UTType] { writableTextContentTypes }
+
+    private static let writableTextContentTypes: [UTType] = {
+        var types: [UTType] = [.text, .plainText, .sourceCode]
+
+        func append(_ type: UTType) {
+            guard !types.contains(where: { $0.identifier == type.identifier }) else { return }
+            types.append(type)
+        }
+
+        [
+            "public.utf8-plain-text",
+            "net.daringfireball.markdown",
+            "public.swift-source",
+            "public.email-message"
+        ].compactMap(UTType.init).forEach(append)
+
+        [
+            "txt", "text", "swift", "py", "js", "ts", "php", "java", "kt",
+            "go", "rb", "rs", "html", "css", "json", "xml", "yml", "yaml",
+            "toml", "nix", "eml", "ini", "sql", "md", "markdown", "tex", "graphql", "proto",
+            "env", "sh", "bash", "zsh", "ps1", "c", "h", "cpp", "hpp", "m",
+            "mm", "cs", "csv", "vim", "log"
+        ].compactMap { UTType(filenameExtension: $0) }.forEach(append)
+
+        return types
+    }()
+
+    var text: String
+    var encoding: TextEncodingDescriptor
+
+    init(text: String = "", encoding: TextEncodingDescriptor = .utf8) {
+        self.text = text
+        self.encoding = encoding
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        if let data = configuration.file.regularFileContents,
+           let decoded = String(data: data, encoding: .utf8) {
+            text = decoded
+        } else {
+            text = ""
+        }
+        encoding = .utf8
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        guard let data = encoding.encodedData(for: text) else {
+            throw CocoaError(.fileWriteInapplicableStringEncoding)
+        }
+        return FileWrapper(regularFileWithContents: data)
+    }
+}
+
+struct PDFExportDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.pdf] }
+
+    var data: Data
+
+    init(data: Data = Data()) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        self.data = configuration.file.regularFileContents ?? Data()
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+struct EditorFindSessionState: Equatable {
+    var ranges: [NSRange] = []
+    var selectedIndex: Int?
+    var documentID: UUID?
+    var fingerprint: String = ""
+    var sourceRevision: Int = 0
+    var isSearching = false
+    var errorMessage: String?
+    var presentationRevision = 0
+
+    var selectedRange: NSRange? {
+        guard let selectedIndex, ranges.indices.contains(selectedIndex) else { return nil }
+        return ranges[selectedIndex]
+    }
+}
+
+/// Compact find-and-replace controls embedded at the bottom of the editor.
+/// The search session remains owned by ContentView; this view only renders the
+/// shared controls and forwards user actions.
+struct InlineFindBar: View {
+    let backgroundStyle: AnyShapeStyle
+    @Binding var query: String
+    @Binding var replacement: String
+    @Binding var useRegex: Bool
+    @Binding var caseSensitive: Bool
+    @Binding var wholeWord: Bool
+    let matchCount: Int
+    let selectedIndex: Int?
+    let statusMessage: String
+    let isSearching: Bool
+    let onPreviewChanged: () -> Void
+    let onPrevious: () -> Void
+    let onNext: () -> Void
+    let onReplace: () -> Void
+    let onReplaceAll: () -> Void
+    let onFindInFiles: () -> Void
+    let onClose: () -> Void
+
+    @FocusState private var searchFocused: Bool
+    @State private var showsReplace = false
+#if canImport(UIKit)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+#endif
+
+    private var isPhone: Bool {
+#if canImport(UIKit)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private var resultText: String {
+        if isSearching { return NSLocalizedString("Searching…", comment: "") }
+        if let selectedIndex, matchCount > 0 { return "\(selectedIndex + 1) of \(matchCount)" }
+        return matchCount == 1 ? "1 match" : "\(matchCount) matches"
+    }
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField(NSLocalizedString("Find", comment: ""), text: $query)
+                    .textFieldStyle(.plain)
+                    .focused($searchFocused)
+                    .submitLabel(.search)
+                    .onSubmit(onNext)
+                    .accessibilityLabel("Find text")
+                Text(resultText)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(statusMessage.localizedCaseInsensitiveContains("invalid") ? .red : .secondary)
+                    .lineLimit(1)
+                    .accessibilityLabel("Search results, \(resultText)")
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close find")
+            }
+
+            HStack(spacing: 8) {
+                findButton("chevron.up", label: "Previous match", action: onPrevious)
+                findButton("chevron.down", label: "Next match", action: onNext)
+                Spacer(minLength: 8)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) { showsReplace.toggle() }
+                } label: {
+                    Label(
+                        showsReplace ? NSLocalizedString("Hide Replace", comment: "") : NSLocalizedString("Replace", comment: ""),
+                        systemImage: "arrow.triangle.2.circlepath"
+                    )
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .accessibilityLabel(showsReplace ? "Hide replace controls" : "Show replace controls")
+                Menu {
+                    Toggle("Case Sensitive", isOn: $caseSensitive)
+                    Toggle("Whole Words", isOn: $wholeWord)
+                        .disabled(useRegex)
+                    Toggle("Regular Expression", isOn: $useRegex)
+                    Divider()
+                    Button("Find in Files", systemImage: "doc.text.magnifyingglass", action: onFindInFiles)
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                        .frame(width: 28, height: 28)
+                }
+                .accessibilityLabel("Find options")
+            }
+
+            if showsReplace {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    TextField(NSLocalizedString("Replace", comment: ""), text: $replacement)
+                        .textFieldStyle(.plain)
+                        .accessibilityLabel("Replacement text")
+                    Button("Replace", action: onReplace)
+                        .disabled(selectedIndex == nil)
+                    Button("All", action: onReplaceAll)
+                        .disabled(matchCount == 0)
+                        .accessibilityLabel("Replace all matches")
+                }
+                .transition(.opacity.combined(with: .move(edge: isPhone ? .bottom : .top)))
+            }
+        }
+        .font(.body)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            backgroundStyle,
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 0.8)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .onAppear { searchFocused = true }
+        .onChange(of: query) { _, _ in onPreviewChanged() }
+        .onChange(of: useRegex) { _, enabled in
+            if enabled { wholeWord = false }
+            onPreviewChanged()
+        }
+        .onChange(of: caseSensitive) { _, _ in onPreviewChanged() }
+        .onChange(of: wholeWord) { _, _ in onPreviewChanged() }
+    }
+
+    private func findButton(_ image: String, label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: image)
+                .frame(width: 28, height: 28)
+        }
+        .buttonStyle(.plain)
+        .disabled(matchCount == 0)
+        .accessibilityLabel(label)
+    }
+}
+
+struct FindReplacePanel: View {
+    @Binding var findQuery: String
+    @Binding var replaceQuery: String
+    @Binding var useRegex: Bool
+    @Binding var caseSensitive: Bool
+    @Binding var wholeWord: Bool
+    @Binding var matchCount: Int
+    var selectedMatchIndex: Int?
+    @Binding var statusMessage: String
+    @Binding var scope: ContentView.SearchScope
+    var onPreviewChanged: () -> Void
+    var onFindNext: () -> Void
+    var onJumpToMatch: () -> Void
+    var onReplace: () -> Void
+    var onReplaceAll: () -> Void
+    var onScopeChange: ((ContentView.SearchScope) -> Void)?
+    var onClose: () -> Void
+    var focusRequestID: Int = 0
+    @FocusState private var findFieldFocused: Bool
+    @State private var isReplaceVisible = false
+#if os(iOS) || os(visionOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+#endif
+
+    private var usesCompactPhoneLayout: Bool {
+#if os(iOS) || os(visionOS)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private var usesPadLayout: Bool {
+#if os(iOS) || os(visionOS)
+        horizontalSizeClass == .regular
+#else
+        false
+#endif
+    }
+
+    private var matchSummaryText: String {
+        if let selectedMatchIndex, matchCount > 0 {
+            return "\(selectedMatchIndex + 1) of \(matchCount)"
+        }
+        return matchCount == 1
+            ? String.localizedStringWithFormat(NSLocalizedString("%lld match", comment: ""), Int64(matchCount))
+            : String.localizedStringWithFormat(NSLocalizedString("%lld matches", comment: ""), Int64(matchCount))
+    }
+
+    private var hasInvalidRegex: Bool {
+        useRegex && statusMessage.localizedCaseInsensitiveContains("invalid regex")
+    }
+
+    private var matchSummaryColor: Color {
+        if hasInvalidRegex { return .red }
+        return matchCount > 0 ? .green : .secondary
+    }
+
+    @ViewBuilder
+    private var matchSummaryView: some View {
+        Text(matchSummaryText)
+            .font(.caption.weight(.medium))
+            .foregroundColor(matchSummaryColor)
+            .accessibilityLabel("Search results: \(matchSummaryText)")
+    }
+
+    private var desktopFieldLabelWidth: CGFloat { 82 }
+    private var desktopTextFieldWidth: CGFloat { 360 }
+
+    @ViewBuilder
+    private func desktopFieldRow(
+        title: String,
+        placeholder: String,
+        text: Binding<String>,
+        isFocused: Bool = false
+    ) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Text(title)
+                .frame(width: desktopFieldLabelWidth, alignment: .leading)
+
+            if isFocused {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: desktopTextFieldWidth, alignment: .leading)
+                    .focused($findFieldFocused)
+                    .onSubmit { onFindNext() }
+            } else {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: desktopTextFieldWidth, alignment: .leading)
+            }
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var desktopOptionsRow: some View {
+        HStack(alignment: .center, spacing: 14) {
+            Toggle(NSLocalizedString("Use Regex", comment: ""), isOn: $useRegex)
+
+            Picker("Scope", selection: $scope) {
+                Text("Current File").tag(ContentView.SearchScope.currentFile)
+                Text("Project").tag(ContentView.SearchScope.project)
+            }
+            .neonSettingsDropdown(maxWidth: 150)
+            .accessibilityLabel("Scope")
+            .onChange(of: scope) { _, newScope in
+                onScopeChange?(newScope)
+            }
+
+            Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+            Toggle(NSLocalizedString("Whole Words", comment: ""), isOn: $wholeWord)
+                .disabled(useRegex)
+
+            Spacer(minLength: 0)
+        }
+    }
+
+    @ViewBuilder
+    private var centeredTitleHeader: some View {
+        if usesCompactPhoneLayout || usesPadLayout {
+            HStack {
+                Text(NSLocalizedString("Find & Replace", comment: ""))
+                    .font(.headline)
+                Spacer()
+                Button(NSLocalizedString("Done", comment: "")) { onClose() }
+                    .buttonStyle(.plain)
+                    .font(.subheadline.weight(.semibold))
+                    .searchPanelActionButton()
+                    .accessibilityLabel("Close Find and Replace")
+            }
+        } else {
+            Text(NSLocalizedString("Find & Replace", comment: ""))
+                .font(.headline)
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    @ViewBuilder
+    private var phoneFieldsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            phoneFieldRow(
+                title: NSLocalizedString("Find", comment: ""),
+                placeholder: NSLocalizedString("Search text", comment: ""),
+                text: $findQuery,
+                isFocused: true
+            )
+            matchSummaryView
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isReplaceVisible.toggle()
+                }
+            } label: {
+                Label(
+                    NSLocalizedString("Replace", comment: ""),
+                    systemImage: isReplaceVisible ? "chevron.down" : "chevron.right"
+                )
+                .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .accessibilityValue(isReplaceVisible ? "Expanded" : "Collapsed")
+
+            if isReplaceVisible {
+                phoneFieldRow(
+                    title: NSLocalizedString("Replace", comment: ""),
+                    placeholder: NSLocalizedString("Replacement", comment: ""),
+                    text: $replaceQuery
+                )
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(14)
+        .subtleSearchSectionCard()
+    }
+
+    @ViewBuilder
+    private func phoneFieldRow(
+        title: String,
+        placeholder: String,
+        text: Binding<String>,
+        isFocused: Bool = false,
+        labelWidth: CGFloat = 76
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label(title, systemImage: title == NSLocalizedString("Find", comment: "") ? "magnifyingglass" : "arrow.triangle.2.circlepath")
+                .font(.subheadline.weight(.medium))
+                .accessibilityAddTraits(.isHeader)
+
+            if isFocused {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
+                    .focused($findFieldFocused)
+                    .onSubmit { onFindNext() }
+            } else {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private var padFieldsSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            padFieldRow(
+                title: NSLocalizedString("Find", comment: ""),
+                placeholder: NSLocalizedString("Search text", comment: ""),
+                text: $findQuery,
+                isFocused: true,
+                labelWidth: 76
+            )
+            padFieldRow(
+                title: NSLocalizedString("Replace", comment: ""),
+                placeholder: NSLocalizedString("Replacement", comment: ""),
+                text: $replaceQuery,
+                labelWidth: 76
+            )
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private func padFieldRow(
+        title: String,
+        placeholder: String,
+        text: Binding<String>,
+        isFocused: Bool = false,
+        labelWidth: CGFloat = 76
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if isFocused {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 400, alignment: .leading)
+                    .focused($findFieldFocused)
+                    .onSubmit { onFindNext() }
+            } else {
+                TextField(placeholder, text: text)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 400, alignment: .leading)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var phoneOptionsSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Picker("Scope", selection: $scope) {
+                Text("Current File").tag(ContentView.SearchScope.currentFile)
+                Text("Project").tag(ContentView.SearchScope.project)
+            }
+            .neonSettingsDropdown(maxWidth: nil)
+            .accessibilityLabel("Scope")
+            .onChange(of: scope) { _, newScope in
+                onScopeChange?(newScope)
+            }
+            Toggle(NSLocalizedString("Use Regex", comment: ""), isOn: $useRegex)
+            Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+
+            if !statusMessage.isEmpty {
+                Text(statusMessage)
+                    .font(.caption)
+                    .foregroundColor(hasInvalidRegex ? .red : .secondary)
+            }
+        }
+        .padding(14)
+        .subtleSearchSectionCard()
+    }
+
+    @ViewBuilder
+    private var padOptionsSection: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
+            Toggle(NSLocalizedString("Use Regular Expression", comment: ""), isOn: $useRegex)
+            Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(NSLocalizedString("Search Scope", comment: ""))
+                    .font(.caption.weight(.medium))
+                Picker("Scope", selection: $scope) {
+                    Text("Current File").tag(ContentView.SearchScope.currentFile)
+                    Text("Project").tag(ContentView.SearchScope.project)
+                }
+                .neonSettingsDropdown(maxWidth: 180)
+                .accessibilityLabel("Search Scope")
+                .onChange(of: scope) { _, newScope in
+                    onScopeChange?(newScope)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                matchSummaryView
+                if !statusMessage.isEmpty {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundColor(hasInvalidRegex ? .red : .secondary)
+                }
+            }
+        }
+        .padding(8)
+    }
+
+    @ViewBuilder
+    private var padActionSection: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            Button(NSLocalizedString("Find Next", comment: "")) { onFindNext() }
+                .buttonStyle(.plain)
+                .font(.caption2.weight(.semibold))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton(prominent: true)
+
+            Button(NSLocalizedString("Jump to Match", comment: "")) {
+                onJumpToMatch()
+                onClose()
+            }
+            .buttonStyle(.plain)
+            .font(.caption2.weight(.medium))
+            .frame(maxWidth: .infinity)
+            .searchPanelActionButton()
+            .disabled(findQuery.isEmpty || matchCount == 0)
+
+            Button(NSLocalizedString("Replace", comment: "")) { onReplace() }
+                .buttonStyle(.plain)
+                .font(.caption2.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton()
+                .disabled(findQuery.isEmpty)
+
+            Button(NSLocalizedString("Replace All", comment: "")) { onReplaceAll() }
+                .buttonStyle(.plain)
+                .font(.caption2.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton()
+                .disabled(findQuery.isEmpty)
+
+            Button(NSLocalizedString("Close", comment: "")) { onClose() }
+                .buttonStyle(.plain)
+                .font(.caption2.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton()
+        }
+        .padding(.horizontal, 8)
+    }
+
+    @ViewBuilder
+    private var phoneActionSection: some View {
+        LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 8) {
+            compactPhoneActionButton(
+                NSLocalizedString("Find Next", comment: ""),
+                prominent: true,
+                disabled: false
+            ) {
+                onClose()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    onFindNext()
+                }
+            }
+
+            compactPhoneActionButton(
+                NSLocalizedString("Jump to Match", comment: ""),
+                disabled: findQuery.isEmpty || matchCount == 0
+            ) {
+                onClose()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    onJumpToMatch()
+                }
+            }
+
+            compactPhoneActionButton(
+                NSLocalizedString("Replace", comment: ""),
+                disabled: findQuery.isEmpty
+            ) { onReplace() }
+
+            compactPhoneActionButton(
+                NSLocalizedString("Replace All", comment: ""),
+                disabled: findQuery.isEmpty
+            ) { onReplaceAll() }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func compactPhoneActionButton(
+        _ title: String,
+        prominent: Bool = false,
+        disabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        if prominent {
+            Button {
+                action()
+            } label: {
+                Label(title, systemImage: "arrow.down")
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+            }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .lineLimit(2)
+                .minimumScaleFactor(0.76)
+                .frame(maxWidth: .infinity)
+                .disabled(disabled)
+                .searchPanelActionButton(prominent: true)
+        } else {
+            Button {
+                action()
+            } label: {
+                if title == NSLocalizedString("Jump to Match", comment: "") {
+                    Label(title, systemImage: "arrow.uturn.down")
+                } else {
+                    Text(title)
+                }
+            }
+            .lineLimit(2)
+            .multilineTextAlignment(.center)
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .lineLimit(2)
+                .minimumScaleFactor(0.76)
+                .frame(maxWidth: .infinity)
+                .disabled(disabled)
+                .searchPanelActionButton()
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            if usesCompactPhoneLayout {
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 18)
+
+                    VStack(alignment: .leading, spacing: 16) {
+                        centeredTitleHeader
+                        phoneFieldsSection
+                        phoneOptionsSection
+                        phoneActionSection
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: 424, alignment: .top)
+            } else if usesPadLayout {
+                VStack(alignment: .leading, spacing: 0) {
+                    Spacer(minLength: 0)
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        centeredTitleHeader
+                        padFieldsSection
+                        padOptionsSection
+                        padActionSection
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, minHeight: 320, alignment: .top)
+            } else {
+                centeredTitleHeader
+                desktopFieldRow(
+                    title: NSLocalizedString("Find", comment: ""),
+                    placeholder: NSLocalizedString("Search text", comment: ""),
+                    text: $findQuery,
+                    isFocused: true
+                )
+                desktopFieldRow(
+                    title: NSLocalizedString("Replace", comment: ""),
+                    placeholder: NSLocalizedString("Replacement", comment: ""),
+                    text: $replaceQuery
+                )
+                desktopOptionsRow
+                matchSummaryView
+                if !statusMessage.isEmpty {
+                    Text(statusMessage)
+                        .font(.caption)
+                        .foregroundColor(hasInvalidRegex ? .red : .secondary)
+                }
+                HStack {
+                    Button(NSLocalizedString("Find Next", comment: "")) { onFindNext() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.semibold))
+                        .searchPanelActionButton(prominent: true)
+                    Button(NSLocalizedString("Jump to Match", comment: "")) {
+                        onJumpToMatch()
+                        onClose()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .searchPanelActionButton()
+                    .disabled(findQuery.isEmpty || matchCount == 0)
+                    Button(NSLocalizedString("Replace", comment: "")) { onReplace() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                        .disabled(findQuery.isEmpty)
+                    Button(NSLocalizedString("Replace All", comment: "")) { onReplaceAll() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                        .disabled(findQuery.isEmpty)
+                    Spacer()
+                    Button(NSLocalizedString("Close", comment: "")) { onClose() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                }
+            }
+        }
+        .padding(.horizontal, usesPadLayout ? 0 : 16)
+        .padding(.vertical, usesPadLayout ? 4 : 16)
+#if os(iOS) || os(visionOS)
+        .frame(width: usesPadLayout ? 480 : nil)
+#else
+        .frame(minWidth: 560, idealWidth: 620)
+#endif
+        .optionalSearchPanelSurface(!usesPadLayout)
+        .onAppear {
+            isReplaceVisible = !replaceQuery.isEmpty
+            focusFindField()
+            onPreviewChanged()
+        }
+        .onChange(of: findQuery.isEmpty) { _, _ in
+            focusFindField()
+        }
+        .onChange(of: focusRequestID) { _, _ in
+            focusFindField()
+        }
+        .onChange(of: findQuery) { _, _ in
+            onPreviewChanged()
+#if os(iOS) || os(visionOS)
+            if usesPadLayout {
+                DispatchQueue.main.async {
+                    findFieldFocused = true
+                }
+            }
+#endif
+        }
+        .onChange(of: useRegex) { _, _ in onPreviewChanged() }
+        .onChange(of: caseSensitive) { _, _ in onPreviewChanged() }
+        .onChange(of: wholeWord) { _, _ in onPreviewChanged() }
+    }
+
+    private func focusFindField() {
+        findFieldFocused = true
+        DispatchQueue.main.async {
+            findFieldFocused = true
+        }
+    }
+}
+
+#if os(macOS)
+enum FindReplaceKeyboardPolicy {
+    static func shouldDismiss(_ event: NSEvent) -> Bool {
+        event.keyCode == 53
+    }
+}
+
+@MainActor
+struct FindReplaceWindowPresenter: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    @Binding var findQuery: String
+    @Binding var replaceQuery: String
+    @Binding var useRegex: Bool
+    @Binding var caseSensitive: Bool
+    @Binding var wholeWord: Bool
+    @Binding var matchCount: Int
+    let selectedMatchIndex: Int?
+    @Binding var statusMessage: String
+    @Binding var scope: ContentView.SearchScope
+    let onPreviewChanged: () -> Void
+    let onFindNext: () -> Void
+    let onJumpToMatch: () -> Void
+    let onReplace: () -> Void
+    let onReplaceAll: () -> Void
+    let onScopeChange: ((ContentView.SearchScope) -> Void)?
+    let onClose: () -> Void
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var parent: FindReplaceWindowPresenter
+        weak var hostWindow: NSWindow?
+        var window: NSPanel?
+        var hostingController: NSHostingController<FindReplacePanel>?
+        var focusRequestID: Int = 0
+        private var keyDownMonitor: Any?
+
+        init(parent: FindReplaceWindowPresenter) {
+            self.parent = parent
+        }
+
+        private func installEscapeMonitorIfNeeded() {
+            guard keyDownMonitor == nil else { return }
+            keyDownMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+                guard let self,
+                      let window = self.window,
+                      window.isKeyWindow,
+                      FindReplaceKeyboardPolicy.shouldDismiss(event) else { return event }
+                self.parent.onClose()
+                return nil
+            }
+        }
+
+        func panelContent() -> FindReplacePanel {
+            FindReplacePanel(
+                findQuery: parent.$findQuery,
+                replaceQuery: parent.$replaceQuery,
+                useRegex: parent.$useRegex,
+                caseSensitive: parent.$caseSensitive,
+                wholeWord: parent.$wholeWord,
+                matchCount: parent.$matchCount,
+                selectedMatchIndex: parent.selectedMatchIndex,
+                statusMessage: parent.$statusMessage,
+                scope: parent.$scope,
+                onPreviewChanged: parent.onPreviewChanged,
+                onFindNext: parent.onFindNext,
+                onJumpToMatch: parent.onJumpToMatch,
+                onReplace: parent.onReplace,
+                onReplaceAll: parent.onReplaceAll,
+                onScopeChange: parent.onScopeChange,
+                onClose: parent.onClose,
+                focusRequestID: focusRequestID
+            )
+        }
+
+        func presentIfNeeded() {
+            focusRequestID &+= 1
+            if let window, let hostingController {
+                hostingController.rootView = panelContent()
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+
+            let controller = NSHostingController(rootView: panelContent())
+            let panel = NSPanel(
+                contentRect: NSRect(x: 0, y: 0, width: 620, height: 300),
+                styleMask: [.titled, .fullSizeContentView, .utilityWindow],
+                backing: .buffered,
+                defer: false
+            )
+            panel.contentViewController = controller
+            panel.title = NSLocalizedString("Find & Replace", comment: "")
+            panel.isReleasedWhenClosed = false
+            panel.tabbingMode = .disallowed
+            panel.hidesOnDeactivate = false
+            panel.isFloatingPanel = true
+            panel.level = .floating
+            panel.delegate = self
+            panel.minSize = NSSize(width: 620, height: 300)
+            panel.isOpaque = false
+            panel.backgroundColor = .clear
+            panel.hasShadow = true
+            panel.titleVisibility = .hidden
+            panel.titlebarAppearsTransparent = true
+            panel.isMovableByWindowBackground = true
+            panel.standardWindowButton(.closeButton)?.isHidden = true
+            panel.standardWindowButton(.miniaturizeButton)?.isHidden = true
+            panel.standardWindowButton(.zoomButton)?.isHidden = true
+
+            if let hostWindow {
+                let hostFrame = hostWindow.frame
+                let size = panel.frame.size
+                let origin = NSPoint(
+                    x: hostFrame.midX - (size.width / 2),
+                    y: hostFrame.midY - (size.height / 2)
+                )
+                panel.setFrameOrigin(origin)
+            } else {
+                panel.center()
+            }
+
+            self.window = panel
+            self.hostingController = controller
+            installEscapeMonitorIfNeeded()
+            panel.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        func dismissIfNeeded() {
+            guard let window else { return }
+            window.orderOut(nil)
+            window.close()
+            self.window = nil
+            self.hostingController = nil
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            if let keyDownMonitor {
+                NSEvent.removeMonitor(keyDownMonitor)
+                self.keyDownMonitor = nil
+            }
+            self.window = nil
+            self.hostingController = nil
+            DispatchQueue.main.async {
+                self.parent.isPresented = false
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.hostWindow = view.window
+            if isPresented {
+                context.coordinator.presentIfNeeded()
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.hostWindow = nsView.window
+        if isPresented {
+            context.coordinator.presentIfNeeded()
+        } else {
+            context.coordinator.dismissIfNeeded()
+        }
+    }
+}
+
+@MainActor
+struct DetachedPreviewWindowPresenter: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let title: String
+    let metadata: String?
+    let html: String
+    let baseURL: URL?
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("EnableTranslucentWindow") private var enableTranslucentWindow: Bool = false
+    @AppStorage("SettingsMacTranslucencyMode") private var translucencyModeRaw: String = "balanced"
+    @AppStorage("DetachedMarkdownPreviewUsesQuickLookTransparency") private var usesQuickLookTransparency: Bool = false
+
+    private var editorBackground: Color {
+        currentEditorTheme(colorScheme: colorScheme).background
+    }
+
+    private var windowBackgroundColor: NSColor {
+        if usesQuickLookTransparency { return .clear }
+        guard enableTranslucentWindow else { return NSColor(editorBackground) }
+        let mode = translucencyModeRaw
+        let whiteLevel: CGFloat
+        let alpha: CGFloat
+        switch mode {
+        case "subtle":
+            whiteLevel = colorScheme == .dark ? 0.18 : 0.90
+            alpha = 0.82
+        case "vibrant":
+            whiteLevel = colorScheme == .dark ? 0.12 : 0.82
+            alpha = 0.62
+        default:
+            whiteLevel = colorScheme == .dark ? 0.15 : 0.86
+            alpha = 0.72
+        }
+        return NSColor(calibratedWhite: whiteLevel, alpha: alpha)
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var parent: DetachedPreviewWindowPresenter
+        var window: NSWindow?
+        var hostingController: NSHostingController<DetachedPreviewWindowView>?
+
+        init(parent: DetachedPreviewWindowPresenter) {
+            self.parent = parent
+        }
+
+        func content() -> DetachedPreviewWindowView {
+            DetachedPreviewWindowView(
+                title: self.parent.title,
+                metadata: self.parent.metadata,
+                html: self.parent.html,
+                baseURL: self.parent.baseURL,
+                editorBackground: self.parent.editorBackground,
+                usesTranslucency: self.parent.enableTranslucentWindow,
+                usesQuickLookTransparency: self.parent.usesQuickLookTransparency,
+                translucencyModeRaw: self.parent.translucencyModeRaw
+            ) {
+                self.parent.isPresented = false
+            }
+        }
+
+        func presentIfNeeded() {
+            if let window, let hostingController {
+                hostingController.rootView = content()
+                window.title = parent.title
+                configureAppearance(of: window)
+                window.makeKeyAndOrderFront(nil)
+                NSApp.activate(ignoringOtherApps: true)
+                return
+            }
+
+            let controller = NSHostingController(rootView: content())
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 960, height: 720),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered,
+                defer: false
+            )
+            window.contentViewController = controller
+            window.title = parent.title
+            configureAppearance(of: window)
+            window.isReleasedWhenClosed = false
+            window.tabbingMode = .disallowed
+            window.minSize = NSSize(width: 640, height: 480)
+            window.setContentSize(NSSize(width: 960, height: 720))
+            window.delegate = self
+            window.center()
+            self.window = window
+            self.hostingController = controller
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        private func configureAppearance(of window: NSWindow) {
+            window.isOpaque = !(parent.enableTranslucentWindow || parent.usesQuickLookTransparency)
+            window.backgroundColor = parent.windowBackgroundColor
+            window.contentView?.wantsLayer = true
+            window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+            window.titlebarAppearsTransparent = true
+            window.toolbarStyle = .unified
+            window.styleMask.insert(.fullSizeContentView)
+            if #available(macOS 13.0, *) {
+                window.titlebarSeparatorStyle = .none
+            }
+        }
+
+        func dismissIfNeeded() {
+            window?.orderOut(nil)
+            window?.close()
+            window = nil
+            hostingController = nil
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            window = nil
+            hostingController = nil
+            DispatchQueue.main.async { [weak self] in
+                self?.parent.isPresented = false
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSView { NSView(frame: .zero) }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        if isPresented {
+            context.coordinator.presentIfNeeded()
+        } else {
+            context.coordinator.dismissIfNeeded()
+        }
+    }
+}
+
+@MainActor
+struct DetachedPreviewWindowView: View {
+    static let quickLookGlassTintOpacity = 0.08
+    private static let windowCornerRadius: CGFloat = 14
+
+    let title: String
+    let metadata: String?
+    let html: String
+    let baseURL: URL?
+    let editorBackground: Color
+    let usesTranslucency: Bool
+    let usesQuickLookTransparency: Bool
+    let translucencyModeRaw: String
+    let onClose: () -> Void
+    @Environment(\.colorScheme) private var colorScheme
+
+    var previewHTML: String {
+        Self.applyingEditorBackground(
+            to: html,
+            color: (usesTranslucency || usesQuickLookTransparency) ? "transparent" : colorToHex(editorBackground)
+        )
+    }
+
+    static func applyingEditorBackground(to html: String, color: String) -> String {
+        let style = """
+        <style id="nve-detached-preview-background">
+        html, body, .content { background: \(color) !important; }
+        .content { border-color: transparent !important; box-shadow: none !important; }
+        </style>
+        """
+        if html.range(of: "</head>", options: .caseInsensitive) != nil {
+            return html.replacingOccurrences(of: "</head>", with: "\(style)</head>", options: .caseInsensitive)
+        }
+        return html + style
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "eye")
+                    .foregroundStyle(.secondary)
+                Text(title)
+                    .font(.headline)
+                Spacer()
+                if let metadata {
+                    Text(metadata)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+                Button(action: onClose) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Close preview window")
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            MarkdownPreviewWebView(html: previewHTML, baseURL: baseURL)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .accessibilityLabel("Preview content")
+        }
+        .background {
+            if usesQuickLookTransparency {
+                RoundedRectangle(cornerRadius: Self.windowCornerRadius, style: .continuous)
+                    .fill(.thinMaterial)
+                    .overlay(quickLookGlassTint)
+            } else {
+                RoundedRectangle(cornerRadius: Self.windowCornerRadius, style: .continuous)
+                    .fill(surfaceBackground)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: Self.windowCornerRadius, style: .continuous))
+    }
+
+    private var quickLookGlassTint: Color {
+        (colorScheme == .dark ? Color.black : Color.white)
+            .opacity(Self.quickLookGlassTintOpacity)
+    }
+
+    private var surfaceBackground: AnyShapeStyle {
+        guard usesTranslucency else { return AnyShapeStyle(editorBackground) }
+        return ContentView.MacEditorSurfacePolicy.translucentSurfaceStyle(modeRaw: translucencyModeRaw)
+    }
+}
+#endif
+
+struct QuickFileSwitcherPanel: View {
+    struct Item: Identifiable {
+        let id: String
+        let title: String
+        let subtitle: String
+        let isPinned: Bool
+        let canTogglePin: Bool
+        let isDirty: Bool
+        let isCurrent: Bool
+
+        init(
+            id: String,
+            title: String,
+            subtitle: String,
+            isPinned: Bool,
+            canTogglePin: Bool,
+            isDirty: Bool = false,
+            isCurrent: Bool = false
+        ) {
+            self.id = id
+            self.title = title
+            self.subtitle = subtitle
+            self.isPinned = isPinned
+            self.canTogglePin = canTogglePin
+            self.isDirty = isDirty
+            self.isCurrent = isCurrent
+        }
+    }
+
+    @Binding var query: String
+    let items: [Item]
+    let statusMessage: String
+    let onSelect: (Item) -> Void
+    let onTogglePin: (Item) -> Void
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var queryFieldFocused: Bool
+    @State private var selectedItemID: Item.ID?
+
+    private var selectedItem: Item? {
+        guard let selectedItemID else { return items.first }
+        return items.first(where: { $0.id == selectedItemID }) ?? items.first
+    }
+
+    private func selectPrimaryItem() {
+        guard let item = selectedItem else { return }
+        onSelect(item)
+        dismiss()
+    }
+
+    private func syncSelectionToVisibleItems() {
+        guard let selectedItemID,
+              items.contains(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = items.first?.id
+            return
+        }
+    }
+
+    private func moveSelection(by delta: Int) {
+        guard !items.isEmpty else { return }
+        syncSelectionToVisibleItems()
+        let currentIndex = items.firstIndex(where: { $0.id == selectedItemID }) ?? 0
+        let nextIndex = min(max(currentIndex + delta, 0), items.count - 1)
+        selectedItemID = items[nextIndex].id
+    }
+
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func highlightedText(_ text: String, useSecondaryTone: Bool) -> Text {
+        let searchTerm = normalizedQuery
+        let baseColor: Color = useSecondaryTone
+            ? Color.primary.opacity(colorScheme == .dark ? 0.82 : 0.72)
+            : .primary
+        guard !searchTerm.isEmpty else { return Text(text).foregroundColor(baseColor) }
+
+        let compareOptions: String.CompareOptions = [.caseInsensitive]
+        var rendered = AttributedString()
+        var remaining = text[...]
+
+        while let range = remaining.range(of: searchTerm, options: compareOptions) {
+            let prefix = String(remaining[..<range.lowerBound])
+            let match = String(remaining[range])
+            if !prefix.isEmpty {
+                var prefixText = AttributedString(prefix)
+                prefixText.foregroundColor = baseColor
+                rendered += prefixText
+            }
+            var matchText = AttributedString(match)
+            matchText.foregroundColor = NeonUIStyle.accentBlueStrong
+            matchText.inlinePresentationIntent = .stronglyEmphasized
+            matchText.underlineStyle = .single
+            rendered += matchText
+            remaining = remaining[range.upperBound...]
+        }
+
+        if !remaining.isEmpty {
+            var remainingText = AttributedString(String(remaining))
+            remainingText.foregroundColor = baseColor
+            rendered += remainingText
+        }
+        return Text(rendered)
+    }
+
+    @ViewBuilder
+    private func applyMoveCommand<Content: View>(to content: Content) -> some View {
+#if os(macOS)
+        content.onMoveCommand { direction in
+            switch direction {
+            case .down:
+                moveSelection(by: 1)
+            case .up:
+                moveSelection(by: -1)
+            default:
+                break
+            }
+        }
+#else
+        content
+#endif
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            applyMoveCommand(to:
+                VStack(alignment: .leading, spacing: 12) {
+                Text(NSLocalizedString("Command Palette", comment: ""))
+                    .font(.headline)
+                TextField(NSLocalizedString("Search commands, files, and tabs", comment: ""), text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { selectPrimaryItem() }
+                    .accessibilityLabel(NSLocalizedString("Command Palette Search", comment: ""))
+                    .accessibilityHint(NSLocalizedString("Type to search commands, files, and tabs. Use Up and Down Arrow to move through results.", comment: ""))
+                    .focused($queryFieldFocused)
+
+                List(items) { item in
+                    HStack(spacing: 10) {
+                        Button {
+                            selectedItemID = item.id
+                            onSelect(item)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    if item.isCurrent {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundStyle(NeonUIStyle.accentBlueStrong)
+                                            .font(.caption)
+                                            .accessibilityHidden(true)
+                                    }
+                                    if item.isDirty {
+                                        Circle()
+                                            .fill(Color.orange)
+                                            .frame(width: 7, height: 7)
+                                            .accessibilityHidden(true)
+                                    }
+                                    highlightedText(item.title, useSecondaryTone: false)
+                                }
+                                    .lineLimit(1)
+                                highlightedText(item.subtitle, useSecondaryTone: true)
+                                    .font(.caption)
+                                    .lineLimit(1)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityAddTraits(item.isCurrent ? .isSelected : [])
+                        .accessibilityLabel(item.title)
+                        .accessibilityValue(
+                            item.isCurrent
+                            ? (item.isDirty ? "\(item.subtitle), current tab, unsaved changes" : "\(item.subtitle), current tab")
+                            : (item.isDirty ? "\(item.subtitle), unsaved changes" : item.subtitle)
+                        )
+                        .accessibilityHint(NSLocalizedString("Opens the selected item", comment: ""))
+
+                        if item.canTogglePin {
+                            Button {
+                                selectedItemID = item.id
+                                onTogglePin(item)
+                            } label: {
+                                Image(systemName: item.isPinned ? "star.fill" : "star")
+                                    .foregroundStyle(item.isPinned ? Color.yellow : .secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel(item.isPinned ? NSLocalizedString("Unpin recent file", comment: "") : NSLocalizedString("Pin recent file", comment: ""))
+                            .accessibilityHint(NSLocalizedString("Keeps this file near the top of recent results", comment: ""))
+                        }
+                    }
+                    .id(item.id)
+                    .contentShape(Rectangle())
+                    .listRowBackground(
+                        selectedItemID == item.id
+                        ? NeonUIStyle.selectedRowFill(for: colorScheme)
+                        : Color.clear
+                    )
+                    .onTapGesture {
+                        selectedItemID = item.id
+                    }
+                }
+                .listStyle(.plain)
+                .accessibilityLabel(NSLocalizedString("Command Palette Results", comment: ""))
+
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(String.localizedStringWithFormat(NSLocalizedString("%lld results", comment: ""), Int64(items.count)))
+                        if !statusMessage.isEmpty {
+                            Text(statusMessage)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(NSLocalizedString("Close", comment: "")) { dismiss() }
+                }
+            }
+#if os(iOS) || os(visionOS)
+            .background(
+                DirectionalKeyCommandBridge(
+                    onMoveUp: { moveSelection(by: -1) },
+                    onMoveDown: { moveSelection(by: 1) }
+                )
+                .frame(width: 0, height: 0)
+            )
+#endif
+            .padding(16)
+            .frame(minWidth: 520, minHeight: 380)
+            .onAppear {
+                queryFieldFocused = true
+                syncSelectionToVisibleItems()
+            }
+            .onChange(of: items.map(\.id)) { _, _ in
+                syncSelectionToVisibleItems()
+            }
+            .onChange(of: selectedItemID) { _, newValue in
+                guard let newValue else { return }
+                proxy.scrollTo(newValue, anchor: .center)
+            }
+            )
+        }
+    }
+}
+
+struct DocumentSymbolItem: Identifiable, Hashable {
+    let id: String
+    let title: String
+    let line: Int?
+}
+
+enum DocumentSymbolNavigator {
+    static func symbols(content: String, language: String) -> [DocumentSymbolItem] {
+        guard !content.isEmpty else {
+            return [DocumentSymbolItem(id: "empty", title: "No content available", line: nil)]
+        }
+        if (content as NSString).length >= 400_000 {
+            return [DocumentSymbolItem(id: "large", title: "Large file detected: symbols disabled for performance", line: nil)]
+        }
+
+        let lines = content.components(separatedBy: .newlines)
+        let lowerLanguage = language.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let symbols: [DocumentSymbolItem]
+
+        switch lowerLanguage {
+        case "swift":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("func ") || trimmed.hasPrefix("struct ") || trimmed.hasPrefix("class ") || trimmed.hasPrefix("enum ") {
+                    return DocumentSymbolItem(id: "swift-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "python":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("def ") || trimmed.hasPrefix("class ") {
+                    return DocumentSymbolItem(id: "python-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "javascript":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("function ") || trimmed.hasPrefix("class ") {
+                    return DocumentSymbolItem(id: "js-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "java":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("class ") || (trimmed.contains(" void ") || (trimmed.contains(" public ") && trimmed.contains("(") && trimmed.contains(")"))) {
+                    return DocumentSymbolItem(id: "java-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "kotlin":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("class ") || trimmed.hasPrefix("object ") || trimmed.hasPrefix("fun ") {
+                    return DocumentSymbolItem(id: "kotlin-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "go":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("func ") || trimmed.hasPrefix("type ") {
+                    return DocumentSymbolItem(id: "go-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "ruby":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("def ") || trimmed.hasPrefix("class ") || trimmed.hasPrefix("module ") {
+                    return DocumentSymbolItem(id: "ruby-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "rust":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("fn ") || trimmed.hasPrefix("struct ") || trimmed.hasPrefix("enum ") || trimmed.hasPrefix("impl ") {
+                    return DocumentSymbolItem(id: "rust-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "typescript":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("function ") || trimmed.hasPrefix("class ") || trimmed.hasPrefix("interface ") || trimmed.hasPrefix("type ") {
+                    return DocumentSymbolItem(id: "ts-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "php":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("function ") || trimmed.hasPrefix("class ") {
+                    return DocumentSymbolItem(id: "php-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "objective-c":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("@interface") || trimmed.hasPrefix("@implementation") || trimmed.hasPrefix("- (") || trimmed.hasPrefix("+ (") {
+                    return DocumentSymbolItem(id: "objc-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "c", "cpp":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("struct ") || trimmed.hasPrefix("class ") || (trimmed.contains("(") && trimmed.hasSuffix("{")) {
+                    return DocumentSymbolItem(id: "c-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "bash", "zsh":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("function ") || trimmed.hasSuffix("() {") {
+                    return DocumentSymbolItem(id: "sh-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "powershell":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.lowercased().hasPrefix("function ") {
+                    return DocumentSymbolItem(id: "ps-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "markdown", "rst", "tex":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                let isMarkdownHeader = trimmed.hasPrefix("#")
+                let isRSTHeader = index + 1 < lines.count && !trimmed.isEmpty && Set(lines[index + 1]).isSubset(of: Set(["=", "-", "~", "^", "\""]))
+                let isTeXSection = trimmed.hasPrefix("\\section") || trimmed.hasPrefix("\\subsection") || trimmed.hasPrefix("\\chapter")
+                if isMarkdownHeader || isRSTHeader || isTeXSection {
+                    return DocumentSymbolItem(id: "markup-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        case "csharp":
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("class ") || trimmed.hasPrefix("interface ") || trimmed.hasPrefix("struct ") || trimmed.contains(" void ") {
+                    return DocumentSymbolItem(id: "cs-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        default:
+            symbols = lines.enumerated().compactMap { index, line in
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                if trimmed.hasPrefix("#") {
+                    return DocumentSymbolItem(id: "default-\(index)", title: "\(trimmed) (Line \(index + 1))", line: index + 1)
+                }
+                return nil
+            }
+        }
+
+        return symbols.isEmpty ? [DocumentSymbolItem(id: "none", title: "No symbols found", line: nil)] : symbols
+    }
+}
+
+struct GoToLinePanel: View {
+    @Binding var lineInput: String
+    let currentLineCount: Int
+    let onGoToLine: (Int) -> Void
+    let onClose: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var lineFieldFocused: Bool
+    @State private var validationMessage: String = ""
+
+    private func submit() {
+        let trimmed = lineInput.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let line = Int(trimmed), line > 0 else {
+            validationMessage = NSLocalizedString("Enter a line number greater than 0.", comment: "Go to Line validation")
+            return
+        }
+        validationMessage = ""
+        onGoToLine(line)
+        dismiss()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(NSLocalizedString("Go to Line", comment: "Go to Line panel title"))
+                .font(.headline)
+
+            TextField(NSLocalizedString("Line number", comment: "Go to Line input placeholder"), text: $lineInput)
+#if os(iOS) || os(visionOS)
+                .keyboardType(.numberPad)
+#endif
+                .textFieldStyle(.roundedBorder)
+                .focused($lineFieldFocused)
+                .onSubmit { submit() }
+                .accessibilityLabel(NSLocalizedString("Line Number", comment: "Go to Line accessibility label"))
+                .accessibilityHint(NSLocalizedString("Enter a line number and jump to that location in the current document.", comment: "Go to Line accessibility hint"))
+
+            Text(String.localizedStringWithFormat(NSLocalizedString("Current document has %lld lines.", comment: "Go to Line helper"), Int64(max(1, currentLineCount))))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+            if !validationMessage.isEmpty {
+                Text(validationMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+
+            HStack {
+                Button(NSLocalizedString("Go", comment: "Go to Line submit button")) {
+                    submit()
+                }
+                .buttonStyle(.plain)
+                .searchPanelActionButton(prominent: true)
+
+                Button(NSLocalizedString("Close", comment: "Go to Line close button")) {
+                    onClose()
+                    dismiss()
+                }
+                .buttonStyle(.plain)
+                .searchPanelActionButton()
+            }
+        }
+        .padding(18)
+        .frame(minWidth: 320)
+        .onAppear {
+            lineFieldFocused = true
+            validationMessage = ""
+        }
+    }
+}
+
+struct GoToSymbolPanel: View {
+    @Binding var query: String
+    let items: [DocumentSymbolItem]
+    let onSelect: (DocumentSymbolItem) -> Void
+    let onClose: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @FocusState private var queryFieldFocused: Bool
+    @State private var selectedItemID: DocumentSymbolItem.ID?
+
+    private var selectedItem: DocumentSymbolItem? {
+        guard let selectedItemID else { return items.first }
+        return items.first(where: { $0.id == selectedItemID }) ?? items.first
+    }
+
+    private func syncSelectionToVisibleItems() {
+        guard let selectedItemID, items.contains(where: { $0.id == selectedItemID }) else {
+            self.selectedItemID = items.first?.id
+            return
+        }
+    }
+
+    private func moveSelection(by delta: Int) {
+        guard !items.isEmpty else { return }
+        syncSelectionToVisibleItems()
+        let currentIndex = items.firstIndex(where: { $0.id == selectedItemID }) ?? 0
+        let nextIndex = min(max(currentIndex + delta, 0), items.count - 1)
+        selectedItemID = items[nextIndex].id
+    }
+
+    private func submitPrimarySelection() {
+        guard let item = selectedItem, item.line != nil else { return }
+        onSelect(item)
+        dismiss()
+    }
+
+    @ViewBuilder
+    private func applyMoveCommand<Content: View>(to content: Content) -> some View {
+#if os(macOS)
+        content.onMoveCommand { direction in
+            switch direction {
+            case .down:
+                moveSelection(by: 1)
+            case .up:
+                moveSelection(by: -1)
+            default:
+                break
+            }
+        }
+#else
+        content
+#endif
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            applyMoveCommand(to:
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(NSLocalizedString("Go to Symbol", comment: "Go to Symbol panel title"))
+                        .font(.headline)
+
+                    TextField(NSLocalizedString("Search current document symbols", comment: "Go to Symbol search placeholder"), text: $query)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($queryFieldFocused)
+                        .onSubmit { submitPrimarySelection() }
+                        .accessibilityLabel(NSLocalizedString("Go to Symbol Search", comment: "Go to Symbol accessibility label"))
+                        .accessibilityHint(NSLocalizedString("Type to filter symbols in the current document. Use Up and Down Arrow to move through results.", comment: "Go to Symbol accessibility hint"))
+
+                    List(items) { item in
+                        Button {
+                            selectedItemID = item.id
+                            guard item.line != nil else { return }
+                            onSelect(item)
+                            dismiss()
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.title)
+                                    .lineLimit(1)
+                                Text(item.line.map { "Line \($0)" } ?? NSLocalizedString("Unavailable", comment: "Unavailable symbol line"))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .id(item.id)
+                        .buttonStyle(.plain)
+                        .disabled(item.line == nil)
+                        .listRowBackground(
+                            selectedItemID == item.id
+                            ? NeonUIStyle.selectedRowFill(for: colorScheme)
+                            : Color.clear
+                        )
+                        .onTapGesture {
+                            selectedItemID = item.id
+                        }
+                        .accessibilityLabel(item.title)
+                        .accessibilityValue(item.line.map { "Line \($0)" } ?? NSLocalizedString("No line", comment: "No line accessibility value"))
+                        .accessibilityHint(NSLocalizedString("Jump to this symbol in the current document.", comment: "Go to Symbol row accessibility hint"))
+                    }
+                    .listStyle(.plain)
+
+                    HStack {
+                        Text(String.localizedStringWithFormat(NSLocalizedString("%lld symbols", comment: "Go to Symbol count"), Int64(items.filter { $0.line != nil }.count)))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button(NSLocalizedString("Close", comment: "Go to Symbol close button")) {
+                            onClose()
+                            dismiss()
+                        }
+                    }
+                }
+#if os(iOS) || os(visionOS)
+                .background(
+                    DirectionalKeyCommandBridge(
+                        onMoveUp: { moveSelection(by: -1) },
+                        onMoveDown: { moveSelection(by: 1) }
+                    )
+                    .frame(width: 0, height: 0)
+                )
+#endif
+                .padding(16)
+                .frame(minWidth: 520, minHeight: 380)
+                .onAppear {
+                    queryFieldFocused = true
+                    syncSelectionToVisibleItems()
+                }
+                .onChange(of: items.map(\.id)) { _, _ in
+                    syncSelectionToVisibleItems()
+                }
+                .onChange(of: selectedItemID) { _, newValue in
+                    guard let newValue else { return }
+                    proxy.scrollTo(newValue, anchor: .center)
+                }
+            )
+        }
+    }
+}
+
+struct FindInFilesMatch: Identifiable, Hashable {
+    let id: String
+    let fileURL: URL
+    let line: Int
+    let column: Int
+    let snippet: String
+    let rangeLocation: Int
+    let rangeLength: Int
+}
+
+struct FindInFilesPanel: View {
+    @Binding var query: String
+    @Binding var caseSensitive: Bool
+    @Binding var replaceQuery: String
+    @Binding var selectedMatchIDs: Set<String>
+    let results: [FindInFilesMatch]
+    let statusMessage: String
+    let sourceMessage: String
+    let isApplyingReplace: Bool
+    let onSearch: () -> Void
+    let onClear: () -> Void
+    let onToggleSelection: (String) -> Void
+    let onSelectAll: () -> Void
+    let onSelectNone: () -> Void
+    let onApplyReplace: () -> Void
+    let onCancelReplace: () -> Void
+    let onSelect: (FindInFilesMatch) -> Void
+    let onClose: () -> Void
+    var closesOnSelect: Bool = true
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.searchPanelEmbeddedInSidebar) private var embeddedInSidebar
+#if os(iOS) || os(visionOS)
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+#endif
+    @FocusState private var queryFieldFocused: Bool
+    @State private var selectedMatchID: FindInFilesMatch.ID?
+
+    private var usesCompactPhoneLayout: Bool {
+#if os(iOS) || os(visionOS)
+        horizontalSizeClass != .regular
+#else
+        false
+#endif
+    }
+
+    private var hasSearched: Bool {
+        !normalizedQuery.isEmpty
+    }
+
+    private struct MatchGroup: Identifiable {
+        let fileURL: URL
+        let matches: [FindInFilesMatch]
+
+        var id: String { fileURL.standardizedFileURL.path }
+        var matchCountText: String { matches.count == 1 ? "1 hit" : "\(matches.count) hits" }
+    }
+
+    private func submitPrimaryAction() {
+        guard let match = selectedMatch else {
+            onSearch()
+            return
+        }
+        onSelect(match)
+        if closesOnSelect {
+            onClose()
+        }
+    }
+
+    private var selectedMatch: FindInFilesMatch? {
+        guard let selectedMatchID else { return results.first }
+        return results.first(where: { $0.id == selectedMatchID }) ?? results.first
+    }
+
+    private func syncSelectionToVisibleResults() {
+        guard let selectedMatchID,
+              results.contains(where: { $0.id == selectedMatchID }) else {
+            self.selectedMatchID = results.first?.id
+            return
+        }
+    }
+
+    private func moveSelection(by delta: Int) {
+        guard !results.isEmpty else { return }
+        syncSelectionToVisibleResults()
+        let currentIndex = results.firstIndex(where: { $0.id == selectedMatchID }) ?? 0
+        let nextIndex = min(max(currentIndex + delta, 0), results.count - 1)
+        selectedMatchID = results[nextIndex].id
+    }
+
+    private var normalizedQuery: String {
+        query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private var selectedCount: Int {
+        results.reduce(into: 0) { partialResult, match in
+            if selectedMatchIDs.contains(match.id) {
+                partialResult += 1
+            }
+        }
+    }
+
+    private var usesPadLayout: Bool {
+#if os(iOS) || os(visionOS)
+        horizontalSizeClass == .regular
+#else
+        false
+#endif
+    }
+
+    private var minimumPanelHeight: CGFloat {
+#if os(iOS) || os(visionOS)
+        if usesCompactPhoneLayout {
+            return embeddedInSidebar ? 0 : 460
+        }
+        return usesPadLayout ? 620 : 420
+#else
+        return embeddedInSidebar ? 0 : 560
+#endif
+    }
+
+    private var compactPhoneEmbeddedTopPadding: CGFloat {
+#if os(iOS) || os(visionOS)
+        usesCompactPhoneLayout && embeddedInSidebar ? 12 : 0
+#else
+        0
+#endif
+    }
+
+    private var shouldShowPhoneStatusSection: Bool {
+        results.isEmpty || !sourceMessage.isEmpty
+    }
+
+    private var groupedResults: [MatchGroup] {
+        var groups: [MatchGroup] = []
+        var groupedMatches: [String: [FindInFilesMatch]] = [:]
+
+        for match in results {
+            let key = match.fileURL.standardizedFileURL.path
+            groupedMatches[key, default: []].append(match)
+        }
+
+        var seen: Set<String> = []
+        for match in results {
+            let key = match.fileURL.standardizedFileURL.path
+            guard !seen.contains(key), let matches = groupedMatches[key] else { continue }
+            groups.append(MatchGroup(fileURL: match.fileURL, matches: matches))
+            seen.insert(key)
+        }
+
+        return groups
+    }
+
+    @ViewBuilder
+    private var centeredTitleHeader: some View {
+        Text(NSLocalizedString("Find in Files", comment: ""))
+            .font(.headline)
+            .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private func highlightedText(_ text: String) -> Text {
+        let searchTerm = normalizedQuery
+        let baseColor = Color.primary.opacity(colorScheme == .dark ? 0.88 : 0.78)
+        guard !searchTerm.isEmpty else { return Text(text).foregroundColor(baseColor) }
+
+        let compareOptions: String.CompareOptions = caseSensitive ? [] : [.caseInsensitive]
+        var rendered = AttributedString()
+        var remaining = text[...]
+
+        while let range = remaining.range(of: searchTerm, options: compareOptions) {
+            let prefix = String(remaining[..<range.lowerBound])
+            let match = String(remaining[range])
+            if !prefix.isEmpty {
+                var prefixText = AttributedString(prefix)
+                prefixText.foregroundColor = baseColor
+                rendered += prefixText
+            }
+            var matchText = AttributedString(match)
+            matchText.foregroundColor = NeonUIStyle.accentBlueStrong
+            matchText.inlinePresentationIntent = .stronglyEmphasized
+            matchText.underlineStyle = .single
+            rendered += matchText
+            remaining = remaining[range.upperBound...]
+        }
+
+        if !remaining.isEmpty {
+            var remainingText = AttributedString(String(remaining))
+            remainingText.foregroundColor = baseColor
+            rendered += remainingText
+        }
+        return Text(rendered)
+    }
+
+    private func abbreviatedPath(for fileURL: URL) -> String {
+        let components = fileURL.standardizedFileURL.pathComponents
+        guard components.count > 4 else { return fileURL.deletingLastPathComponent().path }
+        let suffix = components.dropLast().suffix(4).joined(separator: "/")
+        return "…/\(suffix)"
+    }
+
+    private func groupHeaderSubtitle(for fileURL: URL) -> String {
+        let directoryPath = fileURL.deletingLastPathComponent()
+        let components = directoryPath.standardizedFileURL.pathComponents
+        guard components.count > 4 else { return directoryPath.path }
+        let suffix = components.suffix(4).joined(separator: "/")
+        return "…/\(suffix)"
+    }
+
+    @ViewBuilder
+    private var phoneSearchSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            TextField(NSLocalizedString("Search project files", comment: ""), text: $query)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { submitPrimaryAction() }
+                .accessibilityLabel(NSLocalizedString("Find in Files Search", comment: ""))
+                .accessibilityHint(NSLocalizedString("Enter text to search across project files. Use Up and Down Arrow to move through results. Press Return to open the selected result.", comment: ""))
+                .focused($queryFieldFocused)
+
+            TextField(NSLocalizedString("Replace with", comment: ""), text: $replaceQuery)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(NSLocalizedString("Find in Files Replacement", comment: ""))
+                .accessibilityHint(NSLocalizedString("Enter replacement text to apply to selected project matches.", comment: ""))
+
+            Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+                .accessibilityLabel(NSLocalizedString("Case Sensitive Search", comment: ""))
+        }
+        .padding(14)
+        .subtleSearchSectionCard()
+    }
+
+    @ViewBuilder
+    private var phoneStatusSection: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if results.isEmpty {
+                Text(statusMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.primary)
+            }
+            if !sourceMessage.isEmpty {
+                Text(sourceMessage)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .subtleSearchSectionCard()
+    }
+
+    @ViewBuilder
+    private var phoneActionSection: some View {
+        HStack(spacing: 10) {
+            Button(NSLocalizedString("Search", comment: "")) { onSearch() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.semibold))
+                .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton(prominent: true)
+
+            Button(NSLocalizedString("Clear", comment: "")) { onClear() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton()
+
+            Button(NSLocalizedString("Close", comment: "")) { onClose() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .searchPanelActionButton()
+        }
+        .controlSize(.small)
+    }
+
+    @ViewBuilder
+    private var padSearchSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .center, spacing: 10) {
+                TextField(NSLocalizedString("Search project files", comment: ""), text: $query)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { submitPrimaryAction() }
+                    .accessibilityLabel(NSLocalizedString("Find in Files Search", comment: ""))
+                    .accessibilityHint(NSLocalizedString("Enter text to search across project files. Use Up and Down Arrow to move through results. Press Return to open the selected result.", comment: ""))
+                    .focused($queryFieldFocused)
+
+                Button(NSLocalizedString("Search", comment: "")) { onSearch() }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.semibold))
+                    .searchPanelActionButton(prominent: true)
+                    .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                Button(NSLocalizedString("Clear", comment: "")) { onClear() }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(.medium))
+                    .searchPanelActionButton()
+                    .accessibilityLabel(NSLocalizedString("Clear Search", comment: ""))
+            }
+
+            TextField(NSLocalizedString("Replace with", comment: ""), text: $replaceQuery)
+                .textFieldStyle(.roundedBorder)
+                .accessibilityLabel(NSLocalizedString("Find in Files Replacement", comment: ""))
+                .accessibilityHint(NSLocalizedString("Enter replacement text to apply to selected project matches.", comment: ""))
+
+            Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+                .accessibilityLabel(NSLocalizedString("Case Sensitive Search", comment: ""))
+        }
+        .padding(18)
+        .subtleSearchSectionCard()
+    }
+
+    @ViewBuilder
+    private var padFooterSection: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(statusMessage)
+                if !sourceMessage.isEmpty {
+                    Text(sourceMessage)
+                        .font(.caption2)
+                }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            Spacer()
+
+            Button(NSLocalizedString("Clear", comment: "")) { onClear() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .searchPanelActionButton()
+
+            Button(NSLocalizedString("Close", comment: "")) { onClose() }
+                .buttonStyle(.plain)
+                .font(.caption.weight(.medium))
+                .searchPanelActionButton()
+        }
+    }
+
+    @ViewBuilder
+    private func applyMoveCommand<Content: View>(to content: Content) -> some View {
+#if os(macOS)
+        content.onMoveCommand { direction in
+            switch direction {
+            case .down:
+                moveSelection(by: 1)
+            case .up:
+                moveSelection(by: -1)
+            default:
+                break
+            }
+        }
+#else
+        content
+#endif
+    }
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            applyMoveCommand(to:
+                VStack(alignment: .leading, spacing: 12) {
+                if !embeddedInSidebar {
+                    centeredTitleHeader
+                }
+
+                if usesCompactPhoneLayout {
+                    phoneSearchSection
+                    if shouldShowPhoneStatusSection {
+                        phoneStatusSection
+                    }
+                } else if usesPadLayout {
+                    padSearchSection
+                } else {
+                    HStack(spacing: 8) {
+                        TextField(NSLocalizedString("Search project files", comment: ""), text: $query)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit { submitPrimaryAction() }
+                            .accessibilityLabel(NSLocalizedString("Find in Files Search", comment: ""))
+                            .accessibilityHint(NSLocalizedString("Enter text to search across project files. Use Up and Down Arrow to move through results. Press Return to open the selected result.", comment: ""))
+                            .focused($queryFieldFocused)
+
+                        Button(NSLocalizedString("Search", comment: "")) { onSearch() }
+                            .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .accessibilityLabel(NSLocalizedString("Search Files", comment: ""))
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.semibold))
+                            .searchPanelActionButton(prominent: true)
+
+                        Button(NSLocalizedString("Clear", comment: "")) { onClear() }
+                            .accessibilityLabel(NSLocalizedString("Clear Search", comment: ""))
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.medium))
+                            .searchPanelActionButton()
+                    }
+
+                    Toggle(NSLocalizedString("Case Sensitive", comment: ""), isOn: $caseSensitive)
+                        .accessibilityLabel(NSLocalizedString("Case Sensitive Search", comment: ""))
+                }
+
+                List {
+                    if groupedResults.isEmpty, hasSearched {
+                        ContentUnavailableView(
+                            NSLocalizedString("No Matches Found", comment: ""),
+                            systemImage: "text.magnifyingglass",
+                            description: Text(statusMessage)
+                        )
+                        .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(groupedResults) { group in
+                            Section {
+                                ForEach(group.matches) { match in
+                                    HStack(alignment: .top, spacing: 8) {
+                                        Button {
+                                            onToggleSelection(match.id)
+                                        } label: {
+                                            Image(systemName: selectedMatchIDs.contains(match.id) ? "checkmark.circle.fill" : "circle")
+                                                .foregroundStyle(selectedMatchIDs.contains(match.id) ? NeonUIStyle.accentBlueStrong : .secondary)
+                                                .font(.system(size: 14, weight: .semibold))
+                                        }
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel(selectedMatchIDs.contains(match.id) ? NSLocalizedString("Deselect Match", comment: "") : NSLocalizedString("Select Match", comment: ""))
+                                        .accessibilityHint(NSLocalizedString("Toggle this result for project-wide replace.", comment: ""))
+
+                                        Button {
+                                            selectedMatchID = match.id
+                                            if closesOnSelect {
+                                                onClose()
+                                                #if os(iOS) || os(visionOS)
+                                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                                                    onSelect(match)
+                                                }
+                                                #else
+                                                onSelect(match)
+                                                #endif
+                                            } else {
+                                                onSelect(match)
+                                            }
+                                        } label: {
+                                            VStack(alignment: .leading, spacing: 3) {
+                                                Text("Line \(match.line), Column \(match.column)")
+                                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                                highlightedText(match.snippet)
+                                                    .font(.system(size: 12, design: .monospaced))
+                                                    .lineLimit(2)
+                                            }
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        }
+                                        .id(match.id)
+                                        .buttonStyle(.plain)
+                                        .accessibilityLabel("\(group.fileURL.lastPathComponent) line \(match.line) column \(match.column)")
+                                        .accessibilityValue(match.snippet)
+                                        .accessibilityHint(NSLocalizedString("Open match in editor", comment: ""))
+                                    }
+                                    .listRowBackground(
+                                        selectedMatchID == match.id
+                                        ? NeonUIStyle.selectedRowFill(for: colorScheme)
+                                        : Color.clear
+                                    )
+                                    .onTapGesture {
+                                        selectedMatchID = match.id
+                                    }
+                                }
+                            } header: {
+                                VStack(alignment: .leading, spacing: usesCompactPhoneLayout ? 0 : 2) {
+                                    HStack(alignment: .center, spacing: 8) {
+                                        Text(group.fileURL.lastPathComponent)
+                                            .font(.caption.weight(.semibold))
+                                            .foregroundStyle(.primary)
+                                            .lineLimit(1)
+                                            .layoutPriority(1)
+                                        Text(group.matchCountText)
+                                            .font(.caption2.weight(.semibold))
+                                            .foregroundStyle(NeonUIStyle.accentBlueStrong)
+                                            .padding(.horizontal, 7)
+                                            .padding(.vertical, 3)
+                                            .background(
+                                                Capsule()
+                                                    .fill(NeonUIStyle.searchMatchFill(for: colorScheme))
+                                            )
+                                            .fixedSize()
+                                        Spacer(minLength: 0)
+                                    }
+                                    if !usesCompactPhoneLayout {
+                                        Text(groupHeaderSubtitle(for: group.fileURL))
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.top, usesCompactPhoneLayout ? 4 : 6)
+                                .padding(.bottom, usesCompactPhoneLayout ? 3 : 4)
+                                .accessibilityElement(children: .combine)
+                                .accessibilityLabel(group.fileURL.lastPathComponent)
+                                .accessibilityValue("\(group.matchCountText), \(groupHeaderSubtitle(for: group.fileURL))")
+                            }
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+                .background(Color.clear)
+                .accessibilityLabel(NSLocalizedString("Find in Files Results", comment: ""))
+                .subtleSearchSectionCard()
+
+                if usesCompactPhoneLayout {
+                    phoneActionSection
+                } else if usesPadLayout {
+                    padFooterSection
+                } else {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(statusMessage)
+                        if !sourceMessage.isEmpty {
+                                Text(sourceMessage)
+                                    .font(.caption2)
+                            }
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(NSLocalizedString("Clear", comment: "")) { onClear() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                    Button(NSLocalizedString("Close", comment: "")) { onClose() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                }
+                }
+
+                HStack(spacing: 8) {
+                    Text(String.localizedStringWithFormat(NSLocalizedString("%lld selected", comment: ""), Int64(selectedCount)))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button(NSLocalizedString("Select All", comment: "")) { onSelectAll() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                        .disabled(results.isEmpty || isApplyingReplace)
+                    Button(NSLocalizedString("Select None", comment: "")) { onSelectNone() }
+                        .buttonStyle(.plain)
+                        .font(.caption.weight(.medium))
+                        .searchPanelActionButton()
+                        .disabled(selectedCount == 0 || isApplyingReplace)
+                    if isApplyingReplace {
+                        Button(NSLocalizedString("Cancel", comment: "")) { onCancelReplace() }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.semibold))
+                            .searchPanelActionButton()
+                    } else {
+                        Button(NSLocalizedString("Replace", comment: "")) { onApplyReplace() }
+                            .buttonStyle(.plain)
+                            .font(.caption.weight(.semibold))
+                            .searchPanelActionButton(prominent: true)
+                            .disabled(selectedCount == 0 || normalizedQuery.isEmpty)
+                            .accessibilityLabel(NSLocalizedString("Replace", comment: ""))
+                            .accessibilityHint(NSLocalizedString("Replace text only for results you checked with the circle. Other matches stay unchanged.", comment: ""))
+                    }
+                }
+                Text(NSLocalizedString("Only results checked with the circle will be replaced.", comment: ""))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+#if os(iOS) || os(visionOS)
+            .background(
+                DirectionalKeyCommandBridge(
+                    onMoveUp: { moveSelection(by: -1) },
+                    onMoveDown: { moveSelection(by: 1) }
+                )
+                .frame(width: 0, height: 0)
+            )
+#endif
+            .padding(.top, compactPhoneEmbeddedTopPadding)
+            .padding(16)
+#if os(macOS)
+            .frame(minWidth: embeddedInSidebar ? 0 : 620, minHeight: minimumPanelHeight)
+#else
+            .frame(maxWidth: .infinity, minHeight: minimumPanelHeight)
+#endif
+            .subtleSearchPanelSurface()
+            .onAppear {
+                queryFieldFocused = true
+                syncSelectionToVisibleResults()
+            }
+            .onChange(of: results.map(\.id)) { _, _ in
+                syncSelectionToVisibleResults()
+                selectedMatchIDs = selectedMatchIDs.intersection(Set(results.map(\.id)))
+            }
+            .onChange(of: selectedMatchID) { _, newValue in
+                guard let newValue else { return }
+                proxy.scrollTo(newValue, anchor: .center)
+            }
+            )
+        }
+    }
+}
+
+#if canImport(UIKit)
+private struct DirectionalKeyCommandBridge: UIViewRepresentable {
+    let onMoveUp: () -> Void
+    let onMoveDown: () -> Void
+
+    func makeUIView(context: Context) -> DirectionalKeyCommandView {
+        let view = DirectionalKeyCommandView()
+        view.onMoveUp = onMoveUp
+        view.onMoveDown = onMoveDown
+        return view
+    }
+
+    func updateUIView(_ uiView: DirectionalKeyCommandView, context: Context) {
+        uiView.onMoveUp = onMoveUp
+        uiView.onMoveDown = onMoveDown
+        uiView.refreshFirstResponderStatus()
+    }
+}
+
+private final class DirectionalKeyCommandView: UIView {
+    var onMoveUp: (() -> Void)?
+    var onMoveDown: (() -> Void)?
+
+    override var canBecomeFirstResponder: Bool { true }
+
+    override var keyCommands: [UIKeyCommand]? {
+        guard UIDevice.current.userInterfaceIdiom == .pad else { return [] }
+        let upCommand = UIKeyCommand(input: UIKeyCommand.inputUpArrow, modifierFlags: [], action: #selector(handleMoveUp))
+        upCommand.discoverabilityTitle = "Move Up"
+        let downCommand = UIKeyCommand(input: UIKeyCommand.inputDownArrow, modifierFlags: [], action: #selector(handleMoveDown))
+        downCommand.discoverabilityTitle = "Move Down"
+        return [upCommand, downCommand]
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        refreshFirstResponderStatus()
+    }
+
+    func refreshFirstResponderStatus() {
+        guard window != nil, UIDevice.current.userInterfaceIdiom == .pad else { return }
+        DispatchQueue.main.async { [weak self] in
+            _ = self?.becomeFirstResponder()
+        }
+    }
+
+    @objc private func handleMoveUp() {
+        onMoveUp?()
+    }
+
+    @objc private func handleMoveDown() {
+        onMoveDown?()
+    }
+}
+#endif
+
+struct WelcomeTourView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
+    @Environment(\.purchase) private var purchase
+    @EnvironmentObject private var supportPurchaseManager: SupportPurchaseManager
+    @AppStorage("SettingsAppearance") private var appearance: String = "system"
+
+    private var effectiveTourColorScheme: ColorScheme {
+        switch appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return colorScheme
+        }
+    }
+
+    private var preferredTourColorScheme: ColorScheme? {
+        switch appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
+    static var releaseID: String {
+        let short = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "0"
+        return "\(short) (\(build))"
+    }
+
+    struct ToolbarItemInfo: Identifiable {
+        let id = UUID()
+        let title: String
+        let description: String
+        let shortcutMac: String
+        let shortcutPad: String
+        let iconName: String
+    }
+
+    struct TourPage: Identifiable {
+        let id = UUID()
+        let title: String
+        let subtitle: String
+        let bullets: [String]
+        let iconName: String
+        let colors: [Color]
+        let toolbarItems: [ToolbarItemInfo]
+    }
+
+    let onFinish: () -> Void
+    @State private var selectedIndex: Int = 0
+    @State private var showsMoreEditorSettings: Bool = false
+    @State private var measuredPageHeights: [Int: CGFloat] = [:]
+    @State private var preferredSheetHeight: CGFloat = 620
+    @AppStorage(SettingsPreferenceKey.showLineNumbers) private var showLineNumbers: Bool = true
+    @AppStorage(SettingsPreferenceKey.lineWrapEnabled) private var lineWrapEnabled: Bool = true
+    @AppStorage("SettingsHighlightCurrentLine") private var highlightCurrentLine: Bool = false
+    @AppStorage("SettingsHighlightMatchingBrackets") private var highlightMatchingBrackets: Bool = false
+    @AppStorage("SettingsShowIndentationGuides") private var showIndentationGuides: Bool = false
+    @AppStorage("SettingsAutoIndent") private var autoIndent: Bool = true
+    private var isFirstPage: Bool { selectedIndex == 0 }
+    private var isLastPage: Bool { selectedIndex >= pages.count - 1 }
+    private func isWhatsNewPage(_ page: TourPage) -> Bool { page.title.hasPrefix("What’s New in v") }
+    private var containerCornerRadius: CGFloat {
+#if os(macOS)
+        18
+#else
+        30
+#endif
+    }
+
+    private let pages: [TourPage] = [
+        TourPage(
+            title: "What’s New in v2.1.3",
+            subtitle: "Release highlights for v2.1.3.",
+            bullets: [
+                "Text Selection: Select long, unwrapped lines on the Mac by dragging: the editor now scrolls sideways to follow the selection.",
+                "Markdown Formatting: The Mac Markdown formatting bar is back in the editor's top-right corner with all its buttons.",
+                "Minimap Scrolling: Scroll the editor from the Mac minimap with the mouse wheel or trackpad.",
+                "Minimap Scrolling: Scrolling with the mouse wheel or trackpad while the pointer is over the Mac minimap scrolls the editor.",
+                "Text Selection: Dragging a selection past the left or right edge of a long unwrapped line on the Mac scrolls the editor sideways, so the…",
+                "Markdown Formatting: The Mac Markdown formatting bar sits in the editor's top-right corner again, shows all its buttons when there is room, and…"
+            ],
+            iconName: "sparkles.rectangle.stack",
+            colors: [Color(red: 0.40, green: 0.28, blue: 0.90), Color(red: 0.96, green: 0.46, blue: 0.55)],
+            toolbarItems: []
+        ),
+        TourPage(
+            title: "Files, Sync, and Remote Work",
+            subtitle: "Stay current when your files change somewhere else.",
+            bullets: [
+                "Open files refresh when iCloud Drive, a network folder, or another app updates them.",
+                "If you have unsaved edits, Neon asks you to review the external change before anything is overwritten.",
+                "Your files stay with the storage provider you choose. Neon does not create a separate sync account or document database.",
+                "Optionally sync your appearance and theme preferences with iCloud; documents, API tokens, and remote connections stay private to this device.",
+                "Optional remote browsing and editing use an SSH session started on your Mac, with iPhone and iPad able to attach through that Mac."
+            ],
+            iconName: "arrow.triangle.2.circlepath.circle.fill",
+            colors: [Color(red: 0.12, green: 0.62, blue: 0.83), Color(red: 0.30, green: 0.82, blue: 0.58)],
+            toolbarItems: []
+        ),
+        TourPage(
+            title: "Support Neon Vision Editor",
+            subtitle: "Keep it free, sustainable, and improving.",
+            bullets: [
+                "Neon Vision Editor will always stay free to use.",
+                "No subscriptions and no paywalls.",
+                "Keeping the app alive still has real costs: Apple Developer Program fees, maintenance, updates, and long-term support.",
+                "Optional Support Tip (Consumable) — the current App Store price is shown below.",
+                "A tip can be purchased multiple times.",
+                "Your support helps cover Apple developer fees, bug fixes and updates, future improvements, and long-term support.",
+                "Thank you for helping keep Neon Vision Editor free for everyone."
+            ],
+            iconName: "heart.circle.fill",
+            colors: [Color(red: 0.98, green: 0.33, blue: 0.49), Color(red: 1.00, green: 0.64, blue: 0.30)],
+            toolbarItems: []
+        ),
+        TourPage(
+            title: "Editor Essentials",
+            subtitle: "Choose a few useful defaults. You can change them anytime in Settings.",
+            bullets: [],
+            iconName: "slider.horizontal.3",
+            colors: [Color(red: 0.16, green: 0.55, blue: 0.86), Color(red: 0.27, green: 0.79, blue: 0.67)],
+            toolbarItems: []
+        ),
+        TourPage(
+            title: "Developer Toolkit",
+            subtitle: "The essentials for editing, navigating, reviewing, and sharing code.",
+            bullets: [
+                "Edit with tabs, language modes, syntax highlighting, line numbers, Vim controls, and fast handling for regular and large text files.",
+                "Find, replace, Quick Open, Go to Line, and Go to Symbol keep focused work moving across single files and projects.",
+                "Browse projects recursively, create or manage files, and use selective project-wide replacement with a preview before applying changes.",
+                "Preview Markdown, SVG, and HTML; export Markdown to PDF; and create styled code snapshots for sharing or release notes.",
+                "Choose a theme and optional AI completion provider without giving up privacy: API keys stay in Keychain and there is no telemetry.",
+                "Use Help for the complete toolbar map, shortcut reference, and feature-by-feature guidance."
+            ],
+            iconName: "hammer.fill",
+            colors: [Color(red: 0.96, green: 0.48, blue: 0.28), Color(red: 0.99, green: 0.78, blue: 0.35)],
+            toolbarItems: []
+        )
+    ]
+
+    var body: some View {
+        GeometryReader { proxy in
+            let compactLayout = proxy.size.width < 760
+#if os(iOS) || os(visionOS)
+            let regularTouchLayout = !compactLayout
+            let padCompactSheetLayout = compactLayout && proxy.size.height < 600
+#else
+            let regularTouchLayout = false
+            let padCompactSheetLayout = false
+#endif
+            let minTabHeight: CGFloat = {
+#if os(iOS) || os(visionOS)
+                if compactLayout {
+                    return padCompactSheetLayout
+                    ? (isFirstPage ? 300 : 280)
+                    : (isFirstPage ? 570 : 520)
+                } else {
+                    return isFirstPage ? 360 : 340
+                }
+#else
+                return compactLayout
+                ? (isFirstPage ? 570 : 520)
+                : (isFirstPage ? 635 : 560)
+#endif
+            }()
+            let horizontalPagePadding: CGFloat = compactLayout ? 16 : 24
+            let horizontalCardInset: CGFloat = 16
+            let footerHorizontalPadding = horizontalPagePadding + horizontalCardInset
+            let padCompactMinSheetHeight: CGFloat = 500
+            let padCompactMaxTabHeight = max(360, min(proxy.size.height - 110, 455))
+            let maxTabHeight: CGFloat = {
+#if os(iOS) || os(visionOS)
+                if compactLayout {
+                    return padCompactSheetLayout ? padCompactMaxTabHeight : min(proxy.size.height * 0.90, 760)
+                } else {
+                    return min(proxy.size.height * 0.40, 390)
+                }
+#else
+                return compactLayout ? min(proxy.size.height * 0.90, 760) : min(proxy.size.height * 0.86, 900)
+#endif
+            }()
+            let measuredTabHeight = measuredPageHeights[selectedIndex] ?? (compactLayout ? 520 : 560)
+            let uniformMeasuredTabHeight = max(measuredTabHeight, measuredPageHeights.values.max() ?? measuredTabHeight)
+#if os(iOS) || os(visionOS)
+            let preferredMeasuredTabHeight = regularTouchLayout ? measuredTabHeight : uniformMeasuredTabHeight
+#else
+            let preferredMeasuredTabHeight = uniformMeasuredTabHeight
+#endif
+#if os(macOS)
+            let tabHeight = min(compactLayout ? 610 : 635, maxTabHeight)
+#else
+            let tabHeight = min(max(preferredMeasuredTabHeight + 24, minTabHeight), maxTabHeight)
+#endif
+            let footerHeight: CGFloat = isFirstPage ? (compactLayout ? 164 : 154) : (compactLayout ? 132 : 126)
+#if os(visionOS)
+            let footerBottomPadding: CGFloat = 16
+            let footerButtonVerticalPadding: CGFloat = 7
+            let footerVerticalOffset: CGFloat = 0
+            let minimumSheetHeight: CGFloat = compactLayout ? 560 : 690
+#elseif os(iOS)
+            let footerBottomPadding: CGFloat = padCompactSheetLayout ? 4 : (compactLayout ? 26 : (regularTouchLayout ? 34 : 22))
+            let footerButtonVerticalPadding: CGFloat = padCompactSheetLayout ? 6 : (compactLayout ? 10 : (regularTouchLayout ? 4 : 6))
+            let footerVerticalOffset: CGFloat = padCompactSheetLayout ? 54 : (regularTouchLayout ? -48 : 0)
+            let minimumSheetHeight: CGFloat = padCompactSheetLayout ? padCompactMinSheetHeight : (compactLayout ? 700 : (regularTouchLayout ? 690 : 760))
+#else
+            let footerBottomPadding: CGFloat = 8
+            let footerButtonVerticalPadding: CGFloat = 10
+            let footerVerticalOffset: CGFloat = 0
+            let minimumSheetHeight: CGFloat = compactLayout ? 700 : 760
+#endif
+            let extraHeightBoost: CGFloat = 15
+#if os(macOS)
+            let macContentWidth = min(760, max(620, proxy.size.width - 120))
+            let macButtonWidth = min(360, max(220, (macContentWidth - 16) / 2))
+#else
+            let macButtonWidth: CGFloat = 0
+#endif
+            let desiredSheetHeight = min(
+                max(
+                    tabHeight + footerHeight + (compactLayout ? 44 : 54) + extraHeightBoost,
+                    minimumSheetHeight
+                ),
+                compactLayout ? 960 : 1080
+            )
+
+            VStack(spacing: 0) {
+#if os(macOS)
+                tourPageContent(
+                    for: pages[selectedIndex],
+                    index: selectedIndex,
+                    compactLayout: compactLayout,
+                    padCompactSheetLayout: padCompactSheetLayout,
+                    horizontalPagePadding: horizontalPagePadding
+                )
+                .frame(height: tabHeight, alignment: .top)
+                .clipped()
+#else
+                TabView(selection: $selectedIndex) {
+                    ForEach(Array(pages.enumerated()), id: \.offset) { idx, page in
+                        tourPageContent(
+                            for: page,
+                            index: idx,
+                            compactLayout: compactLayout,
+                            padCompactSheetLayout: padCompactSheetLayout,
+                            horizontalPagePadding: horizontalPagePadding
+                        )
+                            .tag(idx)
+                    }
+                }
+                .frame(height: tabHeight, alignment: .top)
+                .mask {
+                    if compactLayout {
+                        LinearGradient(
+                            stops: [
+                                .init(color: .black, location: 0),
+                                .init(color: .black, location: padCompactSheetLayout ? 0.96 : 0.86),
+                                .init(color: .clear, location: 1)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Rectangle()
+                    }
+                }
+                .tabViewStyle(.page(indexDisplayMode: .never))
+#endif
+
+#if os(iOS) || os(visionOS)
+                Color.clear
+                    .frame(height: padCompactSheetLayout ? 0 : (compactLayout ? 8 : 14))
+#endif
+
+                tourFooterControls(
+                    footerVerticalOffset: footerVerticalOffset,
+                    footerBottomPadding: footerBottomPadding,
+                    footerButtonVerticalPadding: footerButtonVerticalPadding,
+                    footerHorizontalPadding: footerHorizontalPadding,
+                    macButtonWidth: macButtonWidth
+                )
+            }
+            .transaction { transaction in
+                if selectedIndex <= 1 {
+                    transaction.disablesAnimations = true
+                }
+            }
+#if os(macOS)
+            .frame(width: macContentWidth, alignment: .top)
+            .frame(maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+#else
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+#endif
+            .clipped()
+            .padding(.horizontal, compactLayout ? 12 : 14)
+            .padding(.top, compactLayout ? 12 : 14)
+#if os(iOS) || os(visionOS)
+            .padding(.bottom, padCompactSheetLayout ? 4 : (compactLayout ? 28 : 14))
+#else
+            .padding(.bottom, compactLayout ? 28 : 14)
+#endif
+            .onAppear {
+                preferredSheetHeight = desiredSheetHeight
+            }
+            .onChange(of: tabHeight) { _, newValue in
+                let nextSheetHeight = min(
+                    max(
+                        newValue + footerHeight + (compactLayout ? 44 : 54) + extraHeightBoost,
+                        minimumSheetHeight
+                    ),
+                    compactLayout ? 960 : 1080
+                )
+                preferredSheetHeight = nextSheetHeight
+            }
+        }
+        .background {
+#if os(macOS)
+            welcomeTourBackground
+#else
+            Color.clear
+#endif
+        }
+#if os(macOS)
+        .clipShape(
+            RoundedRectangle(cornerRadius: containerCornerRadius, style: .continuous)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: containerCornerRadius, style: .continuous)
+                .stroke(effectiveTourColorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .frame(width: 980, height: 780)
+        .preferredColorScheme(preferredTourColorScheme)
+#else
+        .presentationDetents([.height(preferredSheetHeight), .large])
+#endif
+    }
+
+    @ViewBuilder
+    private func tourFooterControls(
+        footerVerticalOffset: CGFloat,
+        footerBottomPadding: CGFloat,
+        footerButtonVerticalPadding: CGFloat,
+        footerHorizontalPadding: CGFloat,
+        macButtonWidth: CGFloat
+    ) -> some View {
+        HStack(spacing: 6) {
+            ForEach(0..<pages.count, id: \.self) { idx in
+                pageIndicatorDot(isSelected: idx == selectedIndex)
+            }
+        }
+        .padding(.top, 2)
+        .padding(.bottom, 6)
+        .offset(y: footerVerticalOffset)
+        .animation(.easeInOut(duration: 0.2), value: selectedIndex)
+
+        HStack(spacing: 10) {
+            Button {
+                if isFirstPage {
+                    onFinish()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        selectedIndex = max(selectedIndex - 1, 0)
+                    }
+                }
+            } label: {
+                footerButtonLabel(isFirstPage ? "Skip" : "Back", verticalPadding: footerButtonVerticalPadding)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityLabel(isFirstPage ? "Skip welcome tour" : "Back")
+#if os(macOS)
+            .buttonBorderShape(.capsule)
+            .frame(width: macButtonWidth)
+#else
+            .frame(maxWidth: .infinity)
+#endif
+
+            Button {
+                if isLastPage {
+                    onFinish()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        selectedIndex = min(selectedIndex + 1, pages.count - 1)
+                    }
+                }
+            } label: {
+                footerButtonLabel(isLastPage ? "Get Started" : "Next", verticalPadding: footerButtonVerticalPadding)
+            }
+            .buttonStyle(.borderedProminent)
+#if os(macOS)
+            .buttonBorderShape(.capsule)
+            .frame(width: macButtonWidth)
+#else
+            .frame(maxWidth: .infinity)
+#endif
+        }
+#if os(macOS)
+        .frame(maxWidth: .infinity, alignment: .center)
+#endif
+        .padding(.horizontal, footerHorizontalPadding)
+        .padding(.bottom, footerBottomPadding)
+        .offset(y: footerVerticalOffset)
+    }
+
+#if os(macOS)
+    private var welcomeTourBackground: some View {
+        ZStack {
+            Rectangle()
+                .fill(effectiveTourColorScheme == .dark ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.ultraThinMaterial))
+
+            LinearGradient(
+                colors: welcomeTourBackgroundColors,
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .opacity(effectiveTourColorScheme == .dark ? 0.42 : 0.28)
+        }
+    }
+
+    private var welcomeTourBackgroundColors: [Color] {
+        if effectiveTourColorScheme == .dark {
+            return [
+                Color(red: 0.09, green: 0.10, blue: 0.14),
+                Color(red: 0.13, green: 0.16, blue: 0.22)
+            ]
+        }
+        return [
+            Color(red: 0.98, green: 0.99, blue: 1.00),
+            Color(red: 0.93, green: 0.96, blue: 0.99)
+        ]
+    }
+#endif
+
+    private func pageIndicatorDot(isSelected: Bool) -> some View {
+        Capsule()
+            .fill(isSelected ? Color.accentColor.opacity(0.9) : Color.secondary.opacity(0.35))
+            .frame(width: isSelected ? 14 : 7, height: 7)
+    }
+
+    private func footerButtonLabel(_ title: String, verticalPadding: CGFloat) -> some View {
+        Text(title)
+            .fontWeight(.bold)
+            .padding(.vertical, verticalPadding)
+            .frame(maxWidth: .infinity)
+    }
+
+    private func tourPageContent(
+        for page: TourPage,
+        index: Int,
+        compactLayout: Bool,
+        padCompactSheetLayout: Bool,
+        horizontalPagePadding: CGFloat
+    ) -> some View {
+        tourCard(
+            for: page,
+            index: index,
+            compactLayout: compactLayout,
+            padCompactSheetLayout: padCompactSheetLayout
+        )
+        .padding(.horizontal, horizontalPagePadding)
+        .padding(.top, compactLayout ? 14 : 18)
+        .padding(.bottom, 12)
+    }
+
+    @ViewBuilder
+    private func tourCard(
+        for page: TourPage,
+        index: Int,
+        compactLayout: Bool,
+        padCompactSheetLayout: Bool = false
+    ) -> some View {
+        let displayBullets = page.bullets.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("![") }
+#if os(macOS)
+        ScrollView(.vertical, showsIndicators: true) {
+            tourCardContent(for: page, displayBullets: displayBullets, index: index, compactLayout: compactLayout)
+                .padding(.bottom, compactLayout ? 24 : 0)
+        }
+        .padding(.top, 8)
+        .padding(.horizontal, 2)
+        .mask(alignment: .bottom) {
+            LinearGradient(
+                stops: [
+                    .init(color: .black, location: 0),
+                    .init(color: .black, location: compactLayout ? 0.90 : 1),
+                    .init(color: .clear, location: 1)
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        }
+#else
+        ScrollView(.vertical, showsIndicators: true) {
+            tourCardContent(for: page, displayBullets: displayBullets, index: index, compactLayout: compactLayout)
+                .padding(.bottom, padCompactSheetLayout ? 8 : (compactLayout ? 24 : 40))
+        }
+        .padding(.top, 8)
+        .padding(.horizontal, 2)
+        .mask(alignment: .bottom) {
+            if padCompactSheetLayout {
+                Rectangle()
+            } else {
+                LinearGradient(
+                    stops: [
+                        .init(color: .black, location: 0),
+                        .init(color: .black, location: compactLayout ? 0.90 : 0.86),
+                        .init(color: .clear, location: 1)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            }
+        }
+#endif
+    }
+
+    private func tourCardContent(for page: TourPage, displayBullets: [String], index: Int, compactLayout: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 16) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(LinearGradient(colors: page.colors, startPoint: .topLeading, endPoint: .bottomTrailing))
+                        .frame(width: 62, height: 62)
+                    Image(systemName: page.iconName)
+                        .font(.system(size: 28, weight: .semibold))
+                        .foregroundStyle(.white)
+                }
+                .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(NSLocalizedString(page.title, comment: "Welcome tour page title"))
+                        .font(.system(size: 27, weight: .bold))
+                        .fixedSize(horizontal: false, vertical: true)
+                    Text(NSLocalizedString(page.subtitle, comment: "Welcome tour page subtitle"))
+                        .font(.system(size: 15))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.bottom, 16)
+            .accessibilityElement(children: .combine)
+
+            if isWhatsNewPage(page) {
+                whatsNewRows(bullets: displayBullets, compactLayout: compactLayout)
+            } else if page.title == "Editor Essentials" {
+                recommendedEditorSettings(compactLayout: compactLayout)
+            } else {
+                ForEach(Array(displayBullets.enumerated()), id: \.offset) { idx, bullet in
+                    bulletRow(
+                        bullet,
+                        iconName: bulletSymbol(for: page, bulletIndex: idx)
+                    )
+                }
+            }
+
+            if page.title == "Support Neon Vision Editor" {
+                supportPurchaseCard(compactLayout: compactLayout)
+                    .padding(.top, 6)
+            }
+
+            if !page.toolbarItems.isEmpty {
+                toolbarGrid(items: page.toolbarItems)
+                    .padding(.top, 0)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+        .padding(.horizontal, 14)
+        .background(
+            GeometryReader { geo in
+                Color.clear
+                    .onAppear {
+                        measuredPageHeights[index] = max(0, geo.size.height)
+                    }
+                    .onChange(of: geo.size.height) { _, newHeight in
+                        measuredPageHeights[index] = max(0, newHeight)
+                    }
+            }
+        )
+    }
+
+    private func recommendedEditorSettings(compactLayout: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Recommended for most documents")
+                .font(.system(size: compactLayout ? 14 : 15, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            editorSettingToggle(
+                "Line Wrap",
+                description: "Keeps long lines readable without horizontal scrolling.",
+                systemImage: "text.line.first.and.arrowtriangle.forward",
+                isOn: $lineWrapEnabled,
+                compactLayout: compactLayout
+            )
+            editorSettingToggle(
+                "Show Line Numbers",
+                description: "Makes it easier to navigate and discuss text or code.",
+                systemImage: "list.number",
+                isOn: $showLineNumbers,
+                compactLayout: compactLayout
+            )
+            editorSettingToggle(
+                "Highlight Current Line",
+                description: "Keeps your cursor location easy to find while editing.",
+                systemImage: "text.cursor",
+                isOn: $highlightCurrentLine,
+                compactLayout: compactLayout
+            )
+            DisclosureGroup(isExpanded: $showsMoreEditorSettings) {
+                VStack(spacing: 10) {
+                    editorSettingToggle(
+                        "Highlight Matching Brackets",
+                        description: "Shows the matching bracket while you edit structured text.",
+                        systemImage: "curlybraces.square",
+                        isOn: $highlightMatchingBrackets,
+                        compactLayout: compactLayout
+                    )
+                    editorSettingToggle(
+                        "Indentation Guides",
+                        description: "Shows light guide lines that make nested code easier to follow.",
+                        systemImage: "text.alignleft",
+                        isOn: $showIndentationGuides,
+                        compactLayout: compactLayout
+                    )
+                    editorSettingToggle(
+                        "Auto Indent",
+                        description: "Continues the current line’s indentation when you press Return.",
+                        systemImage: "increase.indent",
+                        isOn: $autoIndent,
+                        compactLayout: compactLayout
+                    )
+                }
+                .padding(.top, 10)
+            } label: {
+                Label("More Editor Settings", systemImage: "slider.horizontal.3")
+                    .font(.system(size: compactLayout ? 14 : 15, weight: .semibold))
+            }
+            .padding(compactLayout ? 10 : 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .fill(effectiveTourColorScheme == .dark ? Color.white.opacity(0.060) : Color.white.opacity(0.68))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14, style: .continuous)
+                            .stroke(effectiveTourColorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07), lineWidth: 1)
+                    )
+            )
+        }
+        .padding(.vertical, 4)
+    }
+
+    private func editorSettingToggle(
+        _ title: String,
+        description: String,
+        systemImage: String,
+        isOn: Binding<Bool>,
+        compactLayout: Bool
+    ) -> some View {
+        HStack(alignment: .center, spacing: compactLayout ? 10 : 12) {
+            Label {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title)
+                        .font(.system(size: compactLayout ? 14 : 15, weight: .semibold))
+                    Text(description)
+                        .font(.system(size: compactLayout ? 12 : 13))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } icon: {
+                Image(systemName: systemImage)
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: 18, alignment: .leading)
+            }
+
+            Spacer(minLength: compactLayout ? 8 : 12)
+
+            Toggle("", isOn: isOn)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .fixedSize()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(compactLayout ? 10 : 12)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(effectiveTourColorScheme == .dark ? Color.white.opacity(0.060) : Color.white.opacity(0.68))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(effectiveTourColorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07), lineWidth: 1)
+                )
+        )
+    }
+
+    @ViewBuilder
+    private func whatsNewRows(bullets: [String], compactLayout: Bool) -> some View {
+        let columns = 2
+
+        VStack(alignment: .leading, spacing: compactLayout ? 10 : 12) {
+            ForEach(Array(stride(from: 0, to: bullets.count, by: columns)), id: \.self) { rowStart in
+                HStack(alignment: .top, spacing: compactLayout ? 10 : 12) {
+                    ForEach(rowStart..<min(rowStart + columns, bullets.count), id: \.self) { idx in
+                        featureRow(
+                            icon: whatsNewSymbol(for: bullets[idx], index: idx),
+                            title: NSLocalizedString(whatsNewTitle(for: bullets[idx], index: idx), comment: "What's New feature title"),
+                            description: NSLocalizedString(whatsNewDescription(for: bullets[idx]), comment: "What's New feature description"),
+                            compactLayout: compactLayout
+                        )
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 4)
+    }
+
+    @ViewBuilder
+    private func featureRow(icon: String, title: String, description: String, compactLayout: Bool) -> some View {
+        HStack(alignment: .top, spacing: compactLayout ? 10 : 12) {
+            Image(systemName: icon)
+                .font(.system(size: compactLayout ? 16 : 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: compactLayout ? 28 : 30, height: compactLayout ? 28 : 30, alignment: .center)
+                .background(
+                    Circle()
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.accentColor, Color.accentColor.opacity(0.72)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .shadow(color: Color.accentColor.opacity(effectiveTourColorScheme == .dark ? 0.28 : 0.20), radius: 6, y: 2)
+                )
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(title)
+                    .font(.system(size: compactLayout ? 14 : 15, weight: .semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(description)
+                    .font(.system(size: compactLayout ? 12 : 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(compactLayout ? 4 : 5)
+                    .minimumScaleFactor(0.94)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(compactLayout ? 10 : 12)
+        .frame(maxWidth: .infinity, minHeight: compactLayout ? 104 : 142, maxHeight: compactLayout ? 118 : 142, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(effectiveTourColorScheme == .dark ? Color.white.opacity(0.060) : Color.white.opacity(0.68))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(effectiveTourColorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07), lineWidth: 1)
+                )
+                .shadow(color: Color.black.opacity(effectiveTourColorScheme == .dark ? 0.18 : 0.06), radius: 10, y: 4)
+        )
+        .clipped()
+        .accessibilityElement(children: .combine)
+    }
+
+    private func whatsNewSymbol(for bullet: String, index: Int) -> String {
+        let lowercased = bullet.lowercased()
+        if lowercased.contains("reliable window closing") {
+            return "xmark.circle"
+        }
+        if lowercased.contains("focused welcome tour") {
+            return "sparkles.rectangle.stack"
+        }
+        if lowercased.contains("sync and remote work") {
+            return "arrow.triangle.2.circlepath.circle.fill"
+        }
+        if lowercased.contains("editor essentials") {
+            return "slider.horizontal.3"
+        }
+        if lowercased.contains("cleaner settings") {
+            return "rectangle.3.group"
+        }
+        if lowercased.contains("consistent preview controls") {
+            return "eye"
+        }
+        if lowercased.contains("shared file sync") {
+            return "arrow.triangle.2.circlepath.circle.fill"
+        }
+        if lowercased.contains("protected external changes") {
+            return "arrow.triangle.2.circlepath"
+        }
+        if lowercased.contains("responsive navigation") {
+            return "rectangle.3.group.fill"
+        }
+        if lowercased.contains("responsive scrolling") {
+            return "speedometer"
+        }
+        if lowercased.contains("focused rendering") || lowercased.contains("adaptive source pane") {
+            return "rectangle.split.2x1"
+        }
+        if lowercased.contains("preserved editor state") {
+            return "cursorarrow.rays"
+        }
+        if lowercased.contains("steady minimap") {
+            return "map"
+        }
+        if lowercased.contains("native line wrap") {
+            return "text.justify"
+        }
+        if lowercased.contains("platform-aware updates") {
+            return "arrow.triangle.branch"
+        }
+        if lowercased.contains("wrap regression coverage") {
+            return "checkmark.shield"
+        }
+        if lowercased.contains("native text layout") {
+            return "text.justify"
+        }
+        if lowercased.contains("reliable distribution") {
+            return "checkmark.seal.fill"
+        }
+        if lowercased.contains("tab") && lowercased.contains("hit-testing") {
+            return "cursorarrow.click"
+        }
+        if lowercased.contains("line number") || lowercased.contains("white strip") || lowercased.contains("translucent") {
+            return "number.square"
+        }
+        if lowercased.contains("welcome tour") {
+            return "sparkles.rectangle.stack"
+        }
+        if lowercased.contains("xcode cloud") || lowercased.contains("app store") || lowercased.contains("runbook") {
+            return "checkmark.seal"
+        }
+        if lowercased.contains("macos 26") || lowercased.contains("swiftui mask") || lowercased.contains("edge fades") {
+            return "rectangle.split.2x1"
+        }
+        return ["doc.richtext", "speedometer", "gearshape.2", "text.badge.checkmark"][index % 4]
+    }
+
+    private func whatsNewTitle(for bullet: String, index: Int) -> String {
+        let cleaned = bullet.trimmingCharacters(in: .whitespacesAndNewlines)
+        let lowercased = cleaned.lowercased()
+        if lowercased.contains("editor navigation") || lowercased.contains("everyday editor navigation") {
+            return "Editor Navigation"
+        }
+        if lowercased.contains("editor performance") || lowercased.contains("larger documents") {
+            return "Editor Performance"
+        }
+        if lowercased.contains("accessible controls") || lowercased.contains("assistive technologies") {
+            return "Accessible Controls"
+        }
+        if lowercased.contains("ai timeouts") || lowercased.contains("ai provider") {
+            return "AI Timeouts"
+        }
+        if lowercased.contains("iphone toc") || lowercased.contains("table of contents") {
+            return "iPhone TOC"
+        }
+        if lowercased.contains("large-file highlighting") || lowercased.contains("syntax highlighting") {
+            return "Large-file Highlighting"
+        }
+        if lowercased.contains("reliable saves") || lowercased.contains("trailing whitespace") {
+            return "Reliable Saves"
+        }
+        if lowercased.contains("tab") && lowercased.contains("hit-testing") {
+            return "Tab Controls"
+        }
+        if lowercased.contains("line number") || lowercased.contains("white strip") || lowercased.contains("translucent") {
+            return "Clean Line Numbers"
+        }
+        if lowercased.contains("welcome tour") {
+            return "Welcome Tour"
+        }
+        if lowercased.contains("xcode cloud") || lowercased.contains("app store") || lowercased.contains("runbook") {
+            return "Release Runbook"
+        }
+        if lowercased.contains("macos 26") || lowercased.contains("swiftui mask") || lowercased.contains("edge fades") {
+            return "Tahoe Tab Polish"
+        }
+        if lowercased.contains("markdown preview") {
+            return "Markdown Preview"
+        }
+        if lowercased.contains("scrolling") || lowercased.contains("bold keywords") {
+            return "Editor Scrolling"
+        }
+        if lowercased.contains("ipad toolbar") {
+            return "iPad Toolbar"
+        }
+        if lowercased.contains("settings") {
+            return "Settings"
+        }
+        if lowercased.contains("status bar") {
+            return "Status Bar"
+        }
+        if lowercased.contains("toolbar density") {
+            return "Toolbar Density"
+        }
+        if lowercased.contains("toolbar customization") || lowercased.contains("custom icon") {
+            return "Toolbar Icons"
+        }
+        if lowercased.contains("macos") && (lowercased.contains("rendering") || lowercased.contains("selection")) {
+            return "Reliable macOS Editing"
+        }
+        if lowercased.contains("drag-to-reorder") || lowercased.contains("reordering") {
+            return "Tab Reordering"
+        }
+        if lowercased.contains("terminal") || lowercased.contains("pty") {
+            return "Interactive Terminal"
+        }
+        if lowercased.contains("tab switching") || lowercased.contains("active tab") {
+            return "Faster Tab Switching"
+        }
+        if let separator = cleaned.firstRange(of: ": ") {
+            return String(cleaned[..<separator.lowerBound])
+        }
+        return "Editor Improvements"
+    }
+
+    private func whatsNewDescription(for bullet: String) -> String {
+        let cleaned = bullet.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let separator = cleaned.firstRange(of: ": ") {
+            return String(cleaned[separator.upperBound...])
+        }
+        return cleaned
+    }
+
+    private func bulletSymbol(for page: TourPage, bulletIndex: Int) -> String {
+        let symbols: [String]
+        switch page.title {
+        case "Support Neon Vision Editor":
+            symbols = [
+                "heart.fill",
+                "nosign",
+                "dollarsign.circle",
+                "star.circle",
+                "repeat.circle",
+                "wrench.and.screwdriver",
+                "hands.sparkles"
+            ]
+        case "A Fast, Focused Editor":
+            symbols = [
+                "doc.on.doc",
+                "magnifyingglass.circle",
+                "speedometer",
+                "square.and.arrow.down.on.square",
+                "atom"
+            ]
+        case "Assistance, Themes, and Privacy":
+            symbols = [
+                "brain.head.profile",
+                "network.badge.shield.half.filled",
+                "sparkles",
+                "key.fill",
+                "paintpalette",
+                "lock.shield"
+            ]
+        case "Projects, Search, and Preview":
+            symbols = [
+                "magnifyingglass.circle",
+                "text.magnifyingglass",
+                "text.line.first.and.arrowtriangle.forward",
+                "folder.badge.gearshape",
+                "doc.richtext",
+                "camera.viewfinder"
+            ]
+        case "Toolbar Map":
+            symbols = [
+                "keyboard.badge.ellipsis",
+                "rectangle.and.hand.point.up.left.fill"
+            ]
+        case "Developer Toolkit":
+            symbols = [
+                "doc.text.magnifyingglass",
+                "magnifyingglass.circle",
+                "folder.badge.gearshape",
+                "eye",
+                "lock.shield",
+                "questionmark.circle"
+            ]
+        default:
+            symbols = []
+        }
+
+        if bulletIndex >= 0, bulletIndex < symbols.count {
+            return symbols[bulletIndex]
+        }
+        return "checkmark.circle.fill"
+    }
+
+    @ViewBuilder
+    private func supportPurchaseCard(compactLayout: Bool) -> some View {
+        VStack(alignment: .leading, spacing: compactLayout ? 10 : 12) {
+            HStack {
+                Spacer()
+                Button {
+                    Task { await supportPurchaseManager.purchaseSupport { product in try await purchase(product) } }
+                } label: {
+                    HStack(spacing: compactLayout ? 8 : 10) {
+                        Image(systemName: "heart.fill")
+                            .font(.system(size: compactLayout ? 16 : 18, weight: .bold))
+                        Text(supportPurchaseManager.supportPurchaseButtonTitle)
+                            .font(.system(size: compactLayout ? 15 : 16, weight: .bold))
+                            .lineLimit(2)
+                            .multilineTextAlignment(.center)
+                            .minimumScaleFactor(0.85)
+                    }
+                    .padding(.horizontal, compactLayout ? 18 : 24)
+                    .padding(.vertical, compactLayout ? 9 : 12)
+                    .frame(minWidth: compactLayout ? 220 : 240)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(Color(red: 0.96, green: 0.25, blue: 0.48))
+                .disabled(
+                    shouldDisableSupportPurchaseButton
+                )
+                Spacer()
+            }
+
+            if let status = supportPurchaseManager.statusMessage, !status.isEmpty {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+
+            if supportPurchaseManager.shouldShowStoreUnavailableMessage {
+                Text(NSLocalizedString("In-App Purchases are currently unavailable on this device. Check App Store login and Screen Time restrictions.", comment: ""))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            }
+
+            if let externalURL = SupportPurchaseManager.externalSupportURL {
+                VStack(alignment: .center, spacing: 8) {
+                    Text(NSLocalizedString("More ways to support", comment: ""))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                    Button {
+                        openURL(externalURL)
+                    } label: {
+                        Label(NSLocalizedString("Support via Patreon", comment: ""), systemImage: "safari")
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
+                    }
+                    .buttonStyle(.bordered)
+                }
+                .frame(maxWidth: .infinity)
+            }
+        }
+        .padding(compactLayout ? 12 : 16)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .task {
+            await supportPurchaseManager.refreshStoreState()
+        }
+    }
+
+    private var shouldDisableSupportPurchaseButton: Bool {
+#if os(iOS) || os(visionOS)
+        supportPurchaseManager.isPurchasing
+        || supportPurchaseManager.isLoadingProducts
+#else
+        supportPurchaseManager.isPurchasing
+        || supportPurchaseManager.isLoadingProducts
+        || !supportPurchaseManager.canUseInAppPurchases
+#endif
+    }
+
+    private func toolbarGrid(items: [ToolbarItemInfo]) -> some View {
+        return GeometryReader { proxy in
+            let isCompact = proxy.size.width < 640
+            let columns = isCompact
+                ? [GridItem(.flexible(), spacing: 12)]
+                : [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
+            let maxGridHeight: CGFloat = max(280, min(620, proxy.size.height * (isCompact ? 0.84 : 0.78)))
+            let innerHeight = maxGridHeight + 120
+            let innerFill = colorScheme == .dark ? Color.white.opacity(0.05) : Color.black.opacity(0.03)
+            let innerStroke = colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07)
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("Toolbar buttons")
+                    .font(.system(size: 16, weight: .semibold))
+
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                        ForEach(items) { item in
+                            toolbarItemRow(item)
+                        }
+                    }
+                    .padding(.bottom, 4)
+                }
+                .frame(maxHeight: maxGridHeight)
+                .clipped()
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 14)
+            .background(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(innerFill)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(innerStroke, lineWidth: 1)
+                    )
+            )
+            .frame(height: innerHeight)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func bulletRow(_ text: String, iconName: String = "checkmark.circle.fill") -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: iconName)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.accentColor.opacity(0.9))
+                .frame(width: 24, height: 24, alignment: .center)
+                .padding(.top, 1)
+                .accessibilityHidden(true)
+            Text(NSLocalizedString(text, comment: "Welcome tour bullet"))
+                .font(.system(size: 15))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func toolbarItemRow(_ item: ToolbarItemInfo) -> some View {
+        let cardFill = colorScheme == .dark ? Color.white.opacity(0.06) : Color.white.opacity(0.8)
+        let cardStroke = colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08)
+        let shortcut = isPadShortcut ? item.shortcutPad : item.shortcutMac
+
+        return HStack(alignment: .top, spacing: 12) {
+            Image(systemName: item.iconName)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Color.accentColor)
+                .frame(width: 22)
+
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
+                    Text(item.title)
+                        .font(.system(size: 14, weight: .semibold))
+                    shortcutCapsule(shortcut)
+                }
+                Text(item.description)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(cardFill)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(cardStroke, lineWidth: 1)
+                )
+        )
+    }
+
+    private var isPadShortcut: Bool {
+#if os(iOS) || os(visionOS)
+        return UIDevice.current.userInterfaceIdiom == .pad
+#else
+        return false
+#endif
+    }
+
+    private func shortcutCapsule(_ shortcut: String) -> some View {
+        let trimmed = shortcut.trimmingCharacters(in: .whitespacesAndNewlines)
+        let isNone = trimmed.isEmpty || trimmed.caseInsensitiveCompare("none") == .orderedSame
+        let parts = trimmed.split(separator: "+").map { String($0) }
+
+        return Group {
+            if !isNone {
+                HStack(spacing: 4) {
+                    ForEach(parts, id: \.self) { part in
+                        Text(part)
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(
+                                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                    .fill(colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08))
+                            )
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SupportPromptSheetView: View {
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.openURL) private var openURL
+    @Environment(\.purchase) private var purchase
+    @EnvironmentObject private var supportPurchaseManager: SupportPurchaseManager
+    let onDismiss: () -> Void
+
+    private let bullets: [String] = [
+        "Neon Vision Editor will always stay free to use.",
+        "No subscriptions and no paywalls.",
+        "Keeping the app alive still has real costs: Apple Developer Program fee, maintenance, updates, and long-term support.",
+        "Your support helps cover: Apple developer fees, bug fixes and updates, future improvements and features, and long-term support."
+    ]
+    private let bulletIcons: [String] = [
+        "heart.fill",
+        "nosign",
+        "dollarsign.circle",
+        "wrench.and.screwdriver"
+    ]
+
+    var body: some View {
+        GeometryReader { proxy in
+            let compact = proxy.size.width < 560 || proxy.size.height < 560
+            let maxContentWidth: CGFloat = compact ? 520 : 620
+
+            VStack(spacing: 0) {
+                ScrollView {
+                    VStack(spacing: compact ? 12 : 16) {
+                        VStack(alignment: .center, spacing: 8) {
+                            ZStack {
+                                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [Color(red: 0.98, green: 0.33, blue: 0.49), Color(red: 1.00, green: 0.64, blue: 0.30)],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                                    .frame(width: compact ? 48 : 56, height: compact ? 48 : 56)
+                                Image(systemName: "heart.circle.fill")
+                                    .font(.system(size: compact ? 21 : 24, weight: .semibold))
+                                    .foregroundStyle(.white)
+                            }
+
+                            Text("Support Neon Vision Editor")
+                                .font(.system(size: compact ? 24 : 32, weight: .bold))
+                                .multilineTextAlignment(.center)
+                            Text("Keep it free, sustainable, and improving.")
+                                .font(.system(size: compact ? 14 : 16))
+                                .foregroundStyle(.secondary)
+                                .multilineTextAlignment(.center)
+                        }
+
+                        VStack(alignment: .leading, spacing: compact ? 8 : 10) {
+                            ForEach(Array(bullets.enumerated()), id: \.offset) { idx, bullet in
+                                HStack(alignment: .top, spacing: 10) {
+                                    Image(systemName: idx < bulletIcons.count ? bulletIcons[idx] : "checkmark.circle.fill")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .foregroundStyle(Color.accentColor.opacity(0.9))
+                                        .padding(.top, 2)
+                                        .accessibilityHidden(true)
+                                    Text(NSLocalizedString(bullet, comment: "Support prompt bullet"))
+                                        .font(.system(size: compact ? 14 : 16))
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                                .accessibilityElement(children: .combine)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxWidth: maxContentWidth, alignment: .center)
+                    .padding(.horizontal, compact ? 18 : 24)
+                    .padding(.top, compact ? 18 : 24)
+                    .padding(.bottom, 12)
+                }
+                .frame(maxWidth: .infinity)
+
+                Divider()
+
+                VStack(spacing: compact ? 8 : 10) {
+                    Button {
+                        Task { await supportPurchaseManager.purchaseSupport { product in try await purchase(product) } }
+                    } label: {
+                        Label(supportPurchaseManager.supportPurchaseButtonTitle, systemImage: "heart.fill")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(supportPurchaseManager.isPurchasing || supportPurchaseManager.isLoadingProducts)
+
+                    if let externalURL = SupportPurchaseManager.externalSupportURL {
+                        Button {
+                            openURL(externalURL)
+                        } label: {
+                            Label("Support via Patreon", systemImage: "safari")
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                    }
+
+                    if let status = supportPurchaseManager.statusMessage, !status.isEmpty {
+                        Text(status)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    if supportPurchaseManager.shouldShowStoreUnavailableMessage {
+                        Text("In-App Purchases are currently unavailable on this device. Check App Store login and Screen Time restrictions.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: .infinity)
+                    }
+
+                    Button(role: .cancel) {
+                        onDismiss()
+                    } label: {
+                        Text("Not Now")
+                            .frame(minWidth: 120)
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.cancelAction)
+                }
+                .frame(maxWidth: 420, alignment: .center)
+                .padding(.horizontal, compact ? 18 : 24)
+                .padding(.vertical, compact ? 12 : 16)
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        }
+        .background(
+            ZStack {
+                Rectangle()
+                    .fill(colorScheme == .dark ? AnyShapeStyle(.regularMaterial) : AnyShapeStyle(.ultraThinMaterial))
+                LinearGradient(
+                    colors: colorScheme == .dark
+                        ? [Color(red: 0.09, green: 0.10, blue: 0.14), Color(red: 0.13, green: 0.16, blue: 0.22)]
+                        : [Color(red: 0.98, green: 0.99, blue: 1.00), Color(red: 0.93, green: 0.96, blue: 0.99)],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                .opacity(colorScheme == .dark ? 0.42 : 0.28)
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.08), lineWidth: 1)
+        )
+        .onAppear {
+            Task { await supportPurchaseManager.refreshStoreState() }
+        }
+        .interactiveDismissDisabled(false)
+#if os(macOS)
+        .frame(minWidth: 560, idealWidth: 680, minHeight: 360, idealHeight: 560)
+#else
+        .presentationDetents([.height(560), .large])
+#endif
+    }
+}
+
+struct EditorHelpView: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+#if os(macOS)
+    @AppStorage("SettingsToolbarPresetMac") private var toolbarPresetMacRaw: String = ToolbarPreset.standard.rawValue
+    @AppStorage("SettingsToolbarUseCustomMac") private var toolbarUseCustomMac: Bool = false
+    @AppStorage("SettingsToolbarCustomIDsMac") private var toolbarCustomIDsMac: String = ""
+#else
+    @AppStorage("SettingsToolbarPresetIOS") private var toolbarPresetIOSRaw: String = ToolbarPreset.standard.rawValue
+    @AppStorage("SettingsToolbarUseCustomFiveIOS") private var toolbarUseCustomFiveIOS: Bool = false
+    @AppStorage("SettingsToolbarCustomFiveIDsIOS") private var toolbarCustomFiveIDsIOS: String = ""
+#endif
+
+    private struct HelpItem: Identifiable {
+        let id = UUID()
+        let title: String
+        let description: String
+        let shortcutMac: String
+        let shortcutPad: String
+        let iconName: String
+
+        var accessibilityShortcutSummary: String {
+            let shortcuts = [
+                shortcutMac == "None" ? nil : "macOS shortcut: \(shortcutMac)",
+                shortcutPad == "None" ? nil : "iPadOS/iOS/visionOS shortcut: \(shortcutPad)"
+            ].compactMap { $0 }
+            return shortcuts.isEmpty ? "" : ". \(shortcuts.joined(separator: ". "))."
+        }
+    }
+
+    private struct HelpSection: Identifiable {
+        let id = UUID()
+        let title: String
+        let iconName: String
+        let items: [HelpItem]
+    }
+
+    private static func configuredShortcut(_ action: EditorShortcutAction) -> String {
+        let descriptor = ShortcutPreferences.shortcut(for: action)
+        var prefix = ""
+        if descriptor.modifiers.contains(.command) { prefix += "Cmd+" }
+        if descriptor.modifiers.contains(.shift) { prefix += "Shift+" }
+        if descriptor.modifiers.contains(.alternate) { prefix += "Opt+" }
+        if descriptor.modifiers.contains(.control) { prefix += "Ctrl+" }
+        return prefix + descriptor.key.uppercased()
+    }
+
+    private static func presetActionNames(_ ids: [String]) -> String {
+        let names = ids.map { id in
+            ToolbarIconOption(rawValue: id)?.localizedTitle
+                ?? (id == "newWindow" ? NSLocalizedString("New Window", comment: "Toolbar action") : id)
+        }
+        return names.joined(separator: ", ")
+    }
+
+    private var currentToolbarPreset: ToolbarPreset {
+#if os(macOS)
+        toolbarUseCustomMac ? .custom : ToolbarPreset(rawValue: toolbarPresetMacRaw) ?? .standard
+#else
+        toolbarUseCustomFiveIOS ? .custom : ToolbarPreset(rawValue: toolbarPresetIOSRaw) ?? .standard
+#endif
+    }
+
+    private var currentToolbarActionIDs: [String] {
+#if os(macOS)
+        currentToolbarPreset == .custom
+            ? ToolbarActionSelection.orderedIDs(from: toolbarCustomIDsMac, fallback: [])
+            : currentToolbarPreset.macOSIDs
+#else
+        currentToolbarPreset == .custom
+            ? ToolbarActionSelection.orderedIDs(from: toolbarCustomFiveIDsIOS, fallback: [])
+            : currentToolbarPreset.mobileIDs
+#endif
+    }
+
+    private var toolbarPresetSection: HelpSection {
+        HelpSection(
+            title: "\(currentToolbarPreset.title) Toolbar",
+            iconName: currentToolbarPreset.icon,
+            items: [
+                {
+                let preset = currentToolbarPreset
+                let description: String
+                switch preset {
+                case .standard:
+                    description = "Essential file, editing, search, preview, sidebar, help, and settings controls."
+                case .writing:
+                    description = "A focused writing layout with document, preview, wrapping, and settings controls."
+                case .developer:
+                    description = "Code navigation, snapshots, search, comparison, split editing, and Git tools."
+                case .review:
+                    description = "Review-focused comparison, search, split view, and Git controls."
+                case .focus:
+                    description = "A minimal editing surface with only the controls needed for focused work."
+                case .all:
+                    description = "Every supported toolbar action; use this when discoverability matters more than space."
+                case .custom:
+                    description = "Your manually selected actions and order from Settings > Toolbar."
+                }
+                return HelpItem(
+                    title: preset.title,
+                    description: "\(description) Visible actions: \(Self.presetActionNames(currentToolbarActionIDs)). Settings and this preset help are always available.",
+                    shortcutMac: "None",
+                    shortcutPad: "None",
+                    iconName: preset.icon
+                )
+                }()
+            ]
+        )
+    }
+
+    private let sections: [HelpSection] = [
+        HelpSection(
+            title: "Files and Tabs",
+            iconName: "doc.on.doc",
+            items: [
+                HelpItem(title: "New Window", description: "Open a separate editor window on macOS.", shortcutMac: "Cmd+N", shortcutPad: "None", iconName: "macwindow.badge.plus"),
+                HelpItem(title: "New Tab", description: "Create a new tab in the current editor window.", shortcutMac: Self.configuredShortcut(.newTab), shortcutPad: Self.configuredShortcut(.newTab), iconName: "plus.square.on.square"),
+                HelpItem(title: "Open File", description: "Choose a local text or code file and open it in the editor.", shortcutMac: Self.configuredShortcut(.openFile), shortcutPad: Self.configuredShortcut(.openFile), iconName: "folder"),
+                HelpItem(title: "Save File", description: "Write the current tab back to its file.", shortcutMac: Self.configuredShortcut(.save), shortcutPad: Self.configuredShortcut(.save), iconName: "square.and.arrow.down"),
+                HelpItem(title: "Save As", description: "Save the current tab to a new location.", shortcutMac: Self.configuredShortcut(.saveAs), shortcutPad: Self.configuredShortcut(.saveAs), iconName: "square.and.arrow.down.on.square"),
+                HelpItem(title: "Close All Tabs", description: "Close every open tab with confirmation.", shortcutMac: "None", shortcutPad: "None", iconName: "xmark.square"),
+                HelpItem(title: "Collapse Toolbar", description: "Hide or show the expanded macOS toolbar controls.", shortcutMac: "None", shortcutPad: "None", iconName: "chevron.up"),
+                HelpItem(title: "Font Zoom with Scroll", description: "Hold Shift and scroll over the editor to increase or decrease the font size on macOS.", shortcutMac: "Shift + mouse wheel", shortcutPad: "None", iconName: "textformat.size")
+            ]
+        ),
+        HelpSection(
+            title: "Editing",
+            iconName: "pencil.and.scribble",
+            items: [
+                HelpItem(title: "Undo", description: "Undo the latest editor change.", shortcutMac: "Cmd+Z", shortcutPad: "Cmd+Z", iconName: "arrow.uturn.backward"),
+                HelpItem(title: "Clear Editor", description: "Remove the current editor contents after confirmation.", shortcutMac: "None", shortcutPad: "None", iconName: "eraser"),
+                HelpItem(title: "Insert Template", description: "Insert a starter snippet for the selected language.", shortcutMac: "None", shortcutPad: "None", iconName: "doc.badge.plus"),
+                HelpItem(title: "Line Wrap", description: "Toggle soft wrapping for long lines.", shortcutMac: Self.configuredShortcut(.toggleLineWrap), shortcutPad: Self.configuredShortcut(.toggleLineWrap), iconName: "text.justify"),
+                HelpItem(title: "Font Smaller", description: "Decrease the editor font size.", shortcutMac: "None", shortcutPad: "None", iconName: "textformat.size.smaller"),
+                HelpItem(title: "Font Larger", description: "Increase the editor font size.", shortcutMac: "None", shortcutPad: "None", iconName: "textformat.size.larger")
+            ]
+        ),
+        HelpSection(
+            title: "Navigation and Search",
+            iconName: "magnifyingglass",
+            items: [
+                HelpItem(title: "Find and Replace", description: "Search or replace text in the current file.", shortcutMac: Self.configuredShortcut(.find), shortcutPad: Self.configuredShortcut(.find), iconName: "magnifyingglass"),
+                HelpItem(title: "Find in Files", description: "Search the project and selectively replace matches.", shortcutMac: Self.configuredShortcut(.findInFiles), shortcutPad: Self.configuredShortcut(.findInFiles), iconName: "text.magnifyingglass"),
+                HelpItem(title: "Quick Open", description: "Open project files quickly by name.", shortcutMac: Self.configuredShortcut(.quickOpen), shortcutPad: Self.configuredShortcut(.quickOpen), iconName: "magnifyingglass.circle"),
+                HelpItem(title: "Go to Line", description: "Jump to a specific line in the current document.", shortcutMac: Self.configuredShortcut(.goToLine), shortcutPad: Self.configuredShortcut(.goToLine), iconName: "text.line.first.and.arrowtriangle.forward"),
+                HelpItem(title: "Go to Symbol", description: "Jump to a symbol discovered in the current document.", shortcutMac: Self.configuredShortcut(.goToSymbol), shortcutPad: Self.configuredShortcut(.goToSymbol), iconName: "list.bullet.indent"),
+                HelpItem(title: "Language", description: "Change the syntax language or open the language search.", shortcutMac: Self.configuredShortcut(.languageSearch), shortcutPad: Self.configuredShortcut(.languageSearch), iconName: "textformat")
+            ]
+        ),
+        HelpSection(
+            title: "Sidebars and Project",
+            iconName: "sidebar.left",
+            items: [
+                HelpItem(title: "Toggle Sidebar", description: "Show or hide the document outline/sidebar area.", shortcutMac: Self.configuredShortcut(.toggleSidebar), shortcutPad: Self.configuredShortcut(.toggleSidebar), iconName: "sidebar.left"),
+                HelpItem(title: "Project Sidebar", description: "Show the project tree for folders, files, and project actions.", shortcutMac: Self.configuredShortcut(.toggleProjectSidebar), shortcutPad: Self.configuredShortcut(.toggleProjectSidebar), iconName: "sidebar.right")
+            ] + {
+#if os(macOS)
+                return [HelpItem(title: "Sidebar Terminal", description: "Open the persistent terminal tab inside the project sidebar on macOS.", shortcutMac: "None", shortcutPad: "None", iconName: "terminal")]
+#else
+                return []
+#endif
+            }()
+        ),
+        HelpSection(
+            title: "Preview, Export, and Compare",
+            iconName: "doc.richtext",
+            items: [
+                HelpItem(title: "Markdown Preview", description: "Toggle the rendered Markdown preview for Markdown files.", shortcutMac: "None", shortcutPad: "None", iconName: "eye"),
+                HelpItem(title: "PDF Preview", description: "Open the PDF preview for the current PDF document, including highlight and note actions.", shortcutMac: "None", shortcutPad: "None", iconName: "doc.richtext"),
+                HelpItem(title: "Project Cards", description: "Show or hide Markdown and PDF preview cards from the current project folder.", shortcutMac: "None", shortcutPad: "None", iconName: "square.grid.2x2"),
+                HelpItem(title: "Preview Export", description: "Copy or export Markdown preview output, including PDF modes.", shortcutMac: "None", shortcutPad: "None", iconName: "square.and.arrow.down"),
+                HelpItem(title: "Preview Style", description: "Choose the Markdown preview template.", shortcutMac: "None", shortcutPad: "None", iconName: "paintbrush"),
+                HelpItem(title: "Code Minimap", description: "Show or hide the scroll-synced code minimap for supported languages.", shortcutMac: "None", shortcutPad: "None", iconName: "map"),
+                HelpItem(title: "Indentation Guides", description: "Show or hide light guide lines for nested indentation.", shortcutMac: "None", shortcutPad: "None", iconName: "text.alignleft"),
+                HelpItem(title: "Code Snapshot", description: "Create a styled image from selected code.", shortcutMac: "None", shortcutPad: "None", iconName: "camera.viewfinder"),
+                HelpItem(title: "Compare with Disk", description: "Compare the current tab with the file on disk.", shortcutMac: "None", shortcutPad: "None", iconName: "doc.text.magnifyingglass"),
+                HelpItem(title: "Compare Open Tabs", description: "Compare two currently open tabs.", shortcutMac: "None", shortcutPad: "None", iconName: "rectangle.split.2x1"),
+                HelpItem(title: "Side by Side Editor", description: "Open or close a two-tab split editor layout.", shortcutMac: "None", shortcutPad: "None", iconName: "rectangle.split.2x1"),
+                HelpItem(title: "Folder Compare", description: "Open the folder comparison workflow from the Compare menu on macOS.", shortcutMac: "None", shortcutPad: "None", iconName: "folder.badge.gearshape"),
+                HelpItem(title: "Git Changes", description: "Open the working-copy changes and commit history view for the current project.", shortcutMac: "None", shortcutPad: "None", iconName: "arrow.triangle.branch")
+            ]
+        ),
+        HelpSection(
+            title: "Assistance and Modes",
+            iconName: "sparkles",
+            items: [
+                HelpItem(title: "AI Model and Settings", description: "Open provider and model settings for AI assistance.", shortcutMac: "None", shortcutPad: "None", iconName: "brain.head.profile"),
+                HelpItem(title: "Code Completion", description: "Enable or disable AI-assisted completion.", shortcutMac: "None", shortcutPad: "None", iconName: "bolt.horizontal.circle"),
+                HelpItem(title: "Performance Mode", description: "Force large-file performance behavior for the current document.", shortcutMac: "None", shortcutPad: "None", iconName: "speedometer"),
+                HelpItem(title: "Brain Dump Mode", description: "Switch to a distraction-light writing mode.", shortcutMac: "None", shortcutPad: "None", iconName: "note.text"),
+                HelpItem(title: "Keyboard Snippet Bar", description: "Show or hide the iPhone/iPad keyboard helper bar.", shortcutMac: "None", shortcutPad: "None", iconName: "keyboard.chevron.compact.down"),
+                HelpItem(title: "Hide Keyboard", description: "Dismiss the on-screen keyboard on iPhone and iPad.", shortcutMac: "None", shortcutPad: "None", iconName: "keyboard.chevron.compact.down")
+            ]
+        ),
+        HelpSection(
+            title: "App Controls",
+            iconName: "gearshape",
+            items: [
+                HelpItem(title: "Settings", description: "Open app settings and support options.", shortcutMac: "Cmd+,", shortcutPad: "Cmd+,", iconName: "gearshape"),
+                HelpItem(title: "Toolbar Help", description: "Open this toolbar reference.", shortcutMac: "Cmd+?", shortcutPad: "Cmd+?", iconName: "questionmark.circle"),
+                HelpItem(title: "Welcome Tour", description: "Show the onboarding tour and release overview.", shortcutMac: "None", shortcutPad: "None", iconName: "sparkles.rectangle.stack"),
+                HelpItem(title: "Translucent Window", description: "Toggle translucent window styling where supported.", shortcutMac: "None", shortcutPad: "None", iconName: "rectangle"),
+                HelpItem(title: "Blue Toolbar Icons", description: "Switch iPhone toolbar icons between blue and neutral styling.", shortcutMac: "None", shortcutPad: "None", iconName: "checkmark.circle.fill"),
+                HelpItem(title: "Updates", description: "Check for app updates in direct-distribution builds.", shortcutMac: "None", shortcutPad: "None", iconName: "arrow.triangle.2.circlepath.circle"),
+                HelpItem(title: "Bracket Helper Bar", description: "Show or hide the macOS bracket helper bar.", shortcutMac: "None", shortcutPad: "None", iconName: "curlybraces")
+            ]
+        )
+    ]
+
+    let onDismiss: () -> Void
+
+    var body: some View {
+        NavigationStack {
+            GeometryReader { proxy in
+                let compact = proxy.size.width < 560
+                ScrollView(.vertical, showsIndicators: true) {
+                    VStack(alignment: .leading, spacing: compact ? 18 : 22) {
+                        header(compact: compact)
+
+                        sectionView(toolbarPresetSection, compact: compact)
+
+                        ForEach(sections) { section in
+                            sectionView(section, compact: compact)
+                        }
+                    }
+                    .padding(compact ? 16 : 24)
+                }
+            }
+            .toolbar {
+#if os(macOS)
+                ToolbarItem(placement: .automatic) {
+                    Button("Done") { onDismiss() }
+                }
+#else
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { onDismiss() }
+                }
+#endif
+            }
+        }
+#if os(macOS)
+        .frame(minWidth: 760, minHeight: 820)
+#else
+        .presentationDetents([.large])
+#endif
+    }
+
+    private func sectionView(_ section: HelpSection, compact: Bool) -> some View {
+        let cardMinimumWidth = compact ? CGFloat(320) : CGFloat(300)
+        let columns = [GridItem(.adaptive(minimum: cardMinimumWidth), spacing: 12, alignment: .top)]
+
+        return VStack(alignment: .leading, spacing: 10) {
+            sectionHeader(section)
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
+                ForEach(section.items) { item in
+                    helpCard(item, compact: compact)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func header(compact: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                Image(systemName: "questionmark.circle.fill")
+                    .font(.system(size: compact ? 30 : 36, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .frame(width: compact ? 36 : 44, height: compact ? 36 : 44)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Toolbar Help")
+                        .font(.system(size: compact ? 27 : 34, weight: .bold))
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.84)
+                    Text("Actions and shortcuts for the active \(currentToolbarPreset.title) toolbar preset.")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func sectionHeader(_ section: HelpSection) -> some View {
+        Label(section.title, systemImage: section.iconName)
+            .font(.headline.weight(.semibold))
+            .foregroundStyle(.primary)
+            .labelStyle(.titleAndIcon)
+            .accessibilityAddTraits(.isHeader)
+    }
+
+    private func helpCard(_ item: HelpItem, compact: Bool) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .fill(Color.accentColor.opacity(colorScheme == .dark ? 0.20 : 0.12))
+                Image(systemName: item.iconName)
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Color.accentColor)
+                    .imageScale(.medium)
+            }
+            .frame(width: 42, height: 42)
+            .accessibilityHidden(true)
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(item.title)
+                    .font(.system(size: 15, weight: .semibold))
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.86)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Text(item.description)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(4)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if compact {
+                    VStack(alignment: .leading, spacing: 6) {
+                        shortcutCapsule("macOS", value: item.shortcutMac)
+                        shortcutCapsule("iPadOS/iOS/visionOS", value: item.shortcutPad)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        shortcutCapsule("macOS", value: item.shortcutMac)
+                        shortcutCapsule("iPadOS/iOS/visionOS", value: item.shortcutPad)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, minHeight: compact ? 132 : 124, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(colorScheme == .dark ? Color.white.opacity(0.07) : Color.black.opacity(0.035))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(colorScheme == .dark ? Color.white.opacity(0.10) : Color.black.opacity(0.07), lineWidth: 1)
+        )
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(item.title). \(item.description)\(item.accessibilityShortcutSummary)")
+    }
+
+    @ViewBuilder
+    private func shortcutCapsule(_ label: String, value: String) -> some View {
+        if value != "None" {
+            let displayText = value.isEmpty ? label : "\(label): \(value)"
+            Text(displayText)
+                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                .lineLimit(1)
+                .minimumScaleFactor(0.78)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(colorScheme == .dark ? Color.white.opacity(0.12) : Color.black.opacity(0.08))
+                )
+                .accessibilityLabel(displayText)
+        }
+    }
+}
+
+extension Notification.Name {
+    static let moveCursorToLine = Notification.Name("moveCursorToLine")
+    static let caretPositionDidChange = Notification.Name("caretPositionDidChange")
+    static let pastedText = Notification.Name("pastedText")
+    static let toggleTranslucencyRequested = Notification.Name("toggleTranslucencyRequested")
+    static let clearEditorRequested = Notification.Name("clearEditorRequested")
+    static let copyEditorReferenceRequested = Notification.Name("copyEditorReferenceRequested")
+    static let showFindReplaceRequested = Notification.Name("showFindReplaceRequested")
+    static let findNextRequested = Notification.Name("findNextRequested")
+    static let toggleProjectStructureSidebarRequested = Notification.Name("toggleProjectStructureSidebarRequested")
+    static let showAIChatRequested = Notification.Name("showAIChatRequested")
+    static let openProjectFolderRequested = Notification.Name("openProjectFolderRequested")
+    static let openProjectFolderURLRequested = Notification.Name("openProjectFolderURLRequested")
+    static let showAPISettingsRequested = Notification.Name("showAPISettingsRequested")
+    static let selectAIModelRequested = Notification.Name("selectAIModelRequested")
+    static let showQuickSwitcherRequested = Notification.Name("showQuickSwitcherRequested")
+    static let showFindInFilesRequested = Notification.Name("showFindInFilesRequested")
+    static let showGoToLineRequested = Notification.Name("showGoToLineRequested")
+    static let showGoToSymbolRequested = Notification.Name("showGoToSymbolRequested")
+    static let showLanguageSearchRequested = Notification.Name("showLanguageSearchRequested")
+    static let compareCurrentTabAgainstDiskRequested = Notification.Name("compareCurrentTabAgainstDiskRequested")
+    static let compareOpenTabsRequested = Notification.Name("compareOpenTabsRequested")
+    static let toggleSplitEditorRequested = Notification.Name("toggleSplitEditorRequested")
+    static let showWelcomeTourRequested = Notification.Name("showWelcomeTourRequested")
+    static let showEditorHelpRequested = Notification.Name("showEditorHelpRequested")
+    static let showSupportPromptRequested = Notification.Name("showSupportPromptRequested")
+    static let showInAppChangelogRequested = Notification.Name("showInAppChangelogRequested")
+    static let applyEditorLayoutPresetRequested = Notification.Name("applyEditorLayoutPresetRequested")
+    static let openPreviewInSeparateWindowRequested = Notification.Name("openPreviewInSeparateWindowRequested")
+    static let togglePreviewRequested = Notification.Name("togglePreviewRequested")
+    nonisolated static let moveCursorToRange = Notification.Name("moveCursorToRange")
+    nonisolated static let updateEditorFindHighlights = Notification.Name("updateEditorFindHighlights")
+    nonisolated static let replaceEditorRangeRequested = Notification.Name("replaceEditorRangeRequested")
+    nonisolated static let replaceEditorRangesRequested = Notification.Name("replaceEditorRangesRequested")
+    static let toggleVimModeRequested = Notification.Name("toggleVimModeRequested")
+    static let vimModeStateDidChange = Notification.Name("vimModeStateDidChange")
+    static let droppedFileURL = Notification.Name("droppedFileURL")
+    static let droppedFileLoadStarted = Notification.Name("droppedFileLoadStarted")
+    static let droppedFileLoadProgress = Notification.Name("droppedFileLoadProgress")
+    static let droppedFileLoadFinished = Notification.Name("droppedFileLoadFinished")
+    static let toggleSidebarRequested = Notification.Name("toggleSidebarRequested")
+    static let toggleLineWrapRequested = Notification.Name("toggleLineWrapRequested")
+    static let toggleBrainDumpModeRequested = Notification.Name("toggleBrainDumpModeRequested")
+    static let zoomEditorFontRequested = Notification.Name("zoomEditorFontRequested")
+    static let inspectWhitespaceScalarsRequested = Notification.Name("inspectWhitespaceScalarsRequested")
+    static let addNextMatchRequested = Notification.Name("addNextMatchRequested")
+    static let whitespaceScalarInspectionResult = Notification.Name("whitespaceScalarInspectionResult")
+    static let insertBracketHelperTokenRequested = Notification.Name("insertBracketHelperTokenRequested")
+    static let keyboardAccessoryBarVisibilityChanged = Notification.Name("keyboardAccessoryBarVisibilityChanged")
+    static let keyboardAccessoryActionRequested = Notification.Name("keyboardAccessoryActionRequested")
+    static let moveSelectedLinesRequested = Notification.Name("moveSelectedLinesRequested")
+    static let showUpdaterRequested = Notification.Name("showUpdaterRequested")
+    static let showSettingsRequested = Notification.Name("showSettingsRequested")
+    static let closeSelectedTabRequested = Notification.Name("closeSelectedTabRequested")
+    static let editorLastTabClosed = Notification.Name("editorLastTabClosed")
+    static let openRecentFileRequested = Notification.Name("openRecentFileRequested")
+    static let recentFilesDidChange = Notification.Name("recentFilesDidChange")
+    static let sharedImportsDidChange = Notification.Name("sharedImportsDidChange")
+    static let neonPulseInboxDidReceive = Notification.Name("neonPulseInboxDidReceive")
+    static let sharedImportURLRequested = Notification.Name("sharedImportURLRequested")
+    static let formatJSONDocumentRequested = Notification.Name("formatJSONDocumentRequested")
+    static let joinLinesRequested = Notification.Name("joinLinesRequested")
+    static let combineJSONLinesRequested = Notification.Name("combineJSONLinesRequested")
+    static let convertTextToMarkdownRequested = Notification.Name("convertTextToMarkdownRequested")
+    static let structureTextAsJSONRequested = Notification.Name("structureTextAsJSONRequested")
+    static let showIntegratedTerminalRequested = Notification.Name("showIntegratedTerminalRequested")
+    static let toggleCodeMinimapRequested = Notification.Name("toggleCodeMinimapRequested")
+    static let toggleFocusModeRequested = Notification.Name("toggleFocusModeRequested")
+    static let editorViewportDidChange = Notification.Name("editorViewportDidChange")
+    static let editorUserDidScroll = Notification.Name("editorUserDidScroll")
+    static let requestEditorViewport = Notification.Name("requestEditorViewport")
+    static let virtualEditorTextDidChange = Notification.Name("virtualEditorTextDidChange")
+    static let showVirtualEditorInlineSuggestion = Notification.Name("showVirtualEditorInlineSuggestion")
+    static let markdownPreviewViewportDidChange = Notification.Name("markdownPreviewViewportDidChange")
+    static let scrollEditorViewportToFraction = Notification.Name("scrollEditorViewportToFraction")
+}
+
+struct InAppChangelogView: View {
+    let onClose: () -> Void
+
+    private struct Release: Identifiable {
+        let id: String
+        let version: String
+        let date: String
+        let highlights: [String]
+    }
+
+    private let releases: [Release] = [
+        Release(id: "2.1.3", version: "2.1.3", date: "2026-10-25", highlights: [
+            "Select long, unwrapped lines on the Mac by dragging: the editor now scrolls sideways to follow the selection.",
+            "The Mac Markdown formatting bar is back in the editor's top-right corner with all its buttons.",
+            "Scroll the editor from the Mac minimap with the mouse wheel or trackpad."
+        ]),
+        Release(id: "2.1.2", version: "2.1.2", date: "2026-10-24", highlights: [
+            "Edit two open Mac documents side by side again, now that every document opens in its own native tab.",
+            "Compare any two open Mac tabs in the diff view again.",
+            "Move a native Mac tab into its own window from the Window menu."
+        ]),
+        Release(id: "2.1.1", version: "2.1.1", date: "2026-10-23", highlights: [
+            "Type or paste into a new Mac tab right away, without clicking into the editor first.",
+            "Mac tabs you return to always show their content, even after the window's first tab was closed.",
+            "Closed Mac tabs stop their background work and no longer reopen on the next launch."
+        ]),
+        Release(id: "2.1.0", version: "2.1.0", date: "2026-10-23", highlights: [
+            "Use native Mac document tabs with filenames, active-tab highlighting, and double-click closing.",
+            "Keep project navigation shared while each document retains its own editing and preview state.",
+            "Preserve unsaved edits during external-file refreshes and exact JSON values when formatting."
+        ]),
+        Release(id: "2.0.0", version: "2.0.0", date: "2026-10-15", highlights: [
+            "Switch between open Mac documents with less waiting, including large Markdown and source files.",
+            "Place the cursor more reliably on iPhone and iPad, and return to saved positions after large documents load.",
+            "Browse overflowing Mac tabs with visible left and right controls."
+        ]),
+        Release(id: "1.9.3", version: "1.9.3", date: "2026-10-13", highlights: [
+            "Choose plain-text editing instead of CSV/TSV tables on macOS.",
+            "Keep long font names from overlapping controls or widening Settings on Mac, iPhone, and iPad.",
+            "Find Markdown preview and AI provider options in dedicated macOS Settings sections."
+        ]),
+        Release(id: "1.9.2", version: "1.9.2", date: "2026-10-06", highlights: [
+            "Delete the previous word with Option-Delete on macOS, including Unicode text.",
+            "Keep mobile editor actions and AI settings accessible from the first layout.",
+            "Optionally rank external AI chat context with explicit TypeSafe consent and conservative fallback."
+        ]),
+        Release(id: "1.9.1", version: "1.9.1", date: "2026-10-01", highlights: [
+            "Open and save Japanese Shift-JIS files using Apple's native text encodings.",
+            "Keep the iPad status bar and toolbar separated, with less unused toolbar space.",
+            "Jump to the beginning or end of long macOS documents with Command-Up/Down."
+        ]),
+        Release(id: "1.9.0", version: "1.9.0", date: "2026-09-30", highlights: [
+            "Use the app in seven languages, including Danish, French, Spanish, and Japanese.",
+            "Close What’s New directly and see the current release highlights.",
+            "Transfer a text-document copy to a nearby device through an explicit pairing and consent flow."
+        ]),
+        Release(id: "1.8.6", version: "1.8.6", date: "2026-09-27", highlights: [
+            "Edit unusually long generated lines on iPhone and iPad without changing the saved text.",
+            "Work with Markdown source and rendered preview side by side again.",
+            "Rearrange macOS document tabs without opening the dragged document first."
+        ]),
+        Release(id: "1.7.0", version: "1.7.0", date: "2026-09-09", highlights: [
+            "Replaces remaining legacy tab-bar paths with native platform tabs and preserves borders, spacing, and translucent surfaces during appearance changes.",
+            "Keeps macOS, iOS, and iPadOS editor surfaces consistent in opaque and translucent window modes.",
+            "Improves Settings sizing and navigation while keeping tab switching responsive and preserving native controls."
+        ]),
+        Release(id: "1.6.4", version: "1.6.4", date: "2026-09-08", highlights: [
+            "Adds native macOS window dragging from unused titlebar and toolbar space without sacrificing toolbar actions.",
+            "Keeps macOS typing visually stable and avoids rebuilding editor configuration for every character edit.",
+            "Preserves toolbar hit-testing while native window chrome is updated."
+        ]),
+        Release(id: "1.6.3", version: "1.6.3", date: "2026-09-07", highlights: [
+            "Publishes the selected editor's first frame before deferred layout and preview work begins.",
+            "Improves Markdown and source-file tab switching, PDF export, Find in Files ignores, and mobile line-number behavior.",
+            "Adds mobile logical-line selection and preserves Markdown source emphasis."
+        ]),
+        Release(id: "1.6.2", version: "1.6.2", date: "2026-09-05", highlights: [
+            "Adds metadata polling for external edits on network volumes and safer conflict handling.",
+            "Adds an automatic Welcome Tour preference and suppresses the tour for Finder file launches.",
+            "Improves external-document saves, purchase feedback, encoding changes, and failed-open recovery."
+        ]),
+        Release(id: "1.6.1", version: "1.6.1", date: "2026-09-04", highlights: [
+            "Adds official Emmet expansion for markup and stylesheet editing.",
+            "Restores macOS virtual-editor commands including inline completion, Vim navigation, Markdown shortcuts, drag and drop, snapshots, and whitespace inspection.",
+            "Adds bounded viewport caching and performance budgets for large documents."
+        ]),
+        Release(id: "1.6.0", version: "1.6.0", date: "2026-09-03", highlights: [
+            "Adds bounded large-file rendering and background indexing for Markdown and source documents.",
+            "Adds HEX color swatches and a source-editor color picker with format preservation.",
+            "Improves UTF-8/UTF-16 editing, caret navigation, atomic saves, accessibility context, and editor-width changes."
+        ]),
+        Release(id: "1.5.6", version: "1.5.6", date: "2026-08-29", highlights: [
+            "Adds compact, language-aware mobile toolbar presets while preserving full menu and accessibility names.",
+            "Improves Markdown list continuation, text-selection commands, and mobile formatting controls.",
+            "Keeps Settings and Help toolbar visibility aligned with configured presets."
+        ]),
+        Release(id: "1.0.2", version: "1.0.2", date: "2026-07-28", highlights: [
+            "Adds persistent Markdown project card previews with grid or stacked layouts.",
+            "Adds saved editor layout presets for Writing, Code, Markdown, and Review.",
+            "Adds detached Markdown, HTML, and SVG preview windows on macOS."
+        ]),
+        Release(id: "1.0.1", version: "1.0.1", date: "2026-07-27", highlights: [
+            "Improves the AI assistant, saved chats, and localized status surfaces.",
+            "Adds German and Simplified Chinese localization for the current editor surfaces.",
+            "Improves release metadata and distribution reliability."
+        ]),
+        Release(id: "1.0", version: "1.0", date: "2026-07-27", highlights: [
+            "Delivers a stable editor and preview experience for everyday documents and large HTML files.",
+            "Adds responsive Markdown, HTML, and SVG previews with synchronized scrolling.",
+            "Improves large-file handling and plain-text-to-Markdown conversion feedback."
+        ])
+    ]
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 18) {
+                    ForEach(releases) { release in
+                        VStack(alignment: .leading, spacing: 8) {
+                            HStack(alignment: .firstTextBaseline) {
+                                Text("v\(release.version)")
+                                    .font(.title3.weight(.semibold))
+                                Spacer()
+                                Text(release.date)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            ForEach(release.highlights, id: \.self) { highlight in
+                                Label(highlight, systemImage: "checkmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                                    .font(.body)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .padding(16)
+                        .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    }
+                }
+                .padding(20)
+            }
+            .navigationTitle("What's New")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close", action: onClose)
+                        .keyboardShortcut(.cancelAction)
+                        .accessibilityIdentifier("whats-new-close")
+                }
+            }
+        }
+        .frame(minWidth: 420, minHeight: 360)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Application changelog")
+    }
+}
+
+extension NSRange {
+    func toOptional() -> NSRange? { self.location == NSNotFound ? nil : self }
+}
+
+enum EditorCommandUserInfo {
+    nonisolated static let windowNumber = "targetWindowNumber"
+    nonisolated static let documentID = "documentID"
+    nonisolated static let inspectionMessage = "inspectionMessage"
+    nonisolated static let rangeLocation = "rangeLocation"
+    nonisolated static let rangeLength = "rangeLength"
+    nonisolated static let viewportTopFraction = "viewportTopFraction"
+    nonisolated static let viewportHeightFraction = "viewportHeightFraction"
+    nonisolated static let scrollingDown = "scrollingDown"
+    nonisolated static let focusEditor = "focusEditor"
+    nonisolated static let centerSelection = "centerSelection"
+    nonisolated static let findMatchRanges = "findMatchRanges"
+    nonisolated static let selectedFindMatchRange = "selectedFindMatchRange"
+    nonisolated static let replacementText = "replacementText"
+    nonisolated static let replacementRanges = "replacementRanges"
+    nonisolated static let replacementTexts = "replacementTexts"
+    nonisolated static let bracketToken = "bracketToken"
+    nonisolated static let sourceTextView = "sourceTextView"
+    nonisolated static let completionContext = "completionContext"
+    nonisolated static let completionCaretOffset = "completionCaretOffset"
+    static let updaterCheckNow = "updaterCheckNow"
+}
+
+enum EditorNavigationFocusPolicy {
+    nonisolated static func shouldFocusEditor(explicitValue: Bool?) -> Bool {
+        explicitValue ?? true
+    }
+}
+
+#if os(macOS)
+private final class WeakEditorViewModelRef {
+    weak var value: EditorViewModel?
+    init(_ value: EditorViewModel) { self.value = value }
+}
+
+@MainActor
+final class WindowViewModelRegistry {
+    static let shared = WindowViewModelRegistry()
+    private var storage: [Int: WeakEditorViewModelRef] = [:]
+
+    private init() {}
+
+    func register(_ viewModel: EditorViewModel, for windowNumber: Int) {
+        storage[windowNumber] = WeakEditorViewModelRef(viewModel)
+    }
+
+    func unregister(windowNumber: Int) {
+        storage.removeValue(forKey: windowNumber)
+    }
+
+    func viewModel(for windowNumber: Int?) -> EditorViewModel? {
+        guard let windowNumber else { return nil }
+        if let vm = storage[windowNumber]?.value {
+            return vm
+        }
+        storage.removeValue(forKey: windowNumber)
+        return nil
+    }
+
+    func activeViewModel() -> EditorViewModel? {
+        viewModel(for: NSApp.keyWindow?.windowNumber ?? NSApp.mainWindow?.windowNumber)
+    }
+
+    func externalOpenTarget(for url: URL?, currentDesktopOnly: Bool,
+                            windows: [NSWindow]) -> EditorViewModel? {
+        let candidates = windows.filter {
+            (!currentDesktopOnly || $0.isOnActiveSpace) && viewModel(for: $0.windowNumber) != nil
+        }
+        if let url, let existing = candidates.first(where: {
+            viewModel(for: $0.windowNumber)?.hasOpenFile(url: url) == true
+        }) {
+            return viewModel(for: existing.windowNumber)
+        }
+        let target = candidates.first(where: { $0.isKeyWindow })
+            ?? candidates.first(where: { $0.isMainWindow }) ?? candidates.first
+        return viewModel(for: target?.windowNumber)
+    }
+
+    func windowNumber(for viewModel: EditorViewModel) -> Int? {
+        var staleWindowNumbers: [Int] = []
+        defer {
+            for number in staleWindowNumbers {
+                storage.removeValue(forKey: number)
+            }
+        }
+        for (number, ref) in storage {
+            guard let storedViewModel = ref.value else {
+                staleWindowNumbers.append(number)
+                continue
+            }
+            if storedViewModel === viewModel {
+                return number
+            }
+        }
+        return nil
+    }
+
+    func viewModel(containing url: URL) -> (windowNumber: Int, viewModel: EditorViewModel)? {
+        let target = url.resolvingSymlinksInPath().standardizedFileURL
+        for (number, ref) in storage {
+            guard let vm = ref.value else { continue }
+            if vm.hasOpenFile(url: target) {
+                return (number, vm)
+            }
+        }
+        return nil
+    }
+}
+
+@MainActor
+private final class WindowObserverView: NSView {
+    var onWindowChange: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onWindowChange?(window)
+    }
+}
+
+@MainActor
+struct WindowAccessor: NSViewRepresentable {
+    let onWindowChange: (NSWindow?) -> Void
+
+    func makeNSView(context: Context) -> NSView {
+        let view = WindowObserverView(frame: .zero)
+        view.onWindowChange = onWindowChange
+        DispatchQueue.main.async {
+            onWindowChange(view.window)
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        guard let view = nsView as? WindowObserverView else { return }
+        view.onWindowChange = onWindowChange
+        DispatchQueue.main.async {
+            onWindowChange(view.window)
+        }
+    }
+}
+
+/// AppKit drag behavior contract used by the macOS window policy tests.
+@MainActor
+final class MacWindowDragRegionView: NSView {
+    override var mouseDownCanMoveWindow: Bool { true }
+
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+@MainActor
+struct WelcomeTourWindowPresenter: NSViewRepresentable {
+    @Binding var isPresented: Bool
+    let makeContent: () -> WelcomeTourView
+    @Environment(\.colorScheme) private var colorScheme
+    @AppStorage("SettingsAppearance") private var appearance: String = "system"
+    @AppStorage("EnableTranslucentWindow") private var enableTranslucentWindow: Bool = true
+    @AppStorage("SettingsMacTranslucencyMode") private var translucencyModeRaw: String = "balanced"
+
+    private var effectiveColorScheme: ColorScheme {
+        switch appearance {
+        case "light": return .light
+        case "dark": return .dark
+        default: return colorScheme
+        }
+    }
+
+    private var windowBackgroundColor: NSColor {
+        SettingsWindowConfigurator.settingsWindowBackgroundColor(
+            translucentEnabled: enableTranslucentWindow,
+            translucencyModeRaw: translucencyModeRaw,
+            appearanceRaw: appearance,
+            effectiveColorScheme: effectiveColorScheme
+        )
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSWindowDelegate {
+        var parent: WelcomeTourWindowPresenter
+        weak var hostWindow: NSWindow?
+        var window: NSWindow?
+        var hostingController: NSHostingController<WelcomeTourView>?
+        private var hostWindowObservers: [NSObjectProtocol] = []
+        private weak var observedHostWindow: NSWindow?
+
+        init(parent: WelcomeTourWindowPresenter) {
+            self.parent = parent
+        }
+
+        private func centerTourWindow(_ window: NSWindow) {
+            guard let hostWindow else {
+                window.center()
+                return
+            }
+
+            let hostRect = hostWindow.frame
+            let currentFrame = window.frame
+            var targetOrigin = NSPoint(
+                x: hostRect.midX - (currentFrame.width / 2),
+                y: hostRect.midY - (currentFrame.height / 2)
+            )
+
+            let hostCenter = NSPoint(x: hostRect.midX, y: hostRect.midY)
+            let targetScreenFrame = NSScreen.screens.first(where: { $0.frame.contains(hostCenter) })?.visibleFrame
+                ?? hostWindow.screen?.visibleFrame
+            if let screenFrame = targetScreenFrame {
+                let minX = screenFrame.minX
+                let maxX = screenFrame.maxX - currentFrame.width
+                let minY = screenFrame.minY
+                let maxY = screenFrame.maxY - currentFrame.height
+                targetOrigin.x = min(max(targetOrigin.x, minX), maxX)
+                targetOrigin.y = min(max(targetOrigin.y, minY), maxY)
+            }
+
+            window.setFrameOrigin(targetOrigin)
+        }
+
+        private func removeHostWindowObservers() {
+            for observer in hostWindowObservers {
+                NotificationCenter.default.removeObserver(observer)
+            }
+            hostWindowObservers.removeAll(keepingCapacity: false)
+            observedHostWindow = nil
+        }
+
+        private func installHostWindowObserversIfNeeded() {
+            guard let hostWindow else {
+                removeHostWindowObservers()
+                return
+            }
+            guard observedHostWindow !== hostWindow else { return }
+
+            removeHostWindowObservers()
+            observedHostWindow = hostWindow
+
+            hostWindowObservers = [
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didMoveNotification,
+                    object: hostWindow,
+                    queue: .main,
+                    using: { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self, let tourWindow = self.window else { return }
+                            self.centerTourWindow(tourWindow)
+                        }
+                    }
+                ),
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didResizeNotification,
+                    object: hostWindow,
+                    queue: .main,
+                    using: { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self, let tourWindow = self.window else { return }
+                            self.centerTourWindow(tourWindow)
+                        }
+                    }
+                ),
+                NotificationCenter.default.addObserver(
+                    forName: NSWindow.didChangeScreenNotification,
+                    object: hostWindow,
+                    queue: .main,
+                    using: { [weak self] _ in
+                        Task { @MainActor in
+                            guard let self, let tourWindow = self.window else { return }
+                            self.centerTourWindow(tourWindow)
+                        }
+                    }
+                )
+            ]
+        }
+
+        func updateHostWindow(_ hostWindow: NSWindow?) {
+            self.hostWindow = hostWindow
+            installHostWindowObserversIfNeeded()
+            if let window {
+                centerTourWindow(window)
+            }
+        }
+
+        func presentIfNeeded() {
+            guard window == nil else {
+                if let window, let hostingController {
+                    hostingController.rootView = parent.makeContent()
+                    configureAppearance(of: window)
+                    centerTourWindow(window)
+                }
+                window?.makeKeyAndOrderFront(nil)
+                return
+            }
+
+            let controller = NSHostingController(rootView: parent.makeContent())
+            let window = NSWindow(contentViewController: controller)
+            window.title = NSLocalizedString("What’s New", comment: "Release notes window title")
+            window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
+            window.isReleasedWhenClosed = false
+            window.tabbingMode = .disallowed
+            window.minSize = NSSize(width: 920, height: 680)
+            window.delegate = self
+            window.isMovableByWindowBackground = false
+            window.titleVisibility = .hidden
+            window.setContentSize(NSSize(width: 980, height: 720))
+            configureAppearance(of: window)
+
+            centerTourWindow(window)
+
+            self.window = window
+            self.hostingController = controller
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+
+        private func configureAppearance(of window: NSWindow) {
+            switch parent.appearance {
+            case "light": window.appearance = NSAppearance(named: .aqua)
+            case "dark": window.appearance = NSAppearance(named: .darkAqua)
+            default: window.appearance = nil
+            }
+            window.isOpaque = !parent.enableTranslucentWindow
+            window.backgroundColor = parent.windowBackgroundColor
+            window.contentView?.wantsLayer = true
+            window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+            window.titlebarAppearsTransparent = true
+            window.toolbarStyle = .unified
+            window.styleMask.insert(.fullSizeContentView)
+            if #available(macOS 13.0, *) {
+                window.titlebarSeparatorStyle = .none
+            }
+        }
+
+        func dismissIfNeeded() {
+            guard let window else { return }
+            window.close()
+            self.window = nil
+            self.hostingController = nil
+        }
+
+        func windowWillClose(_ notification: Notification) {
+            self.window = nil
+            DispatchQueue.main.async {
+                self.parent.isPresented = false
+            }
+        }
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView(frame: .zero)
+        DispatchQueue.main.async {
+            context.coordinator.updateHostWindow(view.window)
+            if isPresented {
+                context.coordinator.presentIfNeeded()
+            }
+        }
+        return view
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        context.coordinator.parent = self
+        context.coordinator.updateHostWindow(nsView.window)
+        if isPresented {
+            context.coordinator.presentIfNeeded()
+        } else {
+            context.coordinator.dismissIfNeeded()
+        }
+    }
+}
+#endif

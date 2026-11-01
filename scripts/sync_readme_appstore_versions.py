@@ -15,6 +15,7 @@ import urllib.request
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 README = ROOT / "README.md"
+WEBSITE = ROOT / "site" / "index.html"
 APP_STORE_ID = "6758950965"
 APP_STORE_COUNTRY = "de"
 
@@ -88,15 +89,32 @@ def replace_if_present(pattern: str, replacement: str, text: str, label: str) ->
     return updated
 
 
+def readme_last_updated_date(readme: str, latest_tag: str, today: str) -> str:
+    """Never move the README date backwards for the same release.
+
+    Scheduled runs use UTC, while release preparation records the release's
+    local date, so a same-night UTC run can otherwise be a day earlier.
+    """
+    match = re.search(
+        r"(?m)^> Last updated \(README\): \*\*(\d{4}-\d{2}-\d{2})\*\* for (?:release line|latest release) \*\*([^*]+)\*\*$",
+        readme,
+    )
+    if match and match.group(2) == latest_tag:
+        return max(today, match.group(1))
+    return today
+
+
 def sync_readme_versions(readme: str, latest_tag: str, public_store_tag: str, today: str) -> str:
     next_tag = next_patch_tag(latest_tag)
     store_is_current = public_store_tag == latest_tag
 
+    # GitHub publication does not show macOS App Store or TestFlight status,
+    # so those rows stay "Not verified" and the note makes no review claim.
     availability_note = (
-        "The direct GitHub release and public App Store listing are currently aligned."
+        "The iOS/iPadOS App Store listing is currently aligned with the direct GitHub release."
         if store_is_current
         else (
-            "The direct GitHub release is currently ahead of the App Store version. "
+            "The direct GitHub release is currently ahead of the iOS/iPadOS App Store version. "
             "The App Store version may temporarily lag while updates are in Apple review."
         )
     )
@@ -115,12 +133,12 @@ def sync_readme_versions(readme: str, latest_tag: str, public_store_tag: str, to
     )
     readme = replace_required(
         r"^> Last updated \(README\): \*\*\d{4}-\d{2}-\d{2}\*\* for latest release \*\*[^*]+\*\*$",
-        f"> Last updated (README): **{today}** for latest release **{latest_tag}**",
+        f"> Last updated (README): **{readme_last_updated_date(readme, latest_tag, today)}** for latest release **{latest_tag}**",
         readme,
         "last updated status",
     )
     readme = replace_required(
-        r"^The direct GitHub release(?: and public App Store listing are currently aligned\.| is currently ahead of the App Store version\. The App Store version may temporarily lag while updates are in Apple review\.)$",
+        r"^(?:The direct GitHub release and public App Store listing are currently aligned\.|The iOS/iPadOS App Store listing is currently aligned with the direct GitHub release\.(?: The macOS App Store update is currently in Apple review\.)?|The direct GitHub release is currently ahead of the iOS/iPadOS App Store version\. The App Store version may temporarily lag while updates are in Apple review\.)$",
         availability_note,
         readme,
         "download availability note",
@@ -131,19 +149,22 @@ def sync_readme_versions(readme: str, latest_tag: str, public_store_tag: str, to
         readme,
         "GitHub release table row",
     )
-    readme = replace_if_present(
-        r"^(\| \*\*Store Review\*\* \| iOS / iPadOS \| [^|]+ \| App Store Connect review \| )\*\*[^*]+\*\*( \| ).*$",
-        rf"\1**{latest_tag}**\2{'Already public on App Store' if store_is_current else 'In Apple review'} |",
-        readme,
-        "iOS App Store review row",
-    )
     readme = replace_required(
-        r"^(\| \*\*Beta\*\* \| iOS / iPadOS / macOS \| [^|]+ \| \[TestFlight Invite\]\(https://testflight\.apple\.com/join/YWB2fGAP\) \| )\*\*[^*]+\*\*( \| ).*$",
-        rf"\1**{latest_tag}**\2Early access builds for feedback; availability may vary by review state |",
+        r"^(\| \*\*Store\*\* \| iOS / iPadOS \| [^|]+ \| \[Neon Vision Editor on the App Store\]\(https://apps\.apple\.com/de/app/neon-vision-editor/id6758950965\) \| )\*\*[^*]+\*\*( \| ).*$",
+        rf"\1**{public_store_tag}**\2Current public App Store listing |",
         readme,
-        "TestFlight table row",
+        "iOS App Store table row",
     )
     return readme
+
+
+def sync_website_app_store_version(website: str, public_store_tag: str) -> str:
+    return replace_required(
+        r"^(\s*<span data-app-store-version>iOS / iPadOS · )v[^<]+(</span>)$",
+        rf"\1{public_store_tag}\2",
+        website,
+        "website App Store version",
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -160,6 +181,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     original = read_text(README)
+    original_website = read_text(WEBSITE)
     latest_tag = normalize_tag(args.tag) if args.tag else latest_readme_tag(original)
     public_store_tag = normalize_tag(args.store_version) if args.store_version else fetch_public_appstore_version(
         args.app_id,
@@ -168,22 +190,24 @@ def main() -> int:
     )
     today = dt.date.today().isoformat()
     updated = sync_readme_versions(original, latest_tag, public_store_tag, today)
+    updated_website = sync_website_app_store_version(original_website, public_store_tag)
 
     if args.check:
-        if updated != original:
+        if updated != original or updated_website != original_website:
             print(
-                f"README App Store versions are not synced (release={latest_tag}, public_store={public_store_tag}).",
+                f"README or website App Store versions are not synced (release={latest_tag}, public_store={public_store_tag}).",
                 file=sys.stderr,
             )
             return 1
-        print(f"README App Store versions are synced (release={latest_tag}, public_store={public_store_tag}).")
+        print(f"README and website App Store versions are synced (release={latest_tag}, public_store={public_store_tag}).")
         return 0
 
-    if updated != original:
+    if updated != original or updated_website != original_website:
         write_text(README, updated)
-        print(f"Updated README App Store versions (release={latest_tag}, public_store={public_store_tag}).")
+        write_text(WEBSITE, updated_website)
+        print(f"Updated README and website App Store versions (release={latest_tag}, public_store={public_store_tag}).")
     else:
-        print(f"README App Store versions already current (release={latest_tag}, public_store={public_store_tag}).")
+        print(f"README and website App Store versions already current (release={latest_tag}, public_store={public_store_tag}).")
     return 0
 
 

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>NVE — Desktop UI mockups (A / B / C)</title>
+<style>
+  :root {
+    --page-bg: #1a1d24;
+    --page-text: #e8eaf0;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--page-bg); color: var(--page-text);
+    font-family: -apple-system, "SF Pro Text", Helvetica, Arial, sans-serif;
+    padding: 48px 32px 96px; display: flex; flex-direction: column; gap: 72px; align-items: center;
+  }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.01em; }
+  h2 { font-size: 15px; font-weight: 600; opacity: 0.85; margin-bottom: 4px; }
+  .note { font-size: 12.5px; opacity: 0.75; max-width: 980px; line-height: 1.5; }
+  .mock { width: 1180px; max-width: 96vw; border-radius: 12px; overflow: hidden;
+          box-shadow: 0 24px 64px rgba(0,0,0,.5), 0 2px 8px rgba(0,0,0,.35); }
+  .caption { width: 1180px; max-width: 96vw; margin-top: 10px; font-size: 13px; line-height: 1.55; opacity: 0.8; }
+  .caption b { opacity: 1; }
+  code.mono, .mono { font-family: "SF Mono", ui-monospace, Menlo, monospace; }
+
+  /* ---------- shared editor body ---------- */
+  .editor-wrap { display: flex; }
+  .gutter { width: 54px; padding: 10px 10px 10px 0; text-align: right; font-size: 11.5px; line-height: 1.75; user-select: none; }
+  .code { flex: 1; padding: 10px 16px; font-size: 12.5px; line-height: 1.75; white-space: pre; overflow: hidden; }
+  .code .k { font-weight: 500; }
+
+  /* ================= DIRECTION A — Native Mac ================= */
+  .a { background: #f4f1e8; color: #3b3a35; }
+  .a .titlebar { display: flex; align-items: center; gap: 14px; padding: 9px 14px;
+                 background: linear-gradient(#fbf9f2, #f1eee4); border-bottom: 1px solid #ddd8c8; }
+  .a .lights { display: flex; gap: 7px; }
+  .a .light { width: 12px; height: 12px; border-radius: 50%; }
+  .a .doc { font-size: 13px; font-weight: 600; margin-right: auto; }
+  .a .tgroup { display: flex; align-items: center; background: #e9e5d7; border: 1px solid #d9d3c0;
+               border-radius: 7px; overflow: hidden; }
+  .a .tbtn { padding: 4px 9px; font-size: 13px; opacity: .85; border-right: 1px solid #d9d3c0; cursor: default; }
+  .a .tbtn:last-child { border-right: 0; }
+  .a .tbtn.primary { opacity: 1; color: #6f5610; font-weight: 600; }
+  .a .tsep { width: 10px; }
+  .a .pill { font-size: 11.5px; padding: 3px 9px; border-radius: 99px; background: #e4f3df; color: #3f7a34;
+             border: 1px solid #c4e0bb; font-weight: 600; }
+  .a .tabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px 10px 0; background: #ece8da; border-bottom: 1px solid #d9d3c0; }
+  .a .tab { font-size: 12px; padding: 6px 14px 7px; border-radius: 7px 7px 0 0; color: #7a766a;
+            background: #e2ddcd; border: 1px solid #d5cfba; border-bottom: 0; }
+  .a .tab.active { background: #fdfbf3; color: #3b3a35; font-weight: 600; border-color: #d9d3c0;
+                   box-shadow: inset 0 2px 0 #c89b2a; }
+  .a .editor-wrap { background: #fdfbf3; }
+  .a .gutter { background: #f1ecdc; border-right: 1px solid #ddd6c0; color: #a09a87; }
+  .a .code { color: #3b3a35; }
+  .a .code .key { color: #7a4fa0; } .a .code .str { color: #2e7d4f; } .a .code .num { color: #b35a1f; } .a .code .pun { color: #8d887a; }
+  .a .status { display: flex; align-items: center; gap: 18px; padding: 6px 14px; font-size: 11.5px;
+               background: #efebdd; border-top: 1px solid #ddd6c0; color: #5d594d; }
+  .a .sg { display: flex; align-items: center; gap: 6px; }
+  .a .sg .lbl { opacity: .8; }
+  .a .sg .val { font-weight: 600; color: #3b3a35; }
+  .a .sdiv { width: 1px; height: 14px; background: #d5cfba; }
+  .a .status .right { margin-left: auto; display: flex; gap: 18px; align-items: center; }
+  .icn { font-size: 12px; opacity: .75; }
+
+  /* ===== A2 — Native-Mac + elevation steps, dark, theme-tinted ===== */
+  /* Every surface derives from ONE hue (--h): elevation = lightness steps.
+     Switching the radio re-tints the whole body — chrome, tabs, gutter,
+     status — exactly how a theme change should behave. */
+  .a2wrap {
+    --h: 42; --s: 14%; --acc: hsl(var(--h) 72% 62%);
+    /* elevation lightness steps (dark defaults) */
+    --l0: 9%; --l05: 10.5%; --l1: 11.5%; --l2: 13.5%; --lgut: 14.5%; --l3: 17%;
+    --bd1: hsl(var(--h) var(--s) 19%); --bd2: hsl(var(--h) var(--s) 21%);
+    --bd3: hsl(var(--h) var(--s) 22%); --bd4: hsl(var(--h) var(--s) 24%);
+    --tx: hsl(var(--h) 12% 88%); --txhi: hsl(var(--h) 12% 92%);
+    --txm: hsl(var(--h) 8% 70%); --txdoc: hsl(var(--h) 10% 72%); --txg: hsl(var(--h) 8% 60%);
+    --lightdot: hsl(var(--h) var(--s) 24%);
+    --ck: hsl(280 65% 74%); --cs: hsl(140 50% 66%); --cn: hsl(28 80% 66%); --cp: hsl(var(--h) 8% 66%);
+  }
+  body:has(#t-blue:checked)   .a2wrap { --h: 207; --s: 16%; --acc: hsl(199 85% 62%); }
+  body:has(#t-violet:checked) .a2wrap { --h: 268; --s: 15%; --acc: hsl(280 70% 70%); }
+  body:has(#t-green:checked)  .a2wrap { --h: 152; --s: 13%; --acc: hsl(150 60% 55%); }
+  /* light-neutral tints: same elevation logic, inverted — editor is the LIGHTEST surface */
+  body:has(#t-white:checked) .a2wrap, body:has(#t-grey:checked) .a2wrap {
+    --h: 0; --s: 0%; --acc: hsl(211 100% 38%);
+    --tx: hsl(0 0% 16%); --txhi: hsl(0 0% 8%);
+    --txm: hsl(0 0% 35%); --txdoc: hsl(0 0% 30%); --txg: hsl(0 0% 38%);
+    --lightdot: hsl(0 0% 76%);
+    --ck: hsl(280 60% 42%); --cs: hsl(140 60% 28%); --cn: hsl(26 90% 36%); --cp: hsl(0 0% 42%);
+  }
+  body:has(#t-white:checked) .a2wrap {
+    --l0: 96%; --l05: 95%; --l1: 93.5%; --l2: 91%; --lgut: 95%; --l3: 100%;
+    --bd1: hsl(0 0% 84%); --bd2: hsl(0 0% 82%); --bd3: hsl(0 0% 81%); --bd4: hsl(0 0% 79%);
+  }
+  body:has(#t-grey:checked) .a2wrap {
+    --l0: 89%; --l05: 88%; --l1: 86.5%; --l2: 84%; --lgut: 88%; --l3: 95%;
+    --bd1: hsl(0 0% 74%); --bd2: hsl(0 0% 72%); --bd3: hsl(0 0% 71%); --bd4: hsl(0 0% 69%);
+  }
+  .tintbar { display: flex; gap: 14px; align-items: center; width: 1180px; max-width: 96vw;
+             margin-bottom: 10px; font-size: 12.5px; opacity: .9; }
+  .tintbar label { display: flex; gap: 6px; align-items: center; cursor: pointer; }
+  .a2 { background: hsl(var(--h) var(--s) var(--l0));        /* elev 0 — window */
+        color: var(--tx); }
+  .a2 .titlebar { display: flex; align-items: center; gap: 14px; padding: 9px 14px;
+                  background: hsl(var(--h) var(--s) var(--l0)); /* elev 0 */
+                  border-bottom: 1px solid var(--bd1); }
+  .a2 .lights { display: flex; gap: 7px; }
+  .a2 .light { width: 12px; height: 12px; border-radius: 50%; background: var(--lightdot); }
+  .a2 .doc { font-size: 13px; font-weight: 600; margin-right: auto; color: var(--txdoc); }
+  .a2 .tgroup { display: flex; align-items: center; background: hsl(var(--h) var(--s) var(--l2));
+                border: 1px solid var(--bd2); border-radius: 7px; overflow: hidden; }
+  .a2 .tbtn { padding: 4px 9px; font-size: 13px; opacity: .85; border-right: 1px solid var(--bd2); }
+  .a2 .tbtn:last-child { border-right: 0; }
+  .a2 .tbtn.primary { opacity: 1; color: var(--acc); font-weight: 600; }
+  .a2 .tsep { width: 10px; }
+  .a2 .pill { font-size: 11.5px; padding: 3px 9px; border-radius: 99px; font-weight: 600;
+              background: hsl(var(--h) var(--s) var(--l2)); color: var(--acc);
+              border: 1px solid var(--bd4); }
+  .a2 .tabs { display: flex; align-items: flex-end; gap: 2px; padding: 6px 10px 0;
+              background: hsl(var(--h) var(--s) var(--l1));  /* elev 1 — tab strip */
+              border-bottom: 1px solid var(--bd1); }
+  .a2 .tab { font-size: 12px; padding: 6px 14px 7px; border-radius: 7px 7px 0 0;
+             color: var(--txm);
+             background: hsl(var(--h) var(--s) var(--l2));   /* elev 2 — inactive tab */
+             border: 1px solid var(--bd1); border-bottom: 0; }
+  .a2 .tab.active { background: hsl(var(--h) var(--s) var(--l3)); /* elev 3 — matches editor */
+                    color: var(--txhi); font-weight: 600;
+                    box-shadow: inset 0 2px 0 var(--acc); }
+  .a2 .editor-wrap { background: hsl(var(--h) var(--s) var(--l3)); } /* elev 3 — focus surface */
+  .a2 .gutter { background: hsl(var(--h) var(--s) var(--lgut)); border-right: 1px solid var(--bd3);
+                color: var(--txg); }
+  .a2 .code { color: var(--tx); }
+  .a2 .code .key { color: var(--ck); } .a2 .code .str { color: var(--cs); }
+  .a2 .code .num { color: var(--cn); }  .a2 .code .pun { color: var(--cp); }
+  .a2 .cursorline { background: color-mix(in srgb, var(--acc) 9%, transparent); display: inline-block; width: 100%; }
+  .a2 .status { display: flex; align-items: center; gap: 18px; padding: 6px 14px; font-size: 11.5px;
+                background: hsl(var(--h) var(--s) var(--l05)); /* elev 0.5 */
+                border-top: 1px solid var(--bd1); color: var(--txm); }
+  .a2 .sg { display: flex; align-items: center; gap: 6px; }
+  .a2 .sg .lbl { opacity: .8; }
+  .a2 .sg .val { font-weight: 600; color: var(--tx); }
+  .a2 .sg.accent .val { color: var(--acc); }
+  .a2 .sdiv { width: 1px; height: 14px; background: var(--bd2); }
+  .a2 .status .right { margin-left: auto; display: flex; gap: 18px; align-items: center; }
+
+  /* ================= DIRECTION B — Warm paper ================= */
+  .b { background: #efe7d8; color: #423b2e; }
+  .b .titlebar { display: flex; align-items: center; gap: 14px; padding: 10px 16px;
+                 background: #e7ddc9; border-bottom: 1px solid #d3c5a8; }
+  .b .doc { font-family: Georgia, "Iowan Old Style", serif; font-size: 14px; font-style: italic; margin-right: auto; }
+  .b .tgroup { display: flex; gap: 10px; align-items: center; }
+  .b .tbtn { font-size: 13px; opacity: .8; }
+  .b .tbtn.more { border: 1px solid #c9ba9b; border-radius: 6px; padding: 2px 8px; opacity: .8; }
+  .b .accentchip { width: 10px; height: 10px; border-radius: 3px; background: #b4552d; }
+  .b .tabs { display: flex; gap: 18px; padding: 8px 20px 0; background: #e7ddc9; border-bottom: 1px solid #d3c5a8; }
+  .b .tab { font-size: 12.5px; padding-bottom: 8px; color: #8d8064; }
+  .b .tab.active { color: #423b2e; font-weight: 600; border-bottom: 2px solid #b4552d; }
+  .b .editor-wrap { background: #faf4e6; }
+  .b .gutter { background: #f0e8d4; border-right: 1px solid #ddd0b2; color: #a39577; }
+  .b .code { color: #423b2e; }
+  .b .code .key { color: #8a4a9e; } .b .code .str { color: #356f3f; } .b .code .num { color: #b4552d; } .b .code .pun { color: #8d8164; }
+  .b .status { display: flex; gap: 20px; padding: 7px 20px; font-size: 11.5px; background: #e7ddc9;
+               border-top: 1px solid #d3c5a8; color: #6d6450; font-family: "SF Mono", ui-monospace, monospace; }
+  .b .status .right { margin-left: auto; display: flex; gap: 20px; }
+  .b .status b { color: #423b2e; font-weight: 600; }
+
+  /* ================= DIRECTION C — Layered pro-dark ================= */
+  .c { background: #0d1017; color: #d7deea; }
+  .c .titlebar { display: flex; align-items: center; gap: 14px; padding: 9px 14px;
+                 background: #141926; border-bottom: 1px solid #222a3d; }
+  .c .doc { font-size: 13px; font-weight: 600; margin-right: auto; color: #aab6c9; }
+  .c .tgroup { display: flex; align-items: center; background: #1b2232; border: 1px solid #2a3450;
+               border-radius: 7px; overflow: hidden; }
+  .c .tbtn { padding: 4px 9px; font-size: 13px; opacity: .8; border-right: 1px solid #2a3450; }
+  .c .tbtn:last-child { border-right: 0; }
+  .c .cmdhint { font-size: 11.5px; color: #93a0b8; border: 1px solid #2a3450; border-radius: 6px; padding: 3px 9px; }
+  .c .cmdhint b { color: #61d9ff; font-weight: 600; }
+  .c .tabs { display: flex; gap: 2px; padding: 6px 10px 0; background: #11151f; border-bottom: 1px solid #222a3d; }
+  .c .tab { font-size: 12px; padding: 6px 14px 7px; border-radius: 7px 7px 0 0; color: #8a96ad; background: #151b29; }
+  .c .tab.active { background: #1c2335; color: #e8eef9; font-weight: 600; box-shadow: inset 0 2px 0 #61d9ff; }
+  .c .editor-wrap { background: #1c2335; }
+  .c .gutter { background: #161c2b; border-right: 1px solid #262f47; color: #74829f; }
+  .c .code { color: #d7deea; }
+  .c .code .key { color: #c792ea; } .c .code .str { color: #7ddc9a; } .c .code .num { color: #f2a65a; } .c .code .pun { color: #7e8ba5; }
+  .c .cursorline { background: rgba(97,217,255,.07); display: inline-block; width: 100%; }
+  .c .status { display: flex; gap: 0; padding: 0 14px; font-size: 11.5px; background: #141926;
+               border-top: 1px solid #222a3d; color: #8a96ad; align-items: stretch; }
+  .c .seg { display: flex; align-items: center; gap: 6px; padding: 7px 14px; }
+  .c .seg + .seg { border-left: 1px solid #222a3d; }
+  .c .seg .val { color: #d7deea; font-weight: 600; }
+  .c .seg.accent .val { color: #61d9ff; }
+  .c .status .right { margin-left: auto; display: flex; }
+</style>
+</head>
+<body>
+
+<h1>Neon Vision Editor — desktop mockups</h1>
+<p class="note">Same document, three directions. Shared fixes in all three: toolbar collapsed from ~18 loose icons into grouped clusters + overflow "⋯"; tabs look like tabs with a real active state; gutter is a distinct surface with a separator; status bar grouped into position&nbsp;|&nbsp;document&nbsp;|&nbsp;format with label/value contrast, "Zero&nbsp;KB"→"Unsaved", Words hidden for JSON, and the new <b>Modified</b> timestamp.</p>
+
+<!-- ============ A ============ -->
+<div>
+  <h2>A — Native-Mac "Xcode-grade" (evolves your current cream theme)</h2>
+  <div class="mock a">
+    <div class="titlebar">
+      <div class="lights">
+        <div class="light" style="background:#f16055"></div>
+        <div class="light" style="background:#f6bd3b"></div>
+        <div class="light" style="background:#55ba47"></div>
+      </div>
+      <div class="doc">Untitled 1</div>
+      <div class="tgroup"><div class="tbtn">📁</div><div class="tbtn">↩︎</div><div class="tbtn">⎘</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn primary">👁 Preview</div><div class="tbtn">◫ Split</div><div class="tbtn">▦ Map</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn">🔍</div><div class="tbtn">⚙︎</div><div class="tbtn">⋯</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn">Swift ▾</div></div>
+      <div class="pill">✓ AI · Apple</div>
+    </div>
+    <div class="tabs">
+      <div class="tab">ManageLegacyWorkflowAjaxController.java</div>
+      <div class="tab">workflow (4).xml</div>
+      <div class="tab active">Untitled 1</div>
+      <div class="tab" style="padding:6px 10px">＋</div>
+    </div>
+    <div class="editor-wrap">
+      <div class="gutter mono">28<br>29<br>30<br>31<br>32<br>33<br>34<br>35<br>36<br>37<br>38</div>
+      <div class="code mono"><span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">10</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Area Readiness"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">11</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Amazon Devices Reverse Logistics"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">12</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Indirect Work"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">13</span><span class="pun">,</span></div>
+    </div>
+    <div class="status">
+      <div class="sg"><span class="icn">⌖</span><span class="val mono">Ln 36, Col 35</span></div>
+      <div class="sdiv"></div>
+      <div class="sg"><span class="lbl">Lines</span><span class="val mono">20,125</span></div>
+      <div class="sg"><span class="lbl">Size</span><span class="val mono">Unsaved</span></div>
+      <div class="sg"><span class="icn">🕑</span><span class="lbl">Modified</span><span class="val mono">Oct 28, 12:26 AM</span></div>
+      <div class="right">
+        <div class="sg"><span class="val mono">UTF-8</span></div>
+        <div class="sg"><span class="val mono">LF</span></div>
+        <div class="sg"><span class="lbl">Spaces</span><span class="val mono">4</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>What changed:</b> toolbar → 4 segmented clusters + overflow; active tab gets an accent top-edge and real container; gutter is a visibly cooler strip with hairline; status bar grouped (position | document | format) with muted labels + bold values, Modified timestamp with clock icon, "Unsaved" instead of "Zero KB", Words dropped for JSON. Lowest-risk; everything maps to existing SwiftUI surfaces.</p>
+</div>
+
+<!-- ============ A2 ============ -->
+<div class="a2wrap">
+  <h2>A2 — Direction A structure + C's elevation steps (dark mode) + whole-body theme tint</h2>
+  <div class="tintbar">
+    <span>Theme tint (one hue drives every surface):</span>
+    <label><input type="radio" name="tint" id="t-amber" checked> Warm amber</label>
+    <label><input type="radio" name="tint" id="t-blue"> Neon blue</label>
+    <label><input type="radio" name="tint" id="t-violet"> Violet</label>
+    <label><input type="radio" name="tint" id="t-green"> Green</label>
+    <label><input type="radio" name="tint" id="t-white"> White</label>
+    <label><input type="radio" name="tint" id="t-grey"> Grey</label>
+  </div>
+  <div class="mock a2">
+    <div class="titlebar">
+      <div class="lights"><div class="light"></div><div class="light"></div><div class="light"></div></div>
+      <div class="doc">Untitled 1</div>
+      <div class="tgroup"><div class="tbtn">📁</div><div class="tbtn">↩︎</div><div class="tbtn">⎘</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn primary">👁 Preview</div><div class="tbtn">◫ Split</div><div class="tbtn">▦ Map</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn">🔍</div><div class="tbtn">⚙︎</div><div class="tbtn">⋯</div></div>
+      <div class="tsep"></div>
+      <div class="tgroup"><div class="tbtn">Swift ▾</div></div>
+      <div class="pill">✓ AI · Apple</div>
+    </div>
+    <div class="tabs">
+      <div class="tab">ManageLegacyWorkflowAjaxController.java</div>
+      <div class="tab">workflow (4).xml</div>
+      <div class="tab active">Untitled 1</div>
+      <div class="tab" style="padding:6px 10px">＋</div>
+    </div>
+    <div class="editor-wrap">
+      <div class="gutter mono">28<br>29<br>30<br>31<br>32<br>33<br>34<br>35<br>36<br>37<br>38</div>
+      <div class="code mono"><span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">10</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Area Readiness"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">11</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Amazon Devices Reverse Logistics"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">12</span><span class="pun">,</span>
+<span class="cursorline">    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Indirect Work"</span></span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">13</span><span class="pun">,</span></div>
+    </div>
+    <div class="status">
+      <div class="sg accent"><span class="icn">⌖</span><span class="val mono">Ln 36, Col 35</span></div>
+      <div class="sdiv"></div>
+      <div class="sg"><span class="lbl">Lines</span><span class="val mono">20,125</span></div>
+      <div class="sg"><span class="lbl">Size</span><span class="val mono">Unsaved</span></div>
+      <div class="sg"><span class="icn">🕑</span><span class="lbl">Modified</span><span class="val mono">Oct 28, 12:26 AM</span></div>
+      <div class="right">
+        <div class="sg"><span class="val mono">UTF-8</span></div>
+        <div class="sg"><span class="val mono">LF</span></div>
+        <div class="sg"><span class="lbl">Spaces</span><span class="val mono">4</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>How it works:</b> four elevation steps — window/titlebar (darkest) &lt; status bar &lt; tab strip &lt; editor (lightest = focus) — all derived from <b>one theme hue</b>, so flipping the tint re-colors the entire body (chrome included), the KiroCrew behavior. In the app this maps to replacing the fixed grayscale <code class="mono">MacEditorSurfacePolicy.windowBackground</code> with surfaces derived from the active editor theme's background hue, stepped by elevation. Accent appears only on active things (tab edge, primary toolbar action, position segment, cursor line).</p>
+</div>
+
+<!-- ============ B ============ -->
+<div>
+  <h2>B — "Warm paper" (own the cream; editorial, not a VS Code clone)</h2>
+  <div class="mock b">
+    <div class="titlebar">
+      <div class="lights" style="display:flex;gap:7px">
+        <div style="width:12px;height:12px;border-radius:50%;background:#c96a56"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#d9b254"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#7fa35e"></div>
+      </div>
+      <div class="doc">Untitled 1</div>
+      <div class="tgroup">
+        <div class="accentchip"></div>
+        <div class="tbtn">Files</div><div class="tbtn">Preview</div><div class="tbtn">Find</div>
+        <div class="tbtn more">⋯ More</div>
+      </div>
+    </div>
+    <div class="tabs">
+      <div class="tab">ManageLegacyWorkflowAjaxController.java</div>
+      <div class="tab">workflow (4).xml</div>
+      <div class="tab active">Untitled 1</div>
+    </div>
+    <div class="editor-wrap">
+      <div class="gutter mono">28<br>29<br>30<br>31<br>32<br>33<br>34<br>35<br>36<br>37<br>38</div>
+      <div class="code mono"><span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">10</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Area Readiness"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">11</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Amazon Devices Reverse Logistics"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">12</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Indirect Work"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">13</span><span class="pun">,</span></div>
+    </div>
+    <div class="status">
+      <span><b>36:35</b></span>
+      <span>20,125 lines</span>
+      <span>Unsaved</span>
+      <span>mod Oct 28 · 12:26</span>
+      <div class="right"><span>UTF-8</span><span>LF</span><span>sp 4</span></div>
+    </div>
+  </div>
+  <p class="caption"><b>Character moves:</b> warm paper editor on slightly deeper parchment chrome; one burnt-sienna accent used once per region (chip, active-tab underline); serif italic doc title; minimal text toolbar with labeled buttons instead of 18 glyphs; terse lowercase status line. Most distinctive; medium effort (mostly color tokens + toolbar relayout).</p>
+</div>
+
+<!-- ============ C ============ -->
+<div>
+  <h2>C — Layered pro-dark (elevation steps + command-palette-first)</h2>
+  <div class="mock c">
+    <div class="titlebar">
+      <div class="lights" style="display:flex;gap:7px">
+        <div style="width:12px;height:12px;border-radius:50%;background:#394157"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#394157"></div>
+        <div style="width:12px;height:12px;border-radius:50%;background:#394157"></div>
+      </div>
+      <div class="doc">Untitled 1</div>
+      <div class="tgroup"><div class="tbtn">📁</div><div class="tbtn">👁</div><div class="tbtn">◫</div><div class="tbtn">⋯</div></div>
+      <div class="cmdhint"><b>⌘⇧P</b>&nbsp; Commands…</div>
+    </div>
+    <div class="tabs">
+      <div class="tab">ManageLegacyWorkflowAjaxController.java</div>
+      <div class="tab">workflow (4).xml</div>
+      <div class="tab active">Untitled 1</div>
+    </div>
+    <div class="editor-wrap">
+      <div class="gutter mono">28<br>29<br>30<br>31<br>32<br>33<br>34<br>35<br>36<br>37<br>38</div>
+      <div class="code mono"><span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">10</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Area Readiness"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">11</span><span class="pun">,</span>
+    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Amazon Devices Reverse Logistics"</span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">12</span><span class="pun">,</span>
+<span class="cursorline">    <span class="key">"name"</span><span class="pun">:</span> <span class="str">"Indirect Work"</span></span>
+<span class="pun">}, {</span>
+    <span class="key">"menuItemId"</span><span class="pun">:</span> <span class="num">13</span><span class="pun">,</span></div>
+    </div>
+    <div class="status">
+      <div class="seg accent"><span class="val mono">Ln 36 · Col 35</span></div>
+      <div class="seg"><span>Lines</span><span class="val mono">20,125</span></div>
+      <div class="seg"><span>Unsaved</span></div>
+      <div class="seg"><span>🕑</span><span class="val mono">Oct 28, 12:26 AM</span></div>
+      <div class="right">
+        <div class="seg"><span class="val mono">UTF-8</span></div>
+        <div class="seg"><span class="val mono">LF</span></div>
+        <div class="seg"><span>Spaces</span><span class="val mono">4</span></div>
+      </div>
+    </div>
+  </div>
+  <p class="caption"><b>Elevation logic:</b> window (darkest) &lt; chrome bar/status &lt; tabs &lt; editor (lightest = focus). Neon cyan appears only on active things: tab edge, cursor-line wash, position segment, ⌘⇧P hint (your fork's palette becomes the hero). Status bar uses bordered segments instead of dots. Pairs naturally with the tree-sitter engine + palette work already shipped.</p>
+</div>
+
+</body>
+</html>

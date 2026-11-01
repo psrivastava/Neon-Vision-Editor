@@ -1,0 +1,132 @@
+import Foundation
+
+extension ContentView {
+    struct SecondaryContentContext: Equatable {
+        let tabID: UUID?
+        let fileURL: URL?
+        let language: String
+    }
+
+    struct SecondaryContentRequest: Equatable {
+        let context: SecondaryContentContext
+        let revision: Int
+        let delimitedMode: DelimitedViewMode
+        let delimitedTableEnabled: Bool
+        let plistMode: PlistViewMode
+        let crashMode: CrashReportViewMode
+        let logMode: LogViewMode
+        var fallbackContent: String? = nil
+    }
+
+    var secondaryContentRequest: SecondaryContentRequest {
+        SecondaryContentRequest(
+            context: SecondaryContentContext(
+                tabID: viewModel.selectedTabID,
+                fileURL: viewModel.selectedTab?.fileURL,
+                language: currentLanguage
+            ),
+            revision: viewModel.selectedTab?.contentRevision ?? editorExternalMutationRevision,
+            delimitedMode: delimitedViewMode,
+            delimitedTableEnabled: delimitedTableViewEnabled,
+            plistMode: plistViewMode,
+            crashMode: crashReportViewMode,
+            logMode: logViewMode,
+            fallbackContent: viewModel.selectedTab == nil ? singleContent : nil
+        )
+    }
+
+    struct TabChromeObservationSnapshot: Equatable {
+        let structureRevision: Int
+        let metadataRevision: Int
+    }
+
+    struct ProjectNavigationObservationSnapshot: Equatable {
+        let rootURL: URL?
+        let indexReady: Bool
+    }
+
+    struct EditorObservationSnapshot: Equatable {
+        let contentRevision: Int
+    }
+
+    struct PreviewObservationSnapshot: Equatable {
+        let projectEnabled: Bool
+        let contentFilter: String
+    }
+
+    struct WindowSessionObservationSnapshot: Equatable {
+        let persistenceRevision: Int
+    }
+
+    struct CommandRoutingObservationSnapshot: Equatable {
+        let windowNumber: Int?
+    }
+
+    var tabChromeObservationSnapshot: TabChromeObservationSnapshot {
+        TabChromeObservationSnapshot(
+            structureRevision: viewModel.tabsObservationToken,
+            metadataRevision: viewModel.tabMetadataObservationToken
+        )
+    }
+
+    var projectNavigationObservationSnapshot: ProjectNavigationObservationSnapshot {
+        ProjectNavigationObservationSnapshot(
+            rootURL: projectRootFolderURL,
+            indexReady: projectFileIndexHasCompleted
+        )
+    }
+
+    var editorObservationSnapshot: EditorObservationSnapshot {
+        EditorObservationSnapshot(contentRevision: viewModel.tabContentObservationToken)
+    }
+
+    var previewObservationSnapshot: PreviewObservationSnapshot {
+        PreviewObservationSnapshot(
+            projectEnabled: markdownProjectPreviewEnabled,
+            contentFilter: markdownProjectPreviewContentFilterRaw
+        )
+    }
+
+    var windowSessionObservationSnapshot: WindowSessionObservationSnapshot {
+        WindowSessionObservationSnapshot(persistenceRevision: viewModel.tabPersistenceObservationToken)
+    }
+
+    var commandRoutingObservationSnapshot: CommandRoutingObservationSnapshot {
+#if os(macOS)
+        let windowNumber = hostWindowNumber
+#else
+        let windowNumber: Int? = nil
+#endif
+        return CommandRoutingObservationSnapshot(windowNumber: windowNumber)
+    }
+
+    enum SearchScope: String, CaseIterable, Identifiable {
+        case currentFile = "currentFile"
+        case openTabs = "openTabs"
+        case project = "project"
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .currentFile: return NSLocalizedString("Current File", comment: "Search scope")
+            case .openTabs: return NSLocalizedString("Open Tabs", comment: "Search scope")
+            case .project: return NSLocalizedString("Project", comment: "Search scope")
+            }
+        }
+    }
+
+    enum StartupBehavior {
+        case standard
+        case forceBlankDocument
+        case nativeDocument
+        case safeMode
+    }
+
+    enum ProjectNavigatorPlacement: String, CaseIterable, Identifiable {
+        case leading
+        case trailing
+
+        var id: String { rawValue }
+    }
+}
